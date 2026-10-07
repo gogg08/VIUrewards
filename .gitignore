@@ -1,0 +1,14 @@
+# Tokens OAuth del prototipo (nunca en git)
+.kick-tokens.json
+
+# ID de la recompensa de prueba creada por el prototipo
+.kick-reward.json
+
+# Dependencias
+node_modules/
+
+# Clips descargados (Fase 1 en adelante)
+/media/
+
+# Secretos
+.env
