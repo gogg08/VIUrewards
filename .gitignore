@@ -10,5 +10,8 @@ node_modules/
 # Clips descargados (Fase 1 en adelante)
 /media/
 
+# Logs de procesos externos (stderr de yt-dlp/ffmpeg)
+/logs/
+
 # Secretos
 .env
