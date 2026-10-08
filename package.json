@@ -9,8 +9,14 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.2",
     "tsx": "^4.0.0",
     "typescript": "^5.0.0",
     "vitest": "^3.0.0"
+  },
+  "dependencies": {
+    "@fastify/static": "^10.1.5",
+    "fastify": "^5.12.5",
+    "ws": "^8.22.0"
   }
 }

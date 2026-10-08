@@ -42,6 +42,16 @@ App self-hosted para streamers de Kick. Corre en la PC del streamer y expone un 
 7. **La integración con Kick vive detrás de una interfaz** (`KickEventSource`), para poder cambiar entre API oficial y otras vías sin tocar el resto.
 8. **No inventar endpoints ni campos de la API de Kick.** Si no está documentado o no se verificó, preguntar o marcar con `TODO(verificar)`.
 9. **Rutas de archivos:** nunca construir paths con input del usuario sin normalizar y verificar que queden dentro de `/media`.
+10. **El producto es una app local para usuarios no técnicos:** nada de requerir infraestructura pública, cuentas de desarrollador por usuario o configuración manual de red para el usuario final, salvo en modos avanzados opcionales.
+
+## Arquitectura de triggers (multi-plataforma)
+
+- Las plataformas se integran mediante adaptadores que implementan una interfaz `EventSource` y emiten eventos normalizados: `{ id, platform, type, user, payload, timestamp }`. Tipos iniciales: `chat_command`, `reward_redeemed`, `sub`, `gift`, `follow`, `manual`.
+- Ningún código fuera de `/src/platforms/<nombre>/` puede importar tipos o nombres específicos de una plataforma.
+- El motor de reglas trabaja solo con eventos normalizados: trigger + condiciones (permisos, cooldown) -> acción.
+- Las acciones son una interfaz (`Action`). La primera es `PlayClip`. No acoplar el motor a esa acción.
+- Cada adaptador declara sus "capabilities"; el dashboard oculta los triggers que la plataforma no soporta.
+- El `user_input` de un canje o comando es input NO confiable: siempre se valida antes de usarse.
 
 ## Convenciones de código
 
@@ -71,4 +81,4 @@ npm test           # vitest
 
 ## Estado actual
 
-Fase en curso: **Fase 0** (investigación de Kick). Actualizar esta línea al avanzar.
+Fase en curso: **Fase 2** (servidor local, cola de alertas y overlay). La **Fase 1** (núcleo de media) está implementada. La **Fase 0** (investigación de Kick) queda abierta, pendiente de los resultados de prueba del prototipo de recompensas (`scripts/kick-rewards.ts`). Actualizar esta línea al avanzar.
