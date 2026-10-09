@@ -15,3 +15,8 @@ node_modules/
 
 # Secretos
 .env
+
+# Base de datos local (Fase 3)
+/data/
+
+# Dashboard: Alpine servido como archivo local (no CDN). No se ignora.

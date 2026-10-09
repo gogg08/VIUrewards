@@ -52,7 +52,12 @@ export interface MediaOptions {
   run?: RunProcess;
   /** Habilita el runtime JS de Node para yt-dlp. Por defecto según la versión de Node. */
   jsRuntime?: boolean;
+  /** Notifica la etapa en curso (para mostrar progreso en el dashboard). */
+  onStage?: (stage: MediaStage) => void;
 }
+
+/** Etapas visibles del proceso de media. */
+export type MediaStage = "downloading" | "converting";
 
 export interface Clip {
   id: string;
@@ -253,6 +258,7 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     maxDurationSec,
     jsRuntime: useJsRuntime ? "node" : undefined,
   });
+  options.onStage?.("downloading");
   const download = await run(ytdlpBin, ytdlpArgs, { timeoutMs, cwd: mediaDir });
   const downloadLog = { command: ytdlpBin, args: ytdlpArgs, result: download };
 
@@ -310,6 +316,7 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
 
   const ffmpegBin = detection.binaries.ffmpeg;
   const ffmpegArgs = buildFfmpegArgs(source, outputPath, { maxHeight });
+  options.onStage?.("converting");
   const convert = await run(ffmpegBin, ffmpegArgs, { timeoutMs });
   rmSync(source, { force: true });
   rmSync(infoPath, { force: true });

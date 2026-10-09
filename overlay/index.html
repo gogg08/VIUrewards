@@ -4,6 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>czero-rewards overlay</title>
+    <!-- Evita el 404 de /favicon.ico dentro del Browser Source. -->
+    <link rel="icon" href="data:," />
     <style>
       /* Fondo transparente: es un Browser Source que se compone sobre el video. */
       html,
@@ -41,8 +43,22 @@
     </div>
 
     <script>
+      /*
+       * Máquina de estados del overlay: idle -> loading -> playing <-> paused.
+       * Invariante: todo mensaje (play, stop, pause, resume, error, reconexión)
+       * termina en un estado conocido y NUNCA deja una marca de "ocupado" activa.
+       * Un "play" nuevo siempre reemplaza al anterior (generación).
+       */
       const anchor = document.getElementById("anchor");
       const video = document.getElementById("clip");
+
+      // Clave del overlay: viaja en la URL de esta página (?key=...) y se reenvía
+      // al WebSocket y a los clips, porque el Browser Source de OBS no comparte
+      // la cookie del dashboard.
+      const overlayKey = new URLSearchParams(location.search).get("key") || "";
+      function mediaUrl(clipId) {
+        return "/media/" + encodeURIComponent(clipId) + ".mp4?key=" + encodeURIComponent(overlayKey);
+      }
 
       /** Keyframes de entrada; la salida es la misma animación al revés. */
       const ENTER = {
@@ -62,19 +78,62 @@
         ],
       };
 
+      const LOAD_TIMEOUT_MS = 8000; // si la metadata no llega, no dejar el seek colgado
+      const MIN_RECONNECT_MS = 1000;
+      const MAX_RECONNECT_MS = 10000;
+
+      let mode = "idle"; // idle | loading | playing | paused
       let current = null;
+      let generation = 0; // invalida callbacks de un play anterior
+      let retriedMuted = false;
+      let remainingMs = 0;
+      let endDeadline = 0;
       let anim = null;
       let endTimer = null;
+      let loadTimer = null;
+      let onMeta = null;
       let reconnectTimer = null;
+      let reconnectDelay = MIN_RECONNECT_MS;
       let ws = null;
 
       function send(message) {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
       }
 
-      function clearTimers() {
+      function clearEndTimer() {
         if (endTimer !== null) clearTimeout(endTimer);
         endTimer = null;
+      }
+
+      function clearLoadTimer() {
+        if (loadTimer !== null) clearTimeout(loadTimer);
+        loadTimer = null;
+        if (onMeta) {
+          video.removeEventListener("loadedmetadata", onMeta);
+          onMeta = null;
+        }
+      }
+
+      function clearTimers() {
+        clearEndTimer();
+        clearLoadTimer();
+      }
+
+      function effectiveSec(item) {
+        const p = item.params;
+        const start = Math.max(0, Number(p.trimStart) || 0);
+        const naturalEnd = typeof p.trimEnd === "number" ? p.trimEnd : Infinity;
+        const end = Math.min(naturalEnd, start + Math.max(1, p.maxDurationSec));
+        return Math.max(0.1, end - start);
+      }
+
+      function place(item) {
+        const p = item.params;
+        anchor.style.left = p.position.x * 100 + "%";
+        anchor.style.top = p.position.y * 100 + "%";
+        video.volume = Math.min(1, Math.max(0, p.volume));
+        video.style.display = "block";
+        video.muted = false;
       }
 
       function animateIn(name) {
@@ -95,94 +154,247 @@
         });
       }
 
-      function play(item, url) {
-        if (current && current.id === item.id && !video.paused) return;
-        clearTimers();
-        current = item;
-
-        const p = item.params;
-        anchor.style.left = p.position.x * 100 + "%";
-        anchor.style.top = p.position.y * 100 + "%";
-        video.volume = Math.min(1, Math.max(0, p.volume));
-        video.style.display = "block";
-
-        if (video.getAttribute("src") !== url) video.setAttribute("src", url);
-        animateIn(p.enterAnimation);
-
-        const started = video.play();
-        if (started && typeof started.catch === "function") {
-          started.catch((error) => send({ type: "error", itemId: item.id, message: String(error) }));
+      function seekTo(seconds) {
+        try {
+          video.currentTime = seconds;
+        } catch {
+          /* el video aún no está listo para el seek */
         }
-
-        // Corta el video aunque no haya terminado (duración máxima).
-        endTimer = setTimeout(() => finish(item.id), Math.max(1, p.maxDurationSec) * 1000);
       }
 
-      function finish(itemId) {
-        if (!current || current.id !== itemId) return;
-        send({ type: "ended", itemId: itemId });
-        hide();
-        current = null;
-      }
-
-      function hide() {
-        clearTimers();
-        animateOut(current ? current.params.exitAnimation : "fade");
+      /** Oculta el video (salida animada) sin tocar `current` ni `mode`. */
+      function hide(exitAnimation) {
+        clearEndTimer();
+        animateOut(exitAnimation ?? "fade");
         video.pause();
         setTimeout(() => {
-          if (!current) video.style.display = "none";
+          if (mode === "idle") video.style.display = "none";
         }, 250);
       }
 
-      function stop() {
+      /** Estado terminal de un clip: avisa el fin y vuelve a idle. */
+      function finish(itemId, reason) {
+        if (!current || current.id !== itemId) return;
+        const finishedId = itemId;
+        const exitAnimation = current.params.exitAnimation;
         current = null;
-        hide();
+        mode = "idle";
+        clearTimers();
+        send({ type: "ended", itemId: finishedId, reason: reason });
+        hide(exitAnimation);
+      }
+
+      function failPlayback(gen, error) {
+        if (gen !== generation || !current) return;
+        const itemId = current.id;
+        // Reportar el error al servidor; el watchdog del servidor es la red de
+        // seguridad si aun así no llega el fin.
+        send({ type: "error", itemId: itemId, message: String(error) });
+        if (retriedMuted) {
+          finish(itemId, "no se pudo reproducir");
+          return;
+        }
+        // Reintento único en silencio (muted), por si es una política de autoplay.
+        retriedMuted = true;
+        video.muted = true;
+        const again = video.play();
+        if (!again || typeof again.then !== "function") {
+          onPlayStarted(gen, remainingMs / 1000);
+          return;
+        }
+        again
+          .then(() => {
+            if (gen === generation) onPlayStarted(gen, remainingMs / 1000);
+          })
+          .catch((second) => {
+            if (gen === generation) {
+              finish(itemId, "no se pudo reproducir (muted): " + String(second));
+            }
+          });
+      }
+
+      function onPlayStarted(gen, playForSec) {
+        if (gen !== generation || !current) return;
+        mode = "playing";
+        remainingMs = Math.max(0, playForSec * 1000);
+        endDeadline = performance.now() + remainingMs;
+        animateIn(current.params.enterAnimation);
+        clearEndTimer();
+        // Corta el video aunque no haya terminado (recorte o duración máxima).
+        endTimer = setTimeout(() => {
+          if (gen === generation) finish(current ? current.id : "", "duración");
+        }, remainingMs);
+      }
+
+      function startPlayback(gen) {
+        const attempt = video.play();
+        if (!attempt || typeof attempt.then !== "function") {
+          onPlayStarted(gen, remainingMs / 1000);
+          return;
+        }
+        attempt
+          .then(() => {
+            if (gen === generation) onPlayStarted(gen, remainingMs / 1000);
+          })
+          .catch((error) => failPlayback(gen, error));
+      }
+
+      /** Reproduce un clip desde cero (o reemplaza al que esté en curso). */
+      function play(item) {
+        const gen = ++generation;
+        clearTimers();
+        current = item;
+        mode = "loading";
+        retriedMuted = false;
+        remainingMs = effectiveSec(item) * 1000;
+        place(item);
+
+        const url = mediaUrl(item.clipId);
+        if (video.getAttribute("src") !== url) video.setAttribute("src", url);
+
+        const start = Math.max(0, Number(item.params.trimStart) || 0);
+        const begin = () => {
+          if (gen !== generation) return;
+          seekTo(start);
+          startPlayback(gen);
+        };
+
+        if (video.readyState >= 1) {
+          begin();
+        } else {
+          onMeta = () => {
+            clearLoadTimer();
+            begin();
+          };
+          video.addEventListener("loadedmetadata", onMeta, { once: true });
+          loadTimer = setTimeout(() => {
+            clearLoadTimer();
+            if (gen !== generation) return;
+            // Sin metadata: no dejar el seek esperando para siempre.
+            finish(item.id, "timeout de carga");
+          }, LOAD_TIMEOUT_MS);
+        }
+      }
+
+      /** Carga un clip y lo deja detenido (estado pausado). */
+      function hold(item) {
+        const gen = ++generation;
+        clearTimers();
+        current = item;
+        mode = "paused";
+        retriedMuted = false;
+        remainingMs = effectiveSec(item) * 1000;
+        place(item);
+
+        const url = mediaUrl(item.clipId);
+        if (video.getAttribute("src") !== url) video.setAttribute("src", url);
+
+        const start = Math.max(0, Number(item.params.trimStart) || 0);
+        const park = () => {
+          if (gen !== generation) return;
+          seekTo(start);
+          video.pause();
+        };
+        if (video.readyState >= 1) park();
+        else {
+          onMeta = () => {
+            clearLoadTimer();
+            park();
+          };
+          video.addEventListener("loadedmetadata", onMeta, { once: true });
+          loadTimer = setTimeout(clearLoadTimer, LOAD_TIMEOUT_MS);
+        }
+      }
+
+      function stop() {
+        generation += 1; // invalida callbacks pendientes
+        clearTimers();
+        mode = "idle";
+        const exitAnimation = current ? current.params.exitAnimation : "fade";
+        current = null;
+        hide(exitAnimation);
+      }
+
+      function pause() {
+        if (mode === "playing") remainingMs = Math.max(0, endDeadline - performance.now());
+        clearEndTimer();
+        video.pause();
+        mode = "paused";
+      }
+
+      function resume() {
+        if (!current) return;
+        const gen = generation;
+        mode = "playing";
+        video.muted = false;
+        const attempt = video.play();
+        if (!attempt || typeof attempt.then !== "function") {
+          onPlayStarted(gen, remainingMs / 1000);
+          return;
+        }
+        attempt
+          .then(() => {
+            if (gen === generation) onPlayStarted(gen, remainingMs / 1000);
+          })
+          .catch((error) => failPlayback(gen, error));
       }
 
       video.addEventListener("ended", () => {
-        if (current) finish(current.id);
+        if (mode === "playing" && current) finish(current.id, "ended");
       });
 
       function handle(message) {
         switch (message.type) {
-          case "state":
-            if (message.state.current && message.state.status === "playing") {
-              play(message.state.current, "/media/" + encodeURIComponent(message.state.current.clipId) + ".mp4");
+          case "state": {
+            const st = message.state || {};
+            if (st.status === "paused" && st.current) {
+              // En pausa: cargar el clip y dejarlo detenido.
+              if (!current || current.id !== st.current.id) hold(st.current);
+              else pause();
+            } else if (st.status === "playing" && st.current) {
+              // Al (re)conectar se reinicia el clip en curso desde el principio
+              // (decisión documentada en docs/dashboard.md).
+              play(st.current);
             } else {
               stop();
             }
             break;
+          }
           case "play":
-            play(message.item, message.url);
+            play(message.item);
             break;
           case "stop":
             stop();
             break;
           case "pause":
-            clearTimers();
-            video.pause();
+            pause();
             break;
           case "resume":
-            if (current) video.play().catch(() => {});
+            resume();
             break;
         }
       }
 
       function connect() {
-        ws = new WebSocket("ws://" + location.host + "/ws");
-        ws.addEventListener("open", () => send({ type: "ready" }));
+        ws = new WebSocket("ws://" + location.host + "/ws?key=" + encodeURIComponent(overlayKey));
+        ws.addEventListener("open", () => {
+          reconnectDelay = MIN_RECONNECT_MS;
+          send({ type: "ready" });
+        });
         ws.addEventListener("message", (event) => {
           try {
             handle(JSON.parse(event.data));
-          } catch {
-            /* mensaje no reconocido: se ignora */
+          } catch (error) {
+            console.warn("[overlay] mensaje descartado:", error);
           }
         });
-        // Reconexión automática si se corta el socket.
+        // Reconexión automática con backoff; al reconectar, el servidor reenvía
+        // el estado actual y el overlay se pone al día.
         ws.addEventListener("close", () => {
           stop();
           if (reconnectTimer !== null) clearTimeout(reconnectTimer);
-          reconnectTimer = setTimeout(connect, 2000);
+          reconnectTimer = setTimeout(connect, reconnectDelay);
+          reconnectDelay = Math.min(MAX_RECONNECT_MS, reconnectDelay * 2);
         });
         ws.addEventListener("error", () => ws.close());
       }

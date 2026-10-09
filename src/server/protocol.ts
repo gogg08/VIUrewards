@@ -16,7 +16,7 @@ export type ServerMessage =
 
 export type OverlayMessage =
   | { type: "ready" }
-  | { type: "ended"; itemId: string }
+  | { type: "ended"; itemId: string; reason?: string }
   | { type: "error"; itemId?: string; message: string };
 
 /** URL de reproducción de un clip servido por /media. */
@@ -40,7 +40,11 @@ export function parseOverlayMessage(raw: string): OverlayMessage | null {
       return { type: "ready" };
     case "ended":
       return typeof message.itemId === "string"
-        ? { type: "ended", itemId: message.itemId }
+        ? {
+            type: "ended",
+            itemId: message.itemId,
+            reason: typeof message.reason === "string" ? message.reason : undefined,
+          }
         : null;
     case "error":
       return {

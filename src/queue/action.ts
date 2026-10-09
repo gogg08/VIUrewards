@@ -28,6 +28,8 @@ export interface PlayClipOptions {
   priority?: number;
   volume?: number;
   maxDurationSec?: number;
+  trimStart?: number;
+  trimEnd?: number | null;
   position?: OverlayPosition;
   enterAnimation?: AnimationName;
   exitAnimation?: AnimationName;
@@ -49,6 +51,8 @@ export class PlayClip implements Action {
       priority: this.options.priority,
       volume: this.options.volume,
       maxDurationSec: this.options.maxDurationSec,
+      trimStart: this.options.trimStart,
+      trimEnd: this.options.trimEnd,
       position: this.options.position,
       enterAnimation: this.options.enterAnimation,
       exitAnimation: this.options.exitAnimation,

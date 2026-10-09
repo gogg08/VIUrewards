@@ -9,6 +9,8 @@
 
 import { randomUUID } from "node:crypto";
 
+import { validateTrim } from "./trim.ts";
+
 export type AnimationName = "none" | "fade" | "slide-up" | "slide-down" | "zoom";
 
 export interface OverlayPosition {
@@ -23,6 +25,10 @@ export interface ClipPlaybackParams {
   volume: number;
   /** Duración máxima en segundos; se corta el video aunque no haya terminado. */
   maxDurationSec: number;
+  /** Segundo donde arranca la reproducción (recorte no destructivo). */
+  trimStart: number;
+  /** Segundo donde termina (recorte no destructivo); null = hasta el final. */
+  trimEnd: number | null;
   position: OverlayPosition;
   enterAnimation: AnimationName;
   exitAnimation: AnimationName;
@@ -48,6 +54,8 @@ export interface EnqueueInput {
   priority?: number;
   volume?: number;
   maxDurationSec?: number;
+  trimStart?: number;
+  trimEnd?: number | null;
   position?: OverlayPosition;
   enterAnimation?: AnimationName;
   exitAnimation?: AnimationName;
@@ -67,17 +75,22 @@ export interface QueueState {
 export const DEFAULT_PLAYBACK_PARAMS: ClipPlaybackParams = {
   volume: 1,
   maxDurationSec: 30,
+  trimStart: 0,
+  trimEnd: null,
   position: { x: 0.5, y: 0.5 },
   enterAnimation: "fade",
   exitAnimation: "fade",
 };
 
+/** Códigos de error de entrada de la cola. */
+export type QueueInputErrorCode = "INVALID_CLIP_ID" | "INVALID_TRIM";
+
 export class QueueInputError extends Error {
-  readonly code: "INVALID_CLIP_ID";
-  constructor(message: string) {
+  readonly code: QueueInputErrorCode;
+  constructor(code: QueueInputErrorCode, message: string) {
     super(message);
     this.name = "QueueInputError";
-    this.code = "INVALID_CLIP_ID";
+    this.code = code;
   }
 }
 
@@ -87,9 +100,14 @@ function clamp(value: number, min: number, max: number): number {
 
 /** Normaliza los parámetros opcionales de un ítem sobre los valores por defecto. */
 function resolveParams(input: EnqueueInput): ClipPlaybackParams {
+  const trim = validateTrim(input.trimStart, input.trimEnd);
+  if (!trim.ok) throw new QueueInputError("INVALID_TRIM", trim.message);
+
   return {
     volume: clamp(input.volume ?? DEFAULT_PLAYBACK_PARAMS.volume, 0, 1),
     maxDurationSec: Math.max(1, input.maxDurationSec ?? DEFAULT_PLAYBACK_PARAMS.maxDurationSec),
+    trimStart: trim.trimStart,
+    trimEnd: trim.trimEnd,
     position: {
       x: clamp(input.position?.x ?? DEFAULT_PLAYBACK_PARAMS.position.x, 0, 1),
       y: clamp(input.position?.y ?? DEFAULT_PLAYBACK_PARAMS.position.y, 0, 1),
@@ -108,13 +126,20 @@ export class AlertQueue {
   private pending: QueueItem[] = [];
   private current: QueueItem | null = null;
   private paused = false;
+  /**
+   * ¿Hay un reproductor disponible (el overlay conectado)? Si no, los ítems
+   * quedan en espera en vez de pasar a "reproduciendo": una alerta que nadie
+   * reproduce nunca termina, y la cola no puede quedar atascada por eso.
+   */
+  private playerReady = true;
   private seq = 0;
   private readonly listeners = new Set<(state: QueueState) => void>();
 
-  /** Agrega un clip. Si no hay nada reproduciéndose y no está pausada, arranca ya. */
+  /** Agrega un clip. Si no hay nada reproduciéndose, no está pausada y hay un
+   * reproductor listo, arranca ya; si no, queda en espera. */
   enqueue(input: EnqueueInput): QueueItem {
     if (typeof input.clipId !== "string" || input.clipId.trim() === "") {
-      throw new QueueInputError("clipId es obligatorio y no puede estar vacío.");
+      throw new QueueInputError("INVALID_CLIP_ID", "clipId es obligatorio y no puede estar vacío.");
     }
 
     const item: QueueItem = {
@@ -127,7 +152,7 @@ export class AlertQueue {
       label: input.label,
     };
 
-    if (this.paused || this.current) {
+    if (this.paused || !this.playerReady || this.current) {
       this.pending.push(item);
     } else {
       this.current = item;
@@ -136,10 +161,14 @@ export class AlertQueue {
     return item;
   }
 
-  /** Descarta el clip actual y avanza al siguiente. Devuelve el nuevo actual. */
+  /**
+   * Descarta el clip actual y avanza al siguiente. Si la cola está pausada, el
+   * siguiente queda en espera hasta reanudar (no se arranca nada en pausa).
+   */
   skip(): QueueItem | null {
     if (!this.current) return null;
-    this.current = this.takeNext();
+    this.current = this.paused ? null : this.takeNext();
+    this.stabilize();
     this.emit();
     return this.current;
   }
@@ -151,7 +180,8 @@ export class AlertQueue {
   complete(itemId?: string): QueueItem | null {
     if (!this.current) return null;
     if (itemId !== undefined && itemId !== this.current.id) return this.current;
-    this.current = this.takeNext();
+    this.current = this.paused ? null : this.takeNext();
+    this.stabilize();
     this.emit();
     return this.current;
   }
@@ -165,7 +195,19 @@ export class AlertQueue {
   resume(): void {
     if (!this.paused && this.current) return;
     this.paused = false;
-    if (!this.current) this.current = this.takeNext();
+    this.stabilize();
+    this.emit();
+  }
+
+  /**
+   * Informa si hay un reproductor (overlay) disponible. Con `false`, los ítems
+   * nuevos quedan en espera; con `true` se arranca el próximo pendiente, salvo
+   * que la cola esté pausada.
+   */
+  setPlayerReady(ready: boolean): void {
+    if (this.playerReady === ready) return;
+    this.playerReady = ready;
+    this.stabilize();
     this.emit();
   }
 
@@ -180,7 +222,10 @@ export class AlertQueue {
   getState(): QueueState {
     const pending = orderItems(this.pending);
     return {
-      status: this.current ? (this.paused ? "paused" : "playing") : "idle",
+      // El estado refleja la pausa aunque no haya un ítem actual: así el
+      // dashboard siempre ofrece "Reanudar" y la cola nunca se ve "idle" con
+      // ítems en espera sin forma de destrabarla.
+      status: this.paused ? "paused" : this.current ? "playing" : "idle",
       current: this.current,
       pending,
       size: pending.length,
@@ -191,6 +236,17 @@ export class AlertQueue {
   onChange(listener: (state: QueueState) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
+  }
+
+  /**
+   * Restaura la invariante: si hay pendientes, no está pausada, hay reproductor
+   * y no hay ítem actual, arranca el siguiente. Se llama tras cada mutación para
+   * que la cola nunca quede con ítems en espera sin nada reproduciéndose.
+   */
+  private stabilize(): void {
+    if (!this.paused && this.playerReady && !this.current && this.pending.length > 0) {
+      this.current = this.takeNext();
+    }
   }
 
   private takeNext(): QueueItem | null {

@@ -1,0 +1,388 @@
+/* Estilos del dashboard (Fase 3). Oscuro, sobrio, sin build. */
+
+:root {
+  --bg: #12141a;
+  --panel: #1b1e27;
+  --panel-2: #222634;
+  --border: #2e3342;
+  --text: #e8eaf0;
+  --muted: #9aa1b4;
+  --accent: #53fc18;
+  --accent-ink: #0b1a06;
+  --danger: #ff5b6a;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.45;
+}
+
+a {
+  color: var(--accent);
+}
+
+button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0.5rem 0.9rem;
+  border-radius: 8px;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
+
+button.primary {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+button.primary:hover {
+  filter: brightness(1.08);
+}
+
+button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
+  background: transparent;
+}
+
+input,
+select {
+  font: inherit;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+}
+
+input:focus,
+select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* --- Login / setup --- */
+
+.auth-wrap {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.5rem;
+  width: 100%;
+  max-width: 380px;
+}
+
+.card h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.3rem;
+}
+
+.card p.hint {
+  color: var(--muted);
+  margin-top: 0;
+  font-size: 0.9rem;
+}
+
+.field {
+  display: block;
+  margin-bottom: 0.9rem;
+}
+
+.field span {
+  display: block;
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+
+.field input {
+  width: 100%;
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
+
+/* --- Dashboard --- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.9rem 1.4rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.topbar .brand {
+  font-weight: 700;
+}
+
+.topbar .brand span {
+  color: var(--accent);
+}
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.4rem;
+  display: grid;
+  gap: 1.4rem;
+}
+
+section {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 1.2rem;
+}
+
+section h2 {
+  margin: 0 0 0.9rem;
+  font-size: 1.05rem;
+}
+
+.row {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.row input[type="url"],
+.row input[type="text"] {
+  flex: 1 1 320px;
+  min-width: 220px;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.progress {
+  margin-top: 0.8rem;
+  font-size: 0.95rem;
+}
+
+.progress.error {
+  color: var(--danger);
+}
+
+.clip-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.clip {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.clip video {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  display: block;
+}
+
+.clip .body {
+  padding: 0.7rem 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.clip .title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.clip .meta {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.clip .actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.clip .actions button {
+  padding: 0.35rem 0.6rem;
+  font-size: 0.85rem;
+}
+
+.empty {
+  color: var(--muted);
+  text-align: center;
+  padding: 1.5rem 0;
+}
+
+.overlay-row input {
+  flex: 1 1 420px;
+}
+
+/* --- Cola en vivo --- */
+
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+.section-head h2 {
+  margin: 0;
+}
+
+.queue-current {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 0.8rem;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 0.8rem;
+}
+
+.badge {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-size: 0.75rem;
+  font-weight: 700;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+
+.badge.ok {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.badge.error {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--danger);
+}
+
+.queue-list {
+  margin: 0.3rem 0 0;
+  padding-left: 1.4rem;
+  color: var(--muted);
+}
+
+.queue-list li {
+  overflow-wrap: anywhere;
+}
+
+/* --- Recorte por clip --- */
+
+.trim {
+  border-top: 1px solid var(--border);
+  padding-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.trim-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.trim-row label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  min-width: 3.5rem;
+}
+
+.trim-row input {
+  width: 5.5rem;
+}
+
+.trim-row button {
+  padding: 0.3rem 0.55rem;
+  font-size: 0.8rem;
+}
+
+/* --- Configuración --- */
+
+.settings-grid {
+  display: grid;
+  gap: 0.9rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 0.9rem;
+}
+
+textarea {
+  font: inherit;
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  resize: vertical;
+}
+
+textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--border);
+  margin: 1.2rem 0;
+}
+
+section h3 {
+  margin: 0 0 0.7rem;
+  font-size: 0.95rem;
+}
+
+.ok {
+  color: var(--accent);
+  font-size: 0.9rem;
+}
+
+.warn {
+  color: #ffcc66;
+  font-size: 0.88rem;
+  margin: 0.5rem 0;
+}

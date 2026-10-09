@@ -81,4 +81,4 @@ npm test           # vitest
 
 ## Estado actual
 
-Fase en curso: **Fase 2** (servidor local, cola de alertas y overlay). La **Fase 1** (núcleo de media) está implementada. La **Fase 0** (investigación de Kick) queda abierta, pendiente de los resultados de prueba del prototipo de recompensas (`scripts/kick-rewards.ts`). Actualizar esta línea al avanzar.
+Fase en curso: **Fase 3 completa** (dashboard local: base SQLite con migraciones, autenticación local, alta de clips con descarga en segundo plano, biblioteca con **recorte no destructivo**, vista de la **cola en vivo**, **configuración general** —volumen global, límites de descarga, whitelist de dominios, puerto, cambio de contraseña— y URL del overlay con token enmascarado). Las **Fases 1 y 2** (núcleo de media; servidor local, cola y overlay) están implementadas. La **Fase 0** (investigación de Kick) queda abierta, pendiente de los resultados de prueba del prototipo de recompensas (`scripts/kick-rewards.ts`). No empezar la **Fase 4** (integración con Kick) hasta que lleguen esos resultados. Actualizar esta línea al avanzar.

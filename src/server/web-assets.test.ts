@@ -1,0 +1,100 @@
+/**
+ * Verificación estática de los assets del dashboard (Tarea 0).
+ *
+ * No hay navegador en los tests, así que comprobamos leyendo el HTML:
+ * (a) los scripts que definen los componentes se cargan ANTES de alpine.min.js
+ *     (Alpine arranca en un microtask apenas se ejecuta);
+ * (b) cada `src`/`href` que apunta a /web corresponde a un archivo existente.
+ *
+ * No reemplaza una prueba real de navegador: ver docs/dashboard.md.
+ */
+
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+
+const webDir = fileURLToPath(new URL("../../web", import.meta.url));
+const overlayDir = fileURLToPath(new URL("../../overlay", import.meta.url));
+
+interface Page {
+  file: string;
+  componentScript: string;
+}
+
+const PAGES: Page[] = [
+  { file: "login.html", componentScript: "/web/login.js" },
+  { file: "index.html", componentScript: "/web/app.js" },
+];
+
+function read(file: string): string {
+  return readFileSync(join(webDir, file), "utf8");
+}
+
+function scriptSources(html: string): Array<{ src: string; index: number }> {
+  return [...html.matchAll(/<script\b[^>]*\bsrc="([^"]+)"/g)].map((match) => ({
+    src: match[1],
+    index: match.index ?? -1,
+  }));
+}
+
+describe("assets del dashboard", () => {
+  for (const page of PAGES) {
+    it(`${page.file}: Alpine se carga después del script del componente`, () => {
+      const html = read(page.file);
+      const scripts = scriptSources(html);
+      const alpine = scripts.find((script) => script.src.endsWith("/alpine.min.js"));
+      const component = scripts.find((script) => script.src === page.componentScript);
+
+      expect(alpine, "falta el script de Alpine").toBeDefined();
+      expect(component, `falta el script ${page.componentScript}`).toBeDefined();
+      // El componente debe aparecer ANTES que Alpine en el documento.
+      expect(component!.index).toBeLessThan(alpine!.index);
+
+      // Ningún script propio puede quedar después de Alpine.
+      for (const script of scripts) {
+        if (script.src.endsWith("/alpine.min.js")) continue;
+        expect(script.index).toBeLessThan(alpine!.index);
+      }
+    });
+
+    it(`${page.file}: todos los src/href de /web existen`, () => {
+      const html = read(page.file);
+      const refs = [...html.matchAll(/(?:src|href)="([^"]+)"/g)]
+        .map((match) => match[1])
+        .filter((ref) => ref.startsWith("/web/"));
+
+      expect(refs.length).toBeGreaterThan(0);
+      for (const ref of refs) {
+        const relative = ref.slice("/web/".length);
+        expect(existsSync(join(webDir, relative)), `no existe ${ref}`).toBe(true);
+      }
+    });
+
+    it(`${page.file}: incluye favicon (evita el 404 de /favicon.ico)`, () => {
+      expect(read(page.file)).toMatch(/<link\s+rel="icon"/);
+    });
+  }
+
+  it("login.html usa los scripts propios y no referencia CDNs", () => {
+    const refs = [...read("login.html").matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
+    for (const ref of refs) {
+      expect(ref.startsWith("http"), `no debe haber recursos externos: ${ref}`).toBe(false);
+    }
+  });
+});
+
+describe("overlay (Browser Source)", () => {
+  const html = readFileSync(join(overlayDir, "index.html"), "utf8");
+
+  it("incluye favicon (evita el 404 dentro del Browser Source)", () => {
+    expect(html).toMatch(/<link\s+rel="icon"/);
+  });
+
+  it("arma las URLs de /media con la clave del overlay (no sin key)", () => {
+    // Regresión del bug B3: el `play` usaba /media/<id>.mp4 sin `?key=` y /media
+    // respondía 401, así que el video nunca cargaba.
+    expect(html).toMatch(/\/media\/.*key=/);
+  });
+});

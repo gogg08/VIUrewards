@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>czero-rewards · acceso</title>
+    <!-- Evita el 404 de /favicon.ico. -->
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/web/style.css" />
+    <!--
+      Orden importante: los scripts que definen el componente van ANTES de
+      alpine.min.js. El build de Alpine arranca en un microtask apenas se ejecuta
+      (`queueMicrotask(() => Alpine.start())`), así que cuando evalúa la expresión
+      `x-data="authApp()"` la función ya tiene que existir. Con `defer` los scripts
+      se ejecutan en orden de aparición. Ver docs/dashboard.md.
+    -->
+    <script defer src="/web/login.js"></script>
+    <script defer src="/web/alpine.min.js"></script>
+  </head>
+  <body>
+    <div class="auth-wrap" x-data="authApp()">
+      <div class="card">
+        <!-- Textos por defecto en el HTML: si Alpine falla, la pantalla no queda vacía. -->
+        <h1 x-text="title">czero-rewards</h1>
+        <p class="hint" x-text="hint">Cargando…</p>
+
+        <form @submit.prevent="submit()">
+          <label class="field">
+            <span>Contraseña</span>
+            <input type="password" x-model="password" autocomplete="current-password" required />
+          </label>
+
+          <label class="field" x-show="mode === 'setup'">
+            <span>Repetí la contraseña</span>
+            <input type="password" x-model="confirmPassword" autocomplete="new-password" />
+          </label>
+
+          <p class="error" x-show="error" x-text="error"></p>
+
+          <button class="primary" type="submit" :disabled="busy" x-text="buttonLabel">Entrar</button>
+        </form>
+      </div>
+    </div>
+  </body>
+</html>

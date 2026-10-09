@@ -6,10 +6,13 @@ export {
   type ClipPlaybackParams,
   type EnqueueInput,
   type OverlayPosition,
+  type QueueInputErrorCode,
   type QueueItem,
   type QueueState,
   type QueueStatus,
 } from "./queue.ts";
+
+export { effectiveDurationSec, validateTrim, type TrimValidation } from "./trim.ts";
 
 export {
   PlayClip,
