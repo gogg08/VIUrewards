@@ -1,4 +1,4 @@
-# Dashboard local (Fase 3)
+# Dashboard local (Fase 3 + Fase 4A)
 
 El dashboard es la interfaz que usa el streamer en el navegador. Todo corre en su
 PC; el servidor escucha solo en `127.0.0.1`.
@@ -46,13 +46,35 @@ Después, para entrar, se usa esa contraseña. La sesión va en una cookie
   **Mostrar** y **Copiar**, y un aviso de no mostrarla en pantalla durante el
   stream.
 
+### Secciones nuevas (Fase 4A, motor de reglas sin plataformas)
+
+- **Reglas**: crear, editar, activar/desactivar y borrar reglas. Cada regla tiene
+  un *trigger* (tipo de evento y, según el tipo, comando, id de recompensa o monto
+  mínimo), *condiciones* (permiso `todos/subs/mods`, cooldown global y por usuario)
+  y una *acción* (`play_clip` o `submit_url`). El selector de tipo de evento se
+  arma con las **capabilities** de las fuentes conectadas, así no se ofrecen
+  triggers que ninguna plataforma soporta.
+- **Moderación de URLs**: lista de propuestas del público pendientes, con la URL y
+  botones **Aprobar / Rechazar**. Aprobar dispara la descarga con el job existente
+  y, al terminar, encola el clip; rechazar la descarta.
+- **Historial de eventos**: últimas 100 entradas con hora, plataforma, tipo,
+  usuario, resultado (`Disparó / Omitido / Error / Sin regla / Duplicado`) y motivo
+  (por ejemplo `cooldown`, `sin permiso`).
+- **Simular evento**: dispara un evento de cualquier tipo sin ninguna plataforma
+  conectada, y un botón **Evento manual** (el mismo que dispara `ManualEventSource`).
+  Sirve para probar reglas y el flujo de moderación de punta a punta.
+
+Ver `docs/rules.md` para el detalle del motor, las transiciones de estado y los
+límites.
+
 Todo el texto de la interfaz está en español. Los nombres de los clips se
 insertan con bindings de texto (Alpine `x-text`), que escapan HTML; nunca con
 `x-html`.
 
 ## Archivos y datos
 
-- `data/app.db`: SQLite local (tablas `clips` y `settings`). Ignorado en git.
+- `data/app.db`: SQLite local (tablas `clips`, `settings`, `rules`,
+  `event_history` y `proposals`). Ignorado en git.
 - `media/`: clips `.mp4` y un sidecar `.json` por clip. Ignorado en git.
 - `logs/`: salida cruda de yt-dlp/ffmpeg. Ignorado en git.
 
@@ -85,8 +107,13 @@ caché **no pisa** el título ni el recorte que haya puesto el usuario.
 `GET /api/jobs[/:id]`, `GET /api/clips`, `POST /api/clips/:id/rename`,
 `POST /api/clips/:id/trim`, `DELETE /api/clips/:id`, `POST /api/clips/:id/play`,
 `GET/POST /api/settings`, `POST /api/auth/change-password`,
-`GET /api/overlay`, `POST /api/overlay/regenerate`. Todo input se valida con
-esquemas de Fastify.
+`GET /api/overlay`, `POST /api/overlay/regenerate`.
+
+Fase 4A: `GET/POST /api/rules`, `DELETE /api/rules/:id`,
+`POST /api/rules/:id/toggle`, `GET /api/events`, `GET /api/moderation`,
+`POST /api/moderation/:id/approve|reject`, `GET /api/sources`,
+`POST /api/simulate`, `POST /api/manual`. Todo input se valida con esquemas de
+Fastify.
 
 ## Robustez de la cola y el overlay (fix de atascos)
 
@@ -125,8 +152,9 @@ Causas reales encontradas (leídas en el código, no supuestas):
   reinicio habría que calcular el tiempo restante del lado del servidor).
 
 Logs de depuración: con `CZERO_DEBUG=1` el servidor imprime cada `play` con la
-cantidad de overlays destinatarios, cada transición de la cola y cada mensaje
-descartado. Nunca se registra la clave del overlay.
+cantidad de overlays destinatarios, cada transición de la cola, cada mensaje
+descartado y cada evento procesado por el motor de reglas. Nunca se registra la
+clave del overlay.
 
 ## Decisiones tomadas
 
@@ -136,7 +164,13 @@ descartado. Nunca se registra la clave del overlay.
 - **Cola en vivo por polling (1 s)** en vez de SSE o WebSocket: es una app local
   de un solo usuario y el costo es despreciable; evita conexiones de larga vida y
   los problemas de cierre que traen en los tests. Se consulta el `GET /api/state`
-  que ya existía. Si más adelante hiciera falta, se puede migrar a SSE.
+  que ya existía. Si más adelante hiciera falta, se puede migrar a SSE. La
+  **moderación y el historial** también usan polling (2 s), por la misma razón.
+- **`resolve` de moderación en memoria**: cuando un evento de origen viene de una
+  plataforma que soporta marcar el canje como cumplido/rechazado, ese callback vive
+  **en memoria** y se pierde al reiniciar el servidor. Es aceptable mientras no
+  haya ninguna plataforma real conectada (Fase 4A); en la Fase 4B habrá que
+  persistir el `eventId` y reintentar. Ver `docs/rules.md`.
 - **Assets de `/web` públicos**: el HTML, Alpine (archivo local, sin CDN), CSS y JS
   del dashboard se sirven sin sesión; **los datos** salen siempre por `/api`, que
   sí está protegida. La ruta `/` (dashboard) redirige a `/login` sin sesión.
@@ -159,11 +193,13 @@ descartado. Nunca se registra la clave del overlay.
 
 Las verificaciones de `src/server/web-assets.test.ts` son **estáticas** (orden de
 los `<script>`, existencia de los archivos, favicon). No cubren el render real de
-Alpine, el comportamiento de `<video>` (seek del recorte), el panel de la cola ni
-el cambio de configuración en vivo. Eso hay que probarlo a mano en el navegador.
-Una prueba real con Playwright cubriría esto, pero no se instala sin confirmación.
+Alpine, el comportamiento de `<video>` (seek del recorte), el panel de la cola, el
+formulario de reglas, la tabla de moderación, el historial ni el cambio de
+configuración en vivo. Eso hay que probarlo a mano en el navegador. Una prueba real
+con Playwright cubriría esto, pero no se instala sin confirmación.
 
 ## Pendiente
 
 - Sesiones persistentes, si se decide.
 - Migrar la cola en vivo a SSE si el polling molesta.
+- Persistir las resoluciones de canjes pendientes (Fase 4B).

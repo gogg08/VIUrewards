@@ -19,6 +19,8 @@ export interface DownloadJob {
   clipId?: string;
   title?: string;
   message?: string;
+  /** Etiqueta del trabajo (p. ej. el id de una propuesta de moderación). */
+  tag?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -55,6 +57,13 @@ export interface DownloadJobManagerOptions {
   maxJobs?: number;
 }
 
+export interface CreateJobOptions {
+  /** Etiqueta para identificar el trabajo por fuera (p. ej. una propuesta). */
+  tag?: string;
+  /** Se llama cuando el trabajo termina (listo o con error). */
+  onDone?: (job: DownloadJob) => void;
+}
+
 const DEFAULT_MAX_JOBS = 50;
 
 function snapshot(job: DownloadJob): DownloadJob {
@@ -69,6 +78,7 @@ export class DownloadJobManager {
   private readonly onReady?: (clip: Clip, job: DownloadJob) => void;
   private readonly run?: MediaOptions["run"];
   private readonly maxJobs: number;
+  private readonly onDone = new Map<string, (job: DownloadJob) => void>();
 
   constructor(options: DownloadJobManagerOptions) {
     this.mediaDir = options.mediaDir;
@@ -80,10 +90,18 @@ export class DownloadJobManager {
   }
 
   /** Crea un trabajo y arranca la descarga en segundo plano. */
-  create(url: string): DownloadJob {
+  create(url: string, options: CreateJobOptions = {}): DownloadJob {
     const now = Date.now();
-    const job: DownloadJob = { id: randomUUID(), url, status: "queued", createdAt: now, updatedAt: now };
+    const job: DownloadJob = {
+      id: randomUUID(),
+      url,
+      status: "queued",
+      tag: options.tag,
+      createdAt: now,
+      updatedAt: now,
+    };
     this.jobs.set(job.id, job);
+    if (options.onDone) this.onDone.set(job.id, options.onDone);
     void this.runJob(job);
     return snapshot(job);
   }
@@ -124,6 +142,11 @@ export class DownloadJobManager {
         message: error instanceof Error ? error.message : "Error inesperado al descargar.",
       });
     } finally {
+      const onDone = this.onDone.get(job.id);
+      if (onDone) {
+        this.onDone.delete(job.id);
+        onDone(snapshot(job));
+      }
       this.prune();
     }
   }

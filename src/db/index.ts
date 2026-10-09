@@ -30,3 +30,61 @@ export {
   type ClipRecord,
   type ReconcileResult,
 } from "./clips.ts";
+
+export {
+  deleteRule,
+  getRuleRecord,
+  listRules,
+  toRule,
+  upsertRule,
+  type RuleRecord,
+} from "./rules.ts";
+
+export {
+  addHistory,
+  listHistory,
+  pruneHistory,
+  pruneHistoryByAge,
+  type EventHistoryEntry,
+  type EventHistoryRecord,
+} from "./history.ts";
+
+export {
+  countPendingProposals,
+  findPendingProposalByUrl,
+  getProposal,
+  insertProposal,
+  listProposals,
+  updateProposalStatus,
+  type ProposalPatch,
+  type ProposalRecord,
+} from "./proposals.ts";
+
+export {
+  deletePlatformAccount,
+  getPlatformAccount,
+  upsertPlatformAccount,
+  type PlatformAccountRecord,
+  type PlatformAccountState,
+  type PlatformCredentials,
+  type PlatformTokens,
+} from "./platform-accounts.ts";
+
+export {
+  forgetProcessedEvent,
+  hasProcessedEvent,
+  listManagedRewards,
+  markEventProcessed,
+  markRewardManaged,
+  pruneProcessedEvents,
+  unmarkRewardManaged,
+} from "./processed-events.ts";
+
+export {
+  countRedemptions,
+  getRedemption,
+  insertRedemption,
+  listRedemptions,
+  updateRedemptionStatus,
+  type RedemptionRecord,
+} from "./redemptions.ts";

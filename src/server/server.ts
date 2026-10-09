@@ -10,7 +10,7 @@
  * Nada de esto asume una plataforma: la cola y el overlay son agnósticos.
  */
 
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,16 +20,24 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 
 import { AlertQueue, QueueInputError, validateTrim } from "../queue/index.ts";
 import {
+  addHistory,
   deleteClip as deleteClipRow,
+  deleteRule,
   getClip,
   getOrCreateSecret,
+  getRuleRecord,
   listClips,
+  listHistory,
+  listProposals,
+  listRules,
   openMemoryDatabase,
   renameClip,
   setClipTrim,
   setSetting,
   SETTING_OVERLAY_KEY,
+  toRule,
   upsertClip,
+  upsertRule,
   type SqliteDatabase,
 } from "../db/index.ts";
 import {
@@ -44,6 +52,17 @@ import {
 import { parseCookies, serializeCookie } from "./cookies.ts";
 import { DownloadJobManager, type MediaPassthroughOptions } from "./jobs.ts";
 import { DEFAULT_PORT, readSettings, validateSettingsPatch, writeSettings } from "./settings.ts";
+import {
+  EVENT_TYPES,
+  ManualEventSource,
+  SimulatedEventSource,
+  type EventSource,
+  type EventType,
+  type NormalizedEvent,
+} from "../events/index.ts";
+import { ModerationService, type ModerationLimits } from "../moderation/index.ts";
+import { RuleEngine, validateRuleInput } from "../rules/index.ts";
+import { validateUrl } from "../media/validate-url.ts";
 import type { Clip, MediaOptions } from "../media/index.ts";
 import { attachWebSocket } from "./ws.ts";
 
@@ -77,6 +96,8 @@ export interface ServerOptions {
    * overlay conectado. En tests headless (sin socket) se pasa `false`.
    */
   requireOverlay?: boolean;
+  /** Reloj inyectable (cooldowns del motor de reglas), para tests. */
+  now?: () => number;
 }
 
 export interface OverlayInfo {
@@ -90,6 +111,11 @@ export interface AppServer {
   auth: AuthManager;
   jobs: DownloadJobManager;
   db: SqliteDatabase;
+  engine: RuleEngine;
+  moderation: ModerationService;
+  sources: EventSource[];
+  manualSource: ManualEventSource;
+  simulatedSource: SimulatedEventSource;
   getOverlayKey(): string;
   start(): Promise<{ port: number; host: string; url: string; overlayUrl: string; dashboardUrl: string }>;
   stop(): Promise<void>;
@@ -152,8 +178,114 @@ const settingsSchema = {
       items: { type: "string", minLength: 1, maxLength: 253 },
     },
     port: { type: "integer", minimum: 1024, maximum: 65535 },
+    moderationMaxPending: { type: "integer", minimum: 0, maximum: 500 },
+    moderationMaxPendingPerUser: { type: "integer", minimum: 0, maximum: 100 },
+    eventHistoryMax: { type: "integer", minimum: 10, maximum: 5000 },
   },
 } as const;
+
+const ruleSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["name", "trigger", "action"],
+  properties: {
+    id: { type: "string", minLength: 1, maxLength: 64 },
+    name: { type: "string", minLength: 1, maxLength: 100 },
+    enabled: { type: "boolean" },
+    trigger: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type"],
+      properties: {
+        type: { type: "string", enum: [...EVENT_TYPES] },
+        command: { type: "string", minLength: 1, maxLength: 100 },
+        rewardId: { type: "string", minLength: 1, maxLength: 200 },
+        minAmount: { type: "number", minimum: 0 },
+      },
+    },
+    conditions: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        permission: { type: "string", enum: ["everyone", "subs", "mods"] },
+        cooldownSec: { type: "integer", minimum: 0, maximum: 86400 },
+        userCooldownSec: { type: "integer", minimum: 0, maximum: 86400 },
+      },
+    },
+    action: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind"],
+      properties: {
+        kind: { type: "string", enum: ["play_clip", "submit_url"] },
+        clipId: { type: "string", maxLength: 128 },
+        priority: { type: "number" },
+        volume: { type: "number", minimum: 0, maximum: 1 },
+        maxDurationSec: { type: "number", minimum: 1 },
+        autoApprove: { type: "boolean" },
+      },
+    },
+  },
+} as const;
+
+const simulateSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["type"],
+  properties: {
+    type: { type: "string", enum: [...EVENT_TYPES] },
+    userId: { type: "string", maxLength: 100 },
+    userName: { type: "string", maxLength: 100 },
+    roles: { type: "array", maxItems: 10, items: { type: "string", maxLength: 30 } },
+    command: { type: "string", maxLength: 100 },
+    args: { type: "array", maxItems: 20, items: { type: "string", maxLength: 500 } },
+    rewardId: { type: "string", maxLength: 200 },
+    rewardTitle: { type: "string", maxLength: 200 },
+    userInput: { type: "string", maxLength: 2048 },
+    amount: { type: "number", minimum: 0 },
+  },
+} as const;
+
+const manualSchema = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    userId: { type: "string", maxLength: 100 },
+    userName: { type: "string", maxLength: 100 },
+    roles: { type: "array", maxItems: 10, items: { type: "string", maxLength: 30 } },
+  },
+} as const;
+
+interface SimulateBody {
+  type: EventType;
+  userId?: string;
+  userName?: string;
+  roles?: string[];
+  command?: string;
+  args?: string[];
+  rewardId?: string;
+  rewardTitle?: string;
+  userInput?: string;
+  amount?: number;
+}
+
+/** Arma el payload de un evento simulado según su tipo (fuente local, sin plataforma). */
+function buildSimulatedPayload(body: SimulateBody): Record<string, unknown> {
+  if (body.type === "chat_command") {
+    return { command: body.command ?? "", args: body.args ?? [] };
+  }
+  if (body.type === "reward_redeemed") {
+    return {
+      rewardId: body.rewardId ?? "",
+      rewardTitle: body.rewardTitle ?? "",
+      userInput: body.userInput ?? "",
+    };
+  }
+  const payload: Record<string, unknown> = {};
+  if (body.amount !== undefined) payload.amount = body.amount;
+  if (body.userInput !== undefined) payload.userInput = body.userInput;
+  return payload;
+}
 
 export async function createServer(options: ServerOptions): Promise<AppServer> {
   const host = options.host ?? "127.0.0.1";
@@ -215,6 +347,96 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     },
   });
   if (requireOverlay) queue.setPlayerReady(hub.clientCount() > 0);
+
+  // --- Moderación, motor de reglas y fuentes locales (Fase 4A) ---------------
+
+  const debug = process.env.CZERO_DEBUG === "1";
+
+  const moderation = new ModerationService({
+    db,
+    limits: (): ModerationLimits => {
+      const settings = readSettings(db);
+      return {
+        maxPendingGlobal: settings.moderationMaxPending,
+        maxPendingPerUser: settings.moderationMaxPendingPerUser,
+      };
+    },
+    validate: (raw) => {
+      const result = validateUrl(raw, { allowedDomains: readSettings(db).allowedDomains });
+      return result.ok ? { ok: true, url: result.url } : { ok: false, reason: result.reason };
+    },
+    startDownload: (proposal) => {
+      jobs.create(proposal.url, {
+        tag: proposal.id,
+        onDone: (job) => {
+          moderation.markDownloadResult(
+            proposal.id,
+            job.status === "ready" && job.clipId
+              ? { ok: true, clipId: job.clipId }
+              : { ok: false, message: job.message ?? "La descarga falló." },
+          );
+        },
+      });
+    },
+    onReady: (proposal, clipId) => {
+      const settings = readSettings(db);
+      queue.enqueue({
+        clipId,
+        volume: settings.globalVolume / 100,
+        maxDurationSec: settings.defaultMaxDurationSec,
+        label: proposal.userName,
+      });
+    },
+  });
+
+  const manualSource = new ManualEventSource();
+  const simulatedSource = new SimulatedEventSource();
+  const sources: EventSource[] = [manualSource, simulatedSource];
+
+  const engine = new RuleEngine({
+    queue,
+    moderation,
+    now: options.now,
+    resolveEvent: async (event, outcome) => {
+      const source = sources.find(
+        (item) => item.platform === event.platform && typeof item.resolve === "function",
+      );
+      if (source?.resolve) await source.resolve(event.id, outcome);
+    },
+    logger: debug
+      ? (entry) =>
+          console.log(
+            `[rules] ${entry.kind} ${entry.eventId}${entry.ruleId ? ` (${entry.ruleId})` : ""}${
+              entry.detail ? `: ${entry.detail}` : ""
+            }`,
+          )
+      : undefined,
+  });
+  engine.setRules(listRules(db).map(toRule));
+
+  const recordEvent = async (event: NormalizedEvent): Promise<void> => {
+    const result = await engine.handle(event);
+    const settings = readSettings(db);
+    addHistory(
+      db,
+      {
+        eventId: event.id,
+        platform: event.platform,
+        type: event.type,
+        userId: event.user.id,
+        userName: event.user.name,
+        payloadJson: JSON.stringify(event.payload),
+        eventTs: event.timestamp,
+        ruleId: result.ruleId ?? null,
+        outcome: result.outcome,
+        reason: result.reason ?? null,
+        createdAt: new Date().toISOString(),
+      },
+      settings.eventHistoryMax,
+    );
+  };
+
+  for (const source of sources) source.onEvent((event) => void recordEvent(event));
 
   // --- Helpers de autenticación del overlay ---------------------------------
 
@@ -580,6 +802,141 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       setSetting(db, SETTING_OVERLAY_KEY, overlayKey);
       return { ok: true, overlay: { key: overlayKey, url: overlayUrlFrom(request) } satisfies OverlayInfo };
     });
+
+    // --- Reglas (Fase 4A) ----------------------------------------------------
+
+    const listSourceInfo = (): Array<{
+      id: string;
+      platform: string;
+      capabilities: EventSource["capabilities"];
+    }> => sources.map((source) => ({ id: source.id, platform: source.platform, capabilities: source.capabilities }));
+
+    api.get("/api/rules", async () => ({ ok: true, rules: listRules(db), sources: listSourceInfo() }));
+
+    api.post<{ Body: { id?: string } & Record<string, unknown> }>(
+      "/api/rules",
+      { schema: { body: ruleSchema } },
+      async (request, reply) => {
+        const validation = validateRuleInput(request.body);
+        if (!validation.ok) {
+          return reply.code(400).send({ ok: false, reason: "INVALID_RULE", message: validation.message });
+        }
+        const id =
+          typeof request.body.id === "string" && request.body.id.length > 0 ? request.body.id : randomUUID();
+        const existing = getRuleRecord(db, id);
+        const timestamp = new Date().toISOString();
+        upsertRule(db, {
+          id,
+          name: validation.value.name,
+          enabled: validation.value.enabled,
+          trigger: validation.value.trigger,
+          conditions: validation.value.conditions,
+          action: validation.value.action,
+          createdAt: existing?.createdAt ?? timestamp,
+          updatedAt: timestamp,
+        });
+        engine.setRules(listRules(db).map(toRule));
+        return { ok: true, rule: getRuleRecord(db, id) };
+      },
+    );
+
+    api.delete<{ Params: { id: string } }>("/api/rules/:id", async (request, reply) => {
+      if (!deleteRule(db, request.params.id)) {
+        return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+      }
+      engine.setRules(listRules(db).map(toRule));
+      return { ok: true };
+    });
+
+    api.post<{ Params: { id: string }; Body: { enabled: boolean } }>(
+      "/api/rules/:id/toggle",
+      {
+        schema: {
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["enabled"],
+            properties: { enabled: { type: "boolean" } },
+          },
+        },
+      },
+      async (request, reply) => {
+        const record = getRuleRecord(db, request.params.id);
+        if (!record) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+        upsertRule(db, { ...record, enabled: request.body.enabled, updatedAt: new Date().toISOString() });
+        engine.setRules(listRules(db).map(toRule));
+        return { ok: true, rule: getRuleRecord(db, request.params.id) };
+      },
+    );
+
+    // --- Historial de eventos ------------------------------------------------
+
+    api.get<{ Querystring: { limit?: string } }>("/api/events", async (request) => {
+      const limit = Number(request.query.limit);
+      return { ok: true, events: listHistory(db, Number.isInteger(limit) && limit > 0 ? limit : 200) };
+    });
+
+    // --- Moderación de URLs propuestas ---------------------------------------
+
+    api.get<{ Querystring: { status?: string } }>("/api/moderation", async (request) => ({
+      ok: true,
+      proposals: listProposals(db, { status: request.query.status, limit: 200 }),
+    }));
+
+    api.post<{ Params: { id: string } }>("/api/moderation/:id/approve", async (request, reply) => {
+      const result = moderation.approve(request.params.id);
+      if (!result.ok) {
+        const code = result.reason === "NOT_FOUND" ? 404 : result.reason === "INVALID_TRANSITION" ? 409 : 400;
+        return reply.code(code).send({ ok: false, reason: result.reason, message: result.message });
+      }
+      return { ok: true, proposal: result.proposal };
+    });
+
+    api.post<{ Params: { id: string } }>("/api/moderation/:id/reject", async (request, reply) => {
+      const result = moderation.reject(request.params.id);
+      if (!result.ok) {
+        const code = result.reason === "NOT_FOUND" ? 404 : 409;
+        return reply.code(code).send({ ok: false, reason: result.reason, message: result.message });
+      }
+      return { ok: true, proposal: result.proposal };
+    });
+
+    // --- Simulación de eventos (sin plataforma) ------------------------------
+
+    api.get("/api/sources", async () => ({ ok: true, sources: listSourceInfo() }));
+
+    api.post<{ Body: SimulateBody }>(
+      "/api/simulate",
+      { schema: { body: simulateSchema } },
+      async (request) => {
+        const body = request.body;
+        const event = simulatedSource.trigger({
+          type: body.type,
+          user: {
+            id: body.userId ?? "sim-user",
+            name: body.userName ?? "Espectador",
+            roles: body.roles ?? [],
+          },
+          payload: buildSimulatedPayload(body),
+        });
+        return { ok: true, eventId: event.id };
+      },
+    );
+
+    api.post<{ Body: { userId?: string; userName?: string; roles?: string[] } }>(
+      "/api/manual",
+      { schema: { body: manualSchema } },
+      async (request) => {
+        const event = manualSource.trigger({
+          user: {
+            id: request.body.userId ?? "manual-user",
+            name: request.body.userName ?? "Manual",
+            roles: request.body.roles ?? [],
+          },
+        });
+        return { ok: true, eventId: event.id };
+      },
+    );
   });
 
   // --- Arranque / parada ----------------------------------------------------
@@ -590,6 +947,11 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     auth,
     jobs,
     db,
+    engine,
+    moderation,
+    sources,
+    manualSource,
+    simulatedSource,
     getOverlayKey: () => overlayKey,
     async start() {
       await app.listen({ port, host });
