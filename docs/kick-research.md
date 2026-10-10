@@ -671,6 +671,24 @@ Hasta que se complete, cada dato sigue siendo **[TODO(verificar)]**.
 
 **Observaciones:** _(intervalo mínimo que toleró, logs crudos relevantes, etc.)_
 
+#### 11.4.1 Mediciones desde el panel de diagnóstico (Fase 4B)
+
+Con la integración real (Fase 4B) estas mismas mediciones se obtienen del
+dashboard, sección **Plataformas → Diagnóstico**, sin depender del prototipo.
+
+**Entorno:** fecha ____ · canal ____ · puerto ____ · intervalo configurado ____ ms
+
+| # | Qué medir | Dónde sale en el panel | Resultado |
+|---|---|---|---|
+| 1 | Intervalo de polling actual | campo "Intervalo (ms)" | ____ ms |
+| 2 | Headers de rate limit observados | campo "Headers de rate limit" (última respuesta) | ____ |
+| 3 | Cantidad de respuestas 429 | campo "Respuestas 429" | ____ |
+| 4 | Latencia canje → detección (últ/min/típ/máx) | campo "Latencia (últ/min/típ/máx) ms" | ____ ms |
+| 5 | ¿`reject` devuelve los puntos? | saldo del redeemer antes/después de rechazar en Kick | sí / no / no verificable |
+| 6 | Último resultado / último error | campos "Último resultado" y "Último error" | ____ |
+
+**Observaciones:** _(intervalo mínimo que toleró, 429 y `Retry-After`, etc.)_
+
 ---
 
 ## 12. Notas de seguridad del prototipo

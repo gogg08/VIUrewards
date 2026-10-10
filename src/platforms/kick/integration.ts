@@ -131,6 +131,7 @@ export class KickIntegration implements PlatformIntegration {
     const account = this.oauth.getAccount();
     const credentials = account?.credentials ?? null;
     return {
+      id: this.id,
       platform: this.platform,
       name: this.name,
       state: account?.status ?? "unlinked",
@@ -172,9 +173,15 @@ export class KickIntegration implements PlatformIntegration {
   async completeLink(query: URLSearchParams): Promise<LinkComplete> {
     const result = await this.oauth.completeLink(query);
     if (!result.ok) return { ok: false, message: result.message };
-    // TODO(verificar): no hay un endpoint verificado para leer la identidad del
-    // usuario autenticado (ver docs/kick-research.md). Por ahora el vínculo queda
-    // "conectado" sin nombre de cuenta.
+    // Verificado en docs.kick.com: `GET /public/v1/users` sin ids devuelve el
+    // usuario autorizado (scope user:read). Si falla, el vínculo queda igual y el
+    // nombre simplemente no se muestra.
+    try {
+      const me = await this.api.getSelfUser();
+      if (me) this.oauth.setAccount({ id: String(me.user_id), name: me.name });
+    } catch (error) {
+      this.logger?.(`kick: no se pudo leer la cuenta vinculada (${error instanceof Error ? error.message : "error"})`);
+    }
     this.onStateChange?.();
     await this.start();
     return { ok: true };
@@ -190,10 +197,12 @@ export class KickIntegration implements PlatformIntegration {
     if (!this.oauth.isLinked()) return { ok: false, message: "La cuenta no está vinculada." };
     try {
       const rewards = await this.api.listRewards();
+      const account = this.status();
       return {
         ok: true,
         message: "Conexión correcta con Kick.",
         rewards: rewards.length,
+        accountName: account.accountName ?? undefined,
       };
     } catch (error) {
       const { message } = fromApiError(error, "test");

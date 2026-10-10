@@ -1,4 +1,4 @@
-# Dashboard local (Fase 3 + Fase 4A)
+# Dashboard local (Fase 3 + Fase 4A + Fase 4B)
 
 El dashboard es la interfaz que usa el streamer en el navegador. Todo corre en su
 PC; el servidor escucha solo en `127.0.0.1`.
@@ -71,6 +71,28 @@ Todo el texto de la interfaz está en español. Los nombres de los clips se
 insertan con bindings de texto (Alpine `x-text`), que escapan HTML; nunca con
 `x-html`.
 
+### Sección nueva (Fase 4B, integración real con Kick)
+
+- **Plataformas**: vínculo de la cuenta por OAuth con PKCE, con estado visible
+  (no vinculado / conectado / requiere volver a vincular). Carga del **Client ID**
+  y **Client Secret** (el secret es **de solo escritura**: nunca se devuelve ni se
+  loguea). Vincular abre la página de Kick; el callback valida solo con
+  `state` + PKCE y redirige al dashboard. Desvincular borra los tokens pero
+  conserva las credenciales.
+- **Recompensas del canal**: listar, crear, editar y borrar recompensas con la API
+  oficial. Al crear se puede asociar una regla en el mismo formulario: **modo A**
+  clip fijo (`PlayClip`) o **modo B** URL del espectador (`SubmitUserUrl`). Solo se
+  editan o borran las recompensas creadas por esta app (se marcan "De otra app").
+- **Canjes pendientes antiguos**: los que superan la antigüedad configurada, con
+  botones **Rechazar todos** y **Procesar ahora**.
+- **Diagnóstico**: intervalo de polling, último chequeo/resultado/error, latencias
+  de detección (últ/min/típ/máx), cantidad de respuestas 429 y headers de rate
+  limit observados. Sin tokens ni secretos.
+- **Configuración**: se agregaron **intervalo de polling de canjes**, **al omitir
+  un canje**, **canjes con más de N minutos** y **qué hacer con canjes viejos**.
+
+Guía de alta paso a paso: `docs/kick-setup.md`.
+
 ## Archivos y datos
 
 - `data/app.db`: SQLite local (tablas `clips`, `settings`, `rules`,
@@ -114,6 +136,14 @@ Fase 4A: `GET/POST /api/rules`, `DELETE /api/rules/:id`,
 `POST /api/moderation/:id/approve|reject`, `GET /api/sources`,
 `POST /api/simulate`, `POST /api/manual`. Todo input se valida con esquemas de
 Fastify.
+
+Fase 4B: `GET /api/platforms`, `POST/DELETE /api/platforms/:id/credentials`,
+`POST /api/platforms/:id/link|unlink|test`, `GET /api/platforms/:id/diagnostics`,
+`GET/POST /api/platforms/:id/rewards`, `PATCH`/`DELETE
+/api/platforms/:id/rewards/:rewardId`, `GET /api/platforms/:id/redemptions`,
+`POST /api/platforms/:id/redemptions/reject-all|process-now`. La ruta
+`GET /callback` es **pública** (no usa cookie): valida solo `state` + PKCE y
+redirige al dashboard.
 
 ## Robustez de la cola y el overlay (fix de atascos)
 
@@ -198,8 +228,16 @@ formulario de reglas, la tabla de moderación, el historial ni el cambio de
 configuración en vivo. Eso hay que probarlo a mano en el navegador. Una prueba real
 con Playwright cubriría esto, pero no se instala sin confirmación.
 
+En la Fase 4B se sumó `src/server/platforms-ui.test.ts`, que verifica
+**estáticamente** que cada handler `@click` del HTML está definido en `app.js`
+(regresión del bug de métodos referenciados pero sin definir), que la sección
+Plataformas existe y que no hay tokens de OAuth en el frontend. Sigue sin cubrir
+el render real: el vínculo OAuth contra Kick, la tabla de recompensas, el panel de
+diagnóstico y el flujo de canjes hay que probarlos a mano.
+
 ## Pendiente
 
 - Sesiones persistentes, si se decide.
 - Migrar la cola en vivo a SSE si el polling molesta.
 - Persistir las resoluciones de canjes pendientes (Fase 4B).
+- Medir los rate limits reales de Kick y completar §11.4 de `docs/kick-research.md`.

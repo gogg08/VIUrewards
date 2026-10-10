@@ -81,6 +81,12 @@ export interface ModerationOptions {
   onReady?: (proposal: ProposalRecord, clipId: string) => void;
   /** Se llama cuando la descarga falla (para decidir el canje de origen). */
   onFailed?: (proposal: ProposalRecord) => void;
+  /**
+   * Se llama cuando el evento de origen queda resuelto (aceptado, rechazado o
+   * fallido), una sola vez por propuesta. El coordinador de canjes escucha acá
+   * para mantener el estado del canje en sincronía. No resuelve nada por sí mismo.
+   */
+  onSettled?: (proposal: ProposalRecord, outcome: "accept" | "reject" | "failed") => void;
   /** Valida y normaliza una URL. Por defecto usa la whitelist del módulo de media. */
   validate?: (raw: string) => ValidationResult;
   now?: () => number;
@@ -114,6 +120,7 @@ export class ModerationService implements ModerationSink {
   private readonly startDownload: (proposal: ProposalRecord) => void;
   private readonly onReady?: (proposal: ProposalRecord, clipId: string) => void;
   private readonly onFailed?: (proposal: ProposalRecord) => void;
+  private readonly onSettled?: (proposal: ProposalRecord, outcome: "accept" | "reject" | "failed") => void;
   private readonly validate: (raw: string) => ValidationResult;
   private readonly now: () => number;
   private readonly maxUrlLength: number;
@@ -126,6 +133,7 @@ export class ModerationService implements ModerationSink {
     this.startDownload = options.startDownload;
     this.onReady = options.onReady;
     this.onFailed = options.onFailed;
+    this.onSettled = options.onSettled;
     this.validate = options.validate ?? defaultValidate;
     this.now = options.now ?? (() => Date.now());
     this.maxUrlLength = options.maxUrlLength ?? DEFAULT_MAX_URL_LENGTH;
@@ -159,7 +167,7 @@ export class ModerationService implements ModerationSink {
     const candidate = extractUrlCandidate(input.userInput ?? "", this.maxUrlLength);
     if (!candidate) {
       const proposal = this.record(input, (input.userInput ?? "").slice(0, MAX_STORED_TEXT), "rejected", "SIN_URL");
-      this.rejectOrigin(input.resolve);
+      this.rejectOrigin(proposal, input.resolve);
       return { status: "rejected", proposal, reason: "SIN_URL" };
     }
 
@@ -167,7 +175,7 @@ export class ModerationService implements ModerationSink {
     if (!validation.ok) {
       const reason = validation.reason as ModerationRejectReason;
       const proposal = this.record(input, candidate, "rejected", reason);
-      this.rejectOrigin(input.resolve);
+      this.rejectOrigin(proposal, input.resolve);
       return { status: "rejected", proposal, reason };
     }
 
@@ -176,7 +184,7 @@ export class ModerationService implements ModerationSink {
     // Deduplicación: ya hay una propuesta pendiente con la misma URL.
     if (findPendingProposalByUrl(this.db, normalized)) {
       const proposal = this.record(input, normalized, "rejected", "DUPLICADA");
-      this.rejectOrigin(input.resolve);
+      this.rejectOrigin(proposal, input.resolve);
       return { status: "rejected", proposal, reason: "DUPLICADA" };
     }
 
@@ -184,12 +192,12 @@ export class ModerationService implements ModerationSink {
     const limits = this.limits();
     if (countPendingProposals(this.db) >= limits.maxPendingGlobal) {
       const proposal = this.record(input, normalized, "rejected", "LIMITE_GLOBAL");
-      this.rejectOrigin(input.resolve);
+      this.rejectOrigin(proposal, input.resolve);
       return { status: "rejected", proposal, reason: "LIMITE_GLOBAL" };
     }
     if (countPendingProposals(this.db, input.userId) >= limits.maxPendingPerUser) {
       const proposal = this.record(input, normalized, "rejected", "LIMITE_USUARIO");
-      this.rejectOrigin(input.resolve);
+      this.rejectOrigin(proposal, input.resolve);
       return { status: "rejected", proposal, reason: "LIMITE_USUARIO" };
     }
 
@@ -278,13 +286,16 @@ export class ModerationService implements ModerationSink {
     updateProposalStatus(this.db, id, "failed", { reason: message });
     const failed = getProposal(this.db, id) as ProposalRecord;
     this.onFailed?.(failed);
+    this.onSettled?.(failed, "failed");
   }
 
-  private rejectOrigin(resolve: ResolveFn | undefined): void {
-    if (!resolve) return;
-    void resolve("reject").catch(() => {
-      /* El fallo al resolver no debe romper la moderación. */
-    });
+  private rejectOrigin(proposal: ProposalRecord, resolve: ResolveFn | undefined): void {
+    if (resolve) {
+      void resolve("reject").catch(() => {
+        /* El fallo al resolver no debe romper la moderación. */
+      });
+    }
+    this.onSettled?.(proposal, "reject");
   }
 
   /**
@@ -296,11 +307,19 @@ export class ModerationService implements ModerationSink {
   }
 
   private callResolve(id: string, outcome: "accept" | "reject"): void {
+    this.notifySettled(id, outcome);
     const resolve = this.resolvers.get(id);
     if (!resolve) return;
     this.resolvers.delete(id);
     void resolve(outcome).catch(() => {
       /* El fallo al resolver no debe romper la moderación. */
     });
+  }
+
+  /** Avisa el resultado final de la propuesta (una vez por transición terminal). */
+  private notifySettled(id: string, outcome: "accept" | "reject" | "failed"): void {
+    if (!this.onSettled) return;
+    const proposal = getProposal(this.db, id);
+    if (proposal) this.onSettled(proposal, outcome);
   }
 }

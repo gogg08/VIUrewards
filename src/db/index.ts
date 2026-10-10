@@ -52,6 +52,7 @@ export {
 export {
   countPendingProposals,
   findPendingProposalByUrl,
+  findProposalByEvent,
   getProposal,
   insertProposal,
   listProposals,

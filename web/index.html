@@ -209,6 +209,29 @@
               <span>Máx. eventos en el historial</span>
               <input type="number" min="10" max="5000" x-model.number="settings.eventHistoryMax" />
             </label>
+            <label class="field">
+              <span>Intervalo de polling de canjes (ms)</span>
+              <input type="number" min="1000" max="60000" x-model.number="settings.redemptionsPollIntervalMs" />
+            </label>
+            <label class="field">
+              <span>Al omitir un canje</span>
+              <select x-model="settings.redemptionsOnSkip">
+                <option value="leave_pending">Dejarlo pendiente</option>
+                <option value="reject">Rechazarlo (recupera los puntos si Kick lo permite)</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>Canjes con más de (min)</span>
+              <input type="number" min="0" max="1440" x-model.number="settings.redemptionsOldMinutes" />
+            </label>
+            <label class="field">
+              <span>Qué hacer con canjes viejos</span>
+              <select x-model="settings.redemptionsOldAction">
+                <option value="ignore">Ignorar (decidir a mano)</option>
+                <option value="reject">Rechazar</option>
+                <option value="process">Procesar</option>
+              </select>
+            </label>
           </div>
 
           <label class="field">
@@ -510,6 +533,291 @@
             <button @click="manual()">Evento manual</button>
             <span class="ok" x-show="simulateMessage" x-text="simulateMessage"></span>
           </div>
+        </section>
+
+        <!-- Plataformas (Fase 4B) -->
+        <section>
+          <div class="section-head">
+            <h2>Plataformas</h2>
+            <span class="muted">Vinculá tu cuenta y administrá tus recompensas</span>
+          </div>
+
+          <p class="empty" x-show="platforms.length === 0">No hay plataformas disponibles.</p>
+
+          <div class="row" x-show="platforms.length > 1">
+            <template x-for="item in platforms" :key="item.id">
+              <button
+                :class="item.id === activePlatformId ? 'primary' : ''"
+                @click="selectPlatform(item)"
+                x-text="item.name"
+              ></button>
+            </template>
+          </div>
+
+          <template x-if="activePlatform">
+            <div class="platform">
+              <div class="section-head">
+                <h3>
+                  <span x-text="activePlatform.name"></span>
+                  <span
+                    class="badge"
+                    :class="platformStateClass(activePlatform)"
+                    x-text="platformStateLabel(activePlatform)"
+                  ></span>
+                </h3>
+                <div class="row">
+                  <button @click="testConnection(activePlatform)">Probar conexión</button>
+                  <button @click="loadDiagnostics(activePlatform)">Ver diagnóstico</button>
+                </div>
+              </div>
+
+              <p class="muted" x-show="activePlatform.state === 'connected' && activePlatform.accountName">
+                Conectado como <strong x-text="activePlatform.accountName"></strong>
+              </p>
+              <p class="warn" x-show="activePlatform.state === 'requires_relink'">
+                La sesión venció o fue revocada. Volvé a vincular la cuenta.
+              </p>
+              <p class="error" x-show="platformMessage" x-text="platformMessage"></p>
+              <p class="ok" x-show="platformNotice" x-text="platformNotice"></p>
+
+              <div class="settings-grid">
+                <label class="field">
+                  <span>Client ID</span>
+                  <input type="text" maxlength="256" x-model="platformForm.clientId" placeholder="Client ID de tu app" />
+                </label>
+                <label class="field">
+                  <span>Client Secret <span class="muted">(se guarda y no se vuelve a mostrar)</span></span>
+                  <input
+                    type="password"
+                    maxlength="512"
+                    x-model="platformForm.clientSecret"
+                    :placeholder="activePlatform.hasCredentials ? '•••••••• (guardado)' : 'Client Secret de tu app'"
+                  />
+                </label>
+              </div>
+              <div class="row">
+                <button class="primary" @click="saveCredentials(activePlatform)">Guardar credenciales</button>
+                <button @click="beginLink(activePlatform)" :disabled="!activePlatform.hasCredentials">Vincular cuenta</button>
+                <button @click="unlink(activePlatform)" :disabled="activePlatform.state === 'unlinked'">Desvincular</button>
+                <button class="danger" @click="clearCredentials(activePlatform)" :disabled="!activePlatform.hasCredentials">
+                  Borrar credenciales
+                </button>
+              </div>
+              <p class="muted">
+                El redirect de la app se registra como <code>http://localhost:PUERTO/callback</code>: si cambiás el
+                puerto, actualizalo en la app de desarrollador.
+              </p>
+
+              <!-- Recompensas del canal -->
+              <h3>Recompensas del canal</h3>
+              <div class="row">
+                <button
+                  class="primary"
+                  @click="newReward()"
+                  x-show="!rewardForm"
+                  :disabled="activePlatform.state !== 'connected'"
+                >
+                  Nueva recompensa
+                </button>
+                <button @click="loadRewards(activePlatform)" :disabled="activePlatform.state !== 'connected'">Recargar</button>
+              </div>
+              <p class="empty" x-show="rewards.length === 0 && !rewardForm">
+                No hay recompensas para mostrar. Si la cuenta no está vinculada, vinculala primero.
+              </p>
+
+              <template x-if="rewardForm">
+              <div class="rule-form">
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>Título (máx. 50)</span>
+                    <input type="text" maxlength="50" x-model="rewardForm.title" />
+                  </label>
+                  <label class="field">
+                    <span>Costo (puntos)</span>
+                    <input type="number" min="1" max="1000000" x-model.number="rewardForm.cost" />
+                  </label>
+                  <label class="field">
+                    <span>Descripción (máx. 200)</span>
+                    <input type="text" maxlength="200" x-model="rewardForm.description" />
+                  </label>
+                  <label class="field">
+                    <span>Color</span>
+                    <input type="text" maxlength="32" x-model="rewardForm.color" placeholder="#00e701" />
+                  </label>
+                  <label class="field">
+                    <span>Habilitada</span>
+                    <input type="checkbox" x-model="rewardForm.enabled" />
+                  </label>
+                  <label class="field">
+                    <span>Pide texto al espectador</span>
+                    <input type="checkbox" x-model="rewardForm.userInputRequired" />
+                  </label>
+                  <label class="field" x-show="!rewardForm.id">
+                    <span>Acción al canjear</span>
+                    <select x-model="rewardForm.mode">
+                      <option value="play_clip">Reproducir un clip fijo</option>
+                      <option value="submit_url">URL del espectador (moderación)</option>
+                    </select>
+                  </label>
+                  <label class="field" x-show="!rewardForm.id && rewardForm.mode === 'play_clip'">
+                    <span>Clip</span>
+                    <select x-model="rewardForm.clipId">
+                      <option value="">Elegí un clip</option>
+                      <template x-for="clip in clips" :key="clip.id">
+                        <option :value="clip.id" x-text="clip.title"></option>
+                      </template>
+                    </select>
+                  </label>
+                  <label class="field" x-show="!rewardForm.id && rewardForm.mode === 'play_clip'">
+                    <span>Volumen (0 a 1)</span>
+                    <input type="number" min="0" max="1" step="0.05" x-model.number="rewardForm.volume" />
+                  </label>
+                  <label class="field" x-show="!rewardForm.id && rewardForm.mode === 'play_clip'">
+                    <span>Duración máxima (s)</span>
+                    <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
+                  </label>
+                  <label class="field" x-show="!rewardForm.id">
+                    <span>Cooldown de la regla (s)</span>
+                    <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
+                  </label>
+                </div>
+                <p class="muted" x-show="!rewardForm.id && rewardForm.mode === 'submit_url'">
+                  El modo "URL del espectador" exige que la recompensa pida texto (marcá la casilla).
+                </p>
+                <div class="row">
+                  <button class="primary" @click="saveReward(activePlatform)">Guardar recompensa</button>
+                  <button @click="cancelReward()">Cancelar</button>
+                  <span class="error" x-show="rewardMessage" x-text="rewardMessage"></span>
+                </div>
+              </div>
+              </template>
+
+              <div class="table-wrap" x-show="rewards.length > 0">
+                <table class="grid">
+                  <thead>
+                    <tr>
+                      <th>Título</th>
+                      <th>Costo</th>
+                      <th>Texto</th>
+                      <th>Regla</th>
+                      <th>Estado</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="reward in rewards" :key="reward.id">
+                      <tr>
+                        <td x-text="reward.title"></td>
+                        <td x-text="reward.cost"></td>
+                        <td x-text="reward.userInputRequired ? 'Sí' : 'No'"></td>
+                        <td x-text="rewardRuleLabel(reward)"></td>
+                        <td>
+                          <span
+                            class="badge"
+                            :class="reward.enabled ? 'ok' : 'off'"
+                            x-text="reward.enabled ? 'Habilitada' : 'Deshabilitada'"
+                          ></span>
+                          <span
+                            class="badge warn"
+                            x-show="!reward.managed"
+                            title="Solo se pueden editar las recompensas creadas por esta app"
+                          >
+                            De otra app
+                          </span>
+                        </td>
+                        <td class="actions">
+                          <button @click="editReward(reward)" :disabled="!reward.managed">Editar</button>
+                          <button class="danger" @click="deleteReward(activePlatform, reward)" :disabled="!reward.managed">
+                            Borrar
+                          </button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+
+              <!-- Canjes pendientes antiguos -->
+              <div x-show="oldRedemptions.length > 0">
+                <h3>Canjes pendientes antiguos (<span x-text="oldRedemptions.length"></span>)</h3>
+                <p class="muted">Canjes que quedaron pendientes y superan la antigüedad configurada.</p>
+                <div class="table-wrap">
+                  <table class="grid">
+                    <thead>
+                      <tr>
+                        <th>Cuándo</th>
+                        <th>Usuario</th>
+                        <th>Recompensa</th>
+                        <th>Texto</th>
+                        <th>Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <template x-for="item in oldRedemptions" :key="item.eventId">
+                        <tr>
+                          <td x-text="formatTime(item.redeemedAt)"></td>
+                          <td x-text="item.userName"></td>
+                          <td x-text="item.rewardTitle || ''"></td>
+                          <td x-text="item.userInput || ''"></td>
+                          <td x-text="item.statusLabel"></td>
+                        </tr>
+                      </template>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="row">
+                  <button class="danger" @click="rejectAllOld(activePlatform)">Rechazar todos</button>
+                  <button @click="processOld(activePlatform)">Procesar ahora</button>
+                  <span class="error" x-show="redemptionMessage" x-text="redemptionMessage"></span>
+                </div>
+              </div>
+
+              <!-- Diagnóstico -->
+              <template x-if="diagnostics">
+              <div>
+                <h3>Diagnóstico</h3>
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>Polling activo</span>
+                    <input type="text" readonly :value="diagnostics.enabled ? 'Sí' : 'No'" />
+                  </label>
+                  <label class="field">
+                    <span>Intervalo (ms)</span>
+                    <input type="text" readonly :value="diagnostics.intervalMs" />
+                  </label>
+                  <label class="field">
+                    <span>Último chequeo</span>
+                    <input
+                      type="text"
+                      readonly
+                      :value="diagnostics.lastCheckAt ? formatTime(new Date(diagnostics.lastCheckAt).toISOString()) : '—'"
+                    />
+                  </label>
+                  <label class="field">
+                    <span>Último resultado</span>
+                    <input type="text" readonly :value="diagnostics.lastResult || '—'" />
+                  </label>
+                  <label class="field">
+                    <span>Último error</span>
+                    <input type="text" readonly :value="diagnostics.lastError || '—'" />
+                  </label>
+                  <label class="field">
+                    <span>Latencia (últ/min/típ/máx) ms</span>
+                    <input type="text" readonly :value="latencyLabel()" />
+                  </label>
+                  <label class="field">
+                    <span>Respuestas 429</span>
+                    <input type="text" readonly :value="diagnostics.rateLimit429Count" />
+                  </label>
+                  <label class="field">
+                    <span>Headers de rate limit</span>
+                    <input type="text" readonly :value="rateLimitHeadersLabel()" />
+                  </label>
+                </div>
+              </div>
+              </template>
+            </div>
+          </template>
         </section>
       </main>
     </div>

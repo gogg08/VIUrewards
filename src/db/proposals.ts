@@ -128,6 +128,20 @@ export function findPendingProposalByUrl(db: SqliteDatabase, url: string): Propo
   return row ? toRecord(row) : null;
 }
 
+/** Última propuesta asociada a un evento de origen (para el ciclo de vida del canje). */
+export function findProposalByEvent(
+  db: SqliteDatabase,
+  platform: string,
+  eventId: string,
+): ProposalRecord | null {
+  const row = db
+    .prepare<ProposalRow>(
+      "SELECT * FROM proposals WHERE platform = ? AND event_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+    )
+    .get(platform, eventId);
+  return row ? toRecord(row) : null;
+}
+
 /** Cuenta propuestas pendientes; si se pasa `userId`, solo las de ese usuario. */
 export function countPendingProposals(db: SqliteDatabase, userId?: string): number {
   if (userId !== undefined) {

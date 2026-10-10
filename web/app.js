@@ -52,6 +52,10 @@ function dashboardApp() {
       moderationMaxPending: 25,
       moderationMaxPendingPerUser: 3,
       eventHistoryMax: 500,
+      redemptionsPollIntervalMs: 5000,
+      redemptionsOnSkip: "leave_pending",
+      redemptionsOldMinutes: 10,
+      redemptionsOldAction: "ignore",
     },
     settingsForm: { maxVideoMb: 100, domainsText: "" },
     settingsMessage: "",
@@ -81,6 +85,19 @@ function dashboardApp() {
       userInput: "",
     },
     simulateMessage: "",
+
+    // --- Plataformas (Fase 4B) ------------------------------------------------
+    platforms: [],
+    activePlatformId: "",
+    platformForm: { clientId: "", clientSecret: "" },
+    platformMessage: "",
+    platformNotice: "",
+    rewards: [],
+    rewardForm: null,
+    rewardMessage: "",
+    oldRedemptions: [],
+    redemptionMessage: "",
+    diagnostics: null,
 
     get downloading() {
       return this.job !== null && ["queued", "downloading", "converting"].includes(this.job.status);
@@ -120,6 +137,11 @@ function dashboardApp() {
       return ordered.length > 0 ? ordered : known;
     },
 
+    // Plataforma seleccionada en la sección Plataformas (por defecto, la primera).
+    get activePlatform() {
+      return this.platforms.find((item) => item.id === this.activePlatformId) ?? this.platforms[0] ?? null;
+    },
+
     async init() {
       await Promise.all([
         this.loadClips(),
@@ -129,14 +151,19 @@ function dashboardApp() {
         this.loadRules(),
         this.loadModeration(),
         this.loadEvents(),
+        this.loadPlatforms(),
       ]);
+      // Datos de la plataforma activa (recompensas y canjes pendientes antiguos).
+      await this.loadRewards(this.activePlatform);
+      await this.loadOldRedemptions(this.activePlatform);
       // La cola se refresca cada segundo: es una app local de un solo usuario y
       // el costo es despreciable. Ver docs/dashboard.md.
       this.queueTimer = setInterval(() => this.loadQueue(), 1000);
-      // Moderación e historial, un poco más lento (polling, misma razón).
+      // Moderación, historial y canjes pendientes, un poco más lento (polling).
       this.feedTimer = setInterval(() => {
         void this.loadModeration();
         void this.loadEvents();
+        void this.loadOldRedemptions(this.activePlatform);
       }, 2000);
     },
 
@@ -361,6 +388,10 @@ function dashboardApp() {
         moderationMaxPending: Number(this.settings.moderationMaxPending),
         moderationMaxPendingPerUser: Number(this.settings.moderationMaxPendingPerUser),
         eventHistoryMax: Number(this.settings.eventHistoryMax),
+        redemptionsPollIntervalMs: Number(this.settings.redemptionsPollIntervalMs),
+        redemptionsOnSkip: this.settings.redemptionsOnSkip,
+        redemptionsOldMinutes: Number(this.settings.redemptionsOldMinutes),
+        redemptionsOldAction: this.settings.redemptionsOldAction,
       };
 
       const response = await api("/api/settings", {
@@ -625,6 +656,342 @@ function dashboardApp() {
       await this.loadEvents();
       await this.loadQueue();
       setTimeout(() => (this.simulateMessage = ""), 2500);
+    },
+
+    // --- Plataformas (Fase 4B) ------------------------------------------------
+
+    async loadPlatforms() {
+      const response = await api("/api/platforms");
+      if (!response.ok) return;
+      const data = await response.json();
+      this.platforms = data.platforms ?? [];
+      if (!this.activePlatformId && this.platforms.length > 0) {
+        this.activePlatformId = this.platforms[0].id;
+      }
+    },
+
+    selectPlatform(platform) {
+      if (this.activePlatformId === platform.id) return;
+      this.activePlatformId = platform.id;
+      this.rewards = [];
+      this.rewardForm = null;
+      this.oldRedemptions = [];
+      this.diagnostics = null;
+      this.platformMessage = "";
+      this.platformNotice = "";
+      void this.loadRewards(platform);
+      void this.loadOldRedemptions(platform);
+    },
+
+    platformStateLabel(platform) {
+      switch (platform.state) {
+        case "connected":
+          return "Conectado";
+        case "requires_relink":
+          return "Requiere volver a vincular";
+        default:
+          return "No vinculado";
+      }
+    },
+
+    platformStateClass(platform) {
+      if (platform.state === "connected") return "ok";
+      if (platform.state === "requires_relink") return "error";
+      return "off";
+    },
+
+    async saveCredentials(platform) {
+      this.platformMessage = "";
+      this.platformNotice = "";
+      const payload = { clientId: String(this.platformForm.clientId || "").trim() };
+      if (this.platformForm.clientSecret) payload.clientSecret = this.platformForm.clientSecret;
+      const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/credentials", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.platformMessage = data.message || "No se pudieron guardar las credenciales.";
+        return;
+      }
+      this.platformForm.clientSecret = "";
+      this.platformNotice = "Credenciales guardadas.";
+      await this.loadPlatforms();
+      setTimeout(() => (this.platformNotice = ""), 2500);
+    },
+
+    async beginLink(platform) {
+      this.platformMessage = "";
+      this.platformNotice = "";
+      const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/link", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.authorizeUrl) {
+        this.platformMessage = data.message || "No se pudo iniciar el vínculo.";
+        return;
+      }
+      // Se abre la página de la plataforma; al volver, el callback redirige al dashboard.
+      window.location.href = data.authorizeUrl;
+    },
+
+    async unlink(platform) {
+      if (!window.confirm("¿Desvincular la cuenta de " + platform.name + "?")) return;
+      await api("/api/platforms/" + encodeURIComponent(platform.id) + "/unlink", { method: "POST" });
+      this.rewards = [];
+      await this.loadPlatforms();
+    },
+
+    async clearCredentials(platform) {
+      if (!window.confirm("¿Borrar las credenciales de " + platform.name + "?")) return;
+      await api("/api/platforms/" + encodeURIComponent(platform.id) + "/credentials", { method: "DELETE" });
+      this.rewards = [];
+      await this.loadPlatforms();
+    },
+
+    async testConnection(platform) {
+      this.platformMessage = "";
+      this.platformNotice = "";
+      const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/test", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        this.platformMessage = data.message || "No se pudo conectar con la plataforma.";
+        return;
+      }
+      let notice = "Conexión correcta";
+      if (data.accountName) notice += " como " + data.accountName;
+      if (data.rewards !== null && data.rewards !== undefined) notice += " · " + data.rewards + " recompensa(s)";
+      this.platformNotice = notice;
+      await this.loadPlatforms();
+      setTimeout(() => (this.platformNotice = ""), 4000);
+    },
+
+    async loadDiagnostics(platform) {
+      const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/diagnostics");
+      if (!response.ok) return;
+      const data = await response.json();
+      this.diagnostics = data.diagnostics ?? null;
+    },
+
+    latencyLabel() {
+      const d = this.diagnostics;
+      if (!d) return "—";
+      const fmt = (value) => (value === null || value === undefined ? "—" : value);
+      return (
+        fmt(d.latencyLastMs) + " / " + fmt(d.latencyMinMs) + " / " + fmt(d.latencyTypicalMs) + " / " + fmt(d.latencyMaxMs)
+      );
+    },
+
+    rateLimitHeadersLabel() {
+      const headers = (this.diagnostics && this.diagnostics.lastRateLimitHeaders) || {};
+      const keys = Object.keys(headers);
+      return keys.length === 0 ? "—" : keys.map((key) => key + "=" + headers[key]).join(" · ");
+    },
+
+    // --- Recompensas del canal ------------------------------------------------
+
+    async loadRewards(platform) {
+      if (!platform || platform.state !== "connected") {
+        this.rewards = [];
+        return;
+      }
+      const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/rewards");
+      if (!response.ok) {
+        this.rewards = [];
+        return;
+      }
+      const data = await response.json();
+      this.rewards = data.rewards ?? [];
+    },
+
+    // Busca la regla asociada a una recompensa (trigger reward_redeemed por id).
+    findRewardRule(reward) {
+      return (
+        this.rules.find(
+          (rule) => rule.trigger.type === "reward_redeemed" && rule.trigger.rewardId === reward.id,
+        ) ?? null
+      );
+    },
+
+    rewardRuleLabel(reward) {
+      const rule = this.findRewardRule(reward);
+      return rule ? this.actionLabel(rule) : "Sin regla";
+    },
+
+    newReward() {
+      this.rewardMessage = "";
+      this.rewardForm = {
+        id: null,
+        title: "",
+        cost: 100,
+        description: "",
+        color: "#00e701",
+        enabled: true,
+        userInputRequired: false,
+        skipRequestQueue: false,
+        mode: "play_clip",
+        clipId: "",
+        volume: 1,
+        maxDurationSec: 30,
+        cooldownSec: 0,
+      };
+    },
+
+    // Editar solo cambia los campos de la recompensa; la regla se define al crear.
+    editReward(reward) {
+      this.rewardMessage = "";
+      this.rewardForm = {
+        id: reward.id,
+        title: reward.title,
+        cost: reward.cost,
+        description: reward.description ?? "",
+        color: reward.color ?? "#00e701",
+        enabled: reward.enabled,
+        userInputRequired: reward.userInputRequired,
+        skipRequestQueue: reward.skipRequestQueue,
+        mode: "play_clip",
+        clipId: "",
+        volume: 1,
+        maxDurationSec: 30,
+        cooldownSec: 0,
+      };
+    },
+
+    cancelReward() {
+      this.rewardForm = null;
+      this.rewardMessage = "";
+    },
+
+    async saveReward(platform) {
+      const form = this.rewardForm;
+      if (!form || !platform) return;
+      this.rewardMessage = "";
+
+      const title = String(form.title || "").trim();
+      if (!title) {
+        this.rewardMessage = "Escribí un título para la recompensa.";
+        return;
+      }
+      const cost = Math.round(Number(form.cost));
+      if (!Number.isFinite(cost) || cost < 1) {
+        this.rewardMessage = "El costo debe ser un número mayor o igual a 1.";
+        return;
+      }
+
+      const body = {
+        title,
+        cost,
+        description: String(form.description || "").trim(),
+        color: String(form.color || "").trim(),
+        enabled: form.enabled === true,
+        userInputRequired: form.userInputRequired === true,
+        skipRequestQueue: form.skipRequestQueue === true,
+      };
+
+      let method;
+      let path;
+      if (form.id) {
+        method = "PATCH";
+        path = "/api/platforms/" + encodeURIComponent(platform.id) + "/rewards/" + encodeURIComponent(form.id);
+      } else {
+        // Modo A: clip fijo (PlayClip). Modo B: URL del espectador (SubmitUserUrl).
+        const rule = { mode: form.mode };
+        const cooldownSec = Number(form.cooldownSec) || 0;
+        if (form.mode === "play_clip") {
+          if (!form.clipId) {
+            this.rewardMessage = "Elegí un clip de la biblioteca.";
+            return;
+          }
+          rule.clipId = String(form.clipId);
+          rule.volume = numberOrNull(form.volume) ?? 1;
+          if (numberOrNull(form.maxDurationSec) !== null) rule.maxDurationSec = Number(form.maxDurationSec);
+          rule.cooldownSec = cooldownSec;
+        } else {
+          if (body.userInputRequired !== true) {
+            this.rewardMessage = 'El modo "URL del espectador" exige que la recompensa pida texto.';
+            return;
+          }
+          rule.cooldownSec = cooldownSec;
+        }
+        body.rule = rule;
+        method = "POST";
+        path = "/api/platforms/" + encodeURIComponent(platform.id) + "/rewards";
+      }
+
+      const response = await api(path, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.rewardMessage = data.message || "No se pudo guardar la recompensa.";
+        return;
+      }
+      if (data.ruleWarning) this.rewardMessage = data.ruleWarning;
+      this.rewardForm = null;
+      await this.loadRewards(platform);
+      await this.loadRules();
+    },
+
+    async deleteReward(platform, reward) {
+      if (!window.confirm('¿Borrar la recompensa "' + reward.title + '"?')) return;
+      const response = await api(
+        "/api/platforms/" + encodeURIComponent(platform.id) + "/rewards/" + encodeURIComponent(reward.id),
+        { method: "DELETE" },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.rewardMessage = data.message || "No se pudo borrar la recompensa.";
+        return;
+      }
+      await this.loadRewards(platform);
+      await this.loadRules();
+    },
+
+    // --- Canjes pendientes antiguos -------------------------------------------
+
+    async loadOldRedemptions(platform) {
+      if (!platform) {
+        this.oldRedemptions = [];
+        return;
+      }
+      const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/redemptions");
+      if (!response.ok) return;
+      const data = await response.json();
+      this.oldRedemptions = data.redemptions ?? [];
+    },
+
+    async rejectAllOld(platform) {
+      if (!window.confirm("¿Rechazar todos los canjes pendientes antiguos?")) return;
+      this.redemptionMessage = "";
+      const response = await api(
+        "/api/platforms/" + encodeURIComponent(platform.id) + "/redemptions/reject-all",
+        { method: "POST" },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.redemptionMessage = data.message || "No se pudieron rechazar los canjes.";
+        return;
+      }
+      await this.loadOldRedemptions(platform);
+      setTimeout(() => (this.redemptionMessage = ""), 2500);
+    },
+
+    async processOld(platform) {
+      this.redemptionMessage = "";
+      const response = await api(
+        "/api/platforms/" + encodeURIComponent(platform.id) + "/redemptions/process-now",
+        { method: "POST" },
+      );
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.redemptionMessage = data.message || "No se pudieron procesar los canjes.";
+        return;
+      }
+      await this.loadOldRedemptions(platform);
+      await this.loadClips();
+      await this.loadQueue();
+      setTimeout(() => (this.redemptionMessage = ""), 2500);
     },
 
     async logout() {

@@ -15,6 +15,7 @@ export {
   RedemptionCoordinator,
   type OldAction,
   type OnSkipPolicy,
+  type ProcessOutcome,
   type ReceiveResult,
   type RedemptionCoordinatorOptions,
   type RedemptionPolicy,

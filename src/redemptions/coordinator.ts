@@ -3,12 +3,19 @@
  *
  * Recibe cada canje normalizado, decide su tratamiento (canje viejo, sin regla,
  * regla que dispara) y registra cada transición en la tabla `redemptions`, que
- * es lo que ve el dashboard. Las transiciones se validan con
- * `canTransitionRedemption`: una transición ilegal lanza, no corrompe el estado.
+ * es lo que ve el dashboard. Ningún estado queda invisible: la UI lee siempre de
+ * esa tabla.
+ *
+ * Quién resuelve en la plataforma:
+ *  - Acción `PlayClip`: acepta el canje al encolar la alerta (acción del motor).
+ *  - Moderación (`SubmitUserUrl`): resuelve accept/reject a través de su propio
+ *    `resolve` (ver src/moderation). El coordinador solo refleja el estado.
+ *  - Omitido / viejo rechazado / descarga fallida con política "reject": el
+ *    coordinador es el único que llama a `resolve` en esos caminos.
  *
  * Políticas configurables (settings):
- *  - onSkip:    "leave_pending" (default) | "reject"  → canje omitido o fallido.
- *  - oldAction: "ignore" (default) | "reject" | "process" → canje más viejo que N min.
+ *  - onSkip:    "leave_pending" (default) | "reject"
+ *  - oldAction: "ignore" (default) | "reject" | "process"
  */
 
 import {
@@ -32,13 +39,22 @@ export interface RedemptionPolicy {
   oldAction: OldAction;
 }
 
+/** Resultado que devuelve el procesamiento de un canje normal (el motor de reglas). */
+export type ProcessOutcome =
+  | { outcome: "fired" }
+  | { outcome: "awaiting_moderation"; reason?: string }
+  | { outcome: "proposal_settled"; reason?: string }
+  | { outcome: "skipped"; reason?: string }
+  | { outcome: "no_match"; reason?: string }
+  | { outcome: "error"; reason?: string };
+
 export interface RedemptionCoordinatorOptions {
   db: SqliteDatabase;
   policy: () => RedemptionPolicy;
   /** Resuelve el canje en la plataforma (accept/reject). */
   resolve: (event: NormalizedEvent, outcome: ResolveOutcome) => Promise<void>;
-  /** Procesa un canje normal (lo entrega al motor de reglas). */
-  process: (event: NormalizedEvent) => Promise<{ outcome: string; reason?: string }>;
+  /** Procesa un canje normal (lo entrega al motor de reglas) y reporta el resultado. */
+  process: (event: NormalizedEvent) => Promise<ProcessOutcome>;
   now?: () => number;
   logger?: (message: string) => void;
 }
@@ -92,9 +108,17 @@ export class RedemptionCoordinator {
     const record = getRedemption(this.db, platform, eventId);
     if (!record) return null;
     if (record.status !== "ignored") return { status: record.status as RedemptionStatus, reason: record.reason };
-    const event = JSON.parse(record.eventJson) as NormalizedEvent;
+    const event = this.readEvent(record);
+    if (!event) return null;
     this.transition(platform, eventId, "ignored", "received", "Reprocesado a pedido");
     return this.runProcess(event, this.policy());
+  }
+
+  /** Reprocesa todos los canjes "ignored" de una plataforma. Devuelve cuántos intentó. */
+  async reprocessAll(platform: string): Promise<number> {
+    const rows = this.listByStatus("ignored").filter((row) => row.platform === platform);
+    for (const row of rows) await this.reprocess(platform, row.eventId);
+    return rows.length;
   }
 
   /** Rechaza todos los canjes "ignored" (botón "Rechazar todos"). */
@@ -102,14 +126,18 @@ export class RedemptionCoordinator {
     const rows = this.listByStatus("ignored").filter((row) => row.platform === platform);
     let count = 0;
     for (const row of rows) {
-      const event = JSON.parse(row.eventJson) as NormalizedEvent;
+      const event = this.readEvent(row);
+      if (!event) continue;
       const ok = await this.safeResolve(event, "reject");
-      if (ok) {
-        this.transition(row.platform, row.eventId, "ignored", "rejected", "Rechazado por el usuario");
-        count += 1;
-      }
+      this.transition(row.platform, row.eventId, "ignored", ok ? "rejected" : "failed", "Rechazado por el usuario");
+      if (ok) count += 1;
     }
     return count;
+  }
+
+  /** Canjes en "ignored" (pendientes de decisión) de una plataforma. */
+  listIgnored(platform: string): RedemptionRecord[] {
+    return this.listByStatus("ignored").filter((row) => row.platform === platform);
   }
 
   /** Estado de un canje, para la UI y los tests. */
@@ -118,32 +146,35 @@ export class RedemptionCoordinator {
   }
 
   /**
-   * Marca el resultado de una propuesta de moderación ligada a un canje: la
-   * descarga falló y el canje se rechaza o queda pendiente según la política.
+   * Refleja el resultado final de una propuesta de moderación en el canje de
+   * origen. No resuelve en la plataforma salvo en el caso "failed" con política
+   * de rechazo (la moderación no resuelve ese caso).
    */
-  async onProposalFailed(platform: string, eventId: string, reason: string): Promise<void> {
+  async handleProposalSettled(
+    platform: string,
+    eventId: string,
+    outcome: "accept" | "reject" | "failed",
+  ): Promise<void> {
     const record = getRedemption(this.db, platform, eventId);
     if (!record) return;
-    const policy = this.policy();
-    if (policy.onSkip === "reject") {
-      const event = JSON.parse(record.eventJson) as NormalizedEvent;
-      const ok = await this.safeResolve(event, "reject");
-      this.transition(platform, eventId, record.status as RedemptionStatus, "failed", reason, ok ? null : "No se pudo rechazar en Kick");
+    const from = record.status as RedemptionStatus;
+
+    if (outcome === "accept") {
+      this.transition(platform, eventId, from, "accepted", "Clip listo");
       return;
     }
-    this.transition(platform, eventId, record.status as RedemptionStatus, "ignored", reason);
-  }
-
-  /** Marca el resultado final de una propuesta aprobada cuando el clip quedó listo. */
-  async onProposalReady(platform: string, eventId: string): Promise<void> {
-    const record = getRedemption(this.db, platform, eventId);
-    if (!record) return;
-    const event = JSON.parse(record.eventJson) as NormalizedEvent;
-    const ok = await this.safeResolve(event, "accept");
-    if (ok) {
-      this.transition(platform, eventId, record.status as RedemptionStatus, "accepted", "Clip listo");
+    if (outcome === "reject") {
+      this.transition(platform, eventId, from, "rejected", record.reason ?? "Rechazado");
+      return;
+    }
+    // Descarga fallida: según la política del producto.
+    const policy = this.policy();
+    if (policy.onSkip === "reject") {
+      const event = this.readEvent(record);
+      if (event) await this.safeResolve(event, "reject");
+      this.transition(platform, eventId, from, "failed", "La descarga falló");
     } else {
-      this.transition(platform, eventId, record.status as RedemptionStatus, "failed", "No se pudo aceptar en Kick");
+      this.transition(platform, eventId, from, "ignored", "La descarga falló");
     }
   }
 
@@ -158,7 +189,7 @@ export class RedemptionCoordinator {
   }
 
   private async runProcess(event: NormalizedEvent, policy: RedemptionPolicy): Promise<ReceiveResult> {
-    let outcome: { outcome: string; reason?: string };
+    let outcome: ProcessOutcome;
     try {
       outcome = await this.process(event);
     } catch (error) {
@@ -167,13 +198,25 @@ export class RedemptionCoordinator {
       return this.settleFromRecord(event, "failed", message);
     }
 
-    if (outcome.outcome === "fired") {
-      return this.settleFromRecord(event, "accepted", null);
+    if (outcome.outcome === "proposal_settled") {
+      // La moderación ya dejó la propuesta en un estado terminal y (si correspondía)
+      // resolvió el canje. Solo leemos el estado actual.
+      const current = getRedemption(this.db, event.platform, event.id);
+      return {
+        status: (current?.status ?? "received") as RedemptionStatus,
+        reason: current?.reason ?? outcome.reason ?? null,
+      };
     }
     if (outcome.outcome === "awaiting_moderation") {
-      this.transitionFromCurrent(event, "awaiting_moderation", "Esperando aprobación");
-      return { status: "awaiting_moderation", reason: "Esperando aprobación" };
+      const reason = outcome.reason ?? "Esperando aprobación";
+      this.transitionFromCurrent(event, "awaiting_moderation", reason);
+      return { status: "awaiting_moderation", reason };
     }
+    if (outcome.outcome === "fired") {
+      // `PlayClip` ya aceptó el canje al encolar; acá solo se refleja.
+      return this.settleFromRecord(event, "accepted", null);
+    }
+
     // Omitido: sin regla, cooldown o sin permiso.
     const reason = outcome.reason ?? "Sin regla que coincida";
     if (policy.onSkip === "reject") {
@@ -188,10 +231,10 @@ export class RedemptionCoordinator {
     return { status, reason };
   }
 
-  /** Cierra un canje omitido o rechazado. `resolved` dice si Kick aceptó el cambio. */
+  /** Cierra un canje omitido o rechazado. `resolved` dice si la plataforma aceptó el cambio. */
   private settle(event: NormalizedEvent, status: RedemptionStatus, reason: string, resolved: boolean): ReceiveResult {
     const final: RedemptionStatus = resolved ? status : "failed";
-    const detail = resolved ? reason : `${reason} (no se pudo actualizar en Kick)`;
+    const detail = resolved ? reason : `${reason} (no se pudo actualizar en la plataforma)`;
     this.transitionFromCurrent(event, final, detail);
     return { status: final, reason: detail };
   }
@@ -213,19 +256,32 @@ export class RedemptionCoordinator {
     this.transition(event.platform, event.id, from, to, reason);
   }
 
+  /**
+   * Aplica una transición si está permitida. Una transición ilegal se registra y
+   * se ignora, sin corromper el estado ni romper el flujo async (los callbacks de
+   * moderación pueden llegar en cualquier orden respecto del procesamiento).
+   */
   private transition(
     platform: string,
     eventId: string,
     from: RedemptionStatus,
     to: RedemptionStatus,
     reason: string | null,
-    extraReason: string | null = null,
-  ): void {
+  ): boolean {
     if (from !== to && !canTransitionRedemption(from, to)) {
-      throw new Error(`Transición de canje no permitida: ${from} -> ${to}`);
+      this.logger?.(`redemptions: transición no permitida ${from} -> ${to} (ignorada)`);
+      return false;
     }
-    const finalReason = extraReason ? `${reason ?? ""} · ${extraReason}`.trim() : reason;
-    updateRedemptionStatus(this.db, platform, eventId, to, finalReason);
+    updateRedemptionStatus(this.db, platform, eventId, to, reason);
+    return true;
+  }
+
+  private readEvent(record: RedemptionRecord): NormalizedEvent | null {
+    try {
+      return JSON.parse(record.eventJson) as NormalizedEvent;
+    } catch {
+      return null;
+    }
   }
 
   private toRecord(event: NormalizedEvent, status: RedemptionStatus, reason: string | null): RedemptionRecord {

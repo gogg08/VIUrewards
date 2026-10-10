@@ -135,6 +135,12 @@ export class KickOAuth {
     this.save({ ...current, status, account: account ?? current.account });
   }
 
+  /** Guarda la identidad de la cuenta vinculada (sin cambiar el estado). */
+  setAccount(account: { id: string; name: string }): void {
+    const current = this.ensureAccount();
+    this.save({ ...current, account });
+  }
+
   saveTokens(tokens: PlatformTokens): void {
     const account = this.ensureAccount();
     this.save({ ...account, tokens, status: "connected" });

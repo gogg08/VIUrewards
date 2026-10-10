@@ -16,6 +16,8 @@ import type { EventSource, EventSourceCapabilities } from "../events/index.ts";
 export type AccountLinkState = "unlinked" | "connected" | "requires_relink";
 
 export interface PlatformAccount {
+  /** Id de la integración (para las rutas /api/platforms/:id). */
+  id: string;
   platform: string;
   /** Nombre visible para el usuario (p. ej. "Kick"). */
   name: string;

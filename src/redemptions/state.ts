@@ -10,8 +10,12 @@
  *      │   ├──► ignored             (canje viejo o en espera manual)
  *      │   ├──► failed              (la descarga o la resolución fallaron)
  *      │   └──► skipped             (sin regla, cooldown o sin permiso)
- *   awaiting_moderation ──► accepted | rejected | failed | skipped
+ *   awaiting_moderation ──► accepted | rejected | failed | skipped | ignored
  *   ignored ──► received (reprocesar) | rejected
+ *
+ * `awaiting_moderation ──► ignored`: si la descarga falla y la política es
+ * "dejarlo pendiente", el canje queda a la vista para decidir (reprocesar o
+ * rechazar), igual que un canje viejo ignorado.
  *
  * `accepted`, `rejected`, `failed` y `skipped` son terminales, salvo que el
  * canje siga pendiente en Kick (ver `leave_pending`).
@@ -31,7 +35,7 @@ export type RedemptionStatus = (typeof REDEMPTION_STATUSES)[number];
 
 export const REDEMPTION_TRANSITIONS: Record<RedemptionStatus, readonly RedemptionStatus[]> = {
   received: ["accepted", "awaiting_moderation", "rejected", "ignored", "failed", "skipped"],
-  awaiting_moderation: ["accepted", "rejected", "failed", "skipped"],
+  awaiting_moderation: ["accepted", "rejected", "failed", "skipped", "ignored"],
   ignored: ["received", "rejected"],
   accepted: [],
   rejected: [],

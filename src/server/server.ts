@@ -23,6 +23,7 @@ import {
   addHistory,
   deleteClip as deleteClipRow,
   deleteRule,
+  findProposalByEvent,
   getClip,
   getOrCreateSecret,
   getRuleRecord,
@@ -61,9 +62,12 @@ import {
   type NormalizedEvent,
 } from "../events/index.ts";
 import { ModerationService, type ModerationLimits } from "../moderation/index.ts";
-import { RuleEngine, validateRuleInput } from "../rules/index.ts";
+import { RuleEngine, validateRuleInput, type EngineResult } from "../rules/index.ts";
 import { validateUrl } from "../media/validate-url.ts";
 import type { Clip, MediaOptions } from "../media/index.ts";
+import { createPlatformIntegrations, type PlatformIntegration } from "../platforms/index.ts";
+import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index.ts";
+import { registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
 import { attachWebSocket } from "./ws.ts";
 
 export type { MediaPassthroughOptions } from "./jobs.ts";
@@ -98,6 +102,12 @@ export interface ServerOptions {
   requireOverlay?: boolean;
   /** Reloj inyectable (cooldowns del motor de reglas), para tests. */
   now?: () => number;
+  /**
+   * Integraciones de plataforma. En producción se crean solas (registro en
+   * `src/platforms/index.ts`); en tests se pueden inyectar (p. ej. con un
+   * servidor de plataforma falso).
+   */
+  platforms?: PlatformIntegration[];
 }
 
 export interface OverlayInfo {
@@ -116,6 +126,8 @@ export interface AppServer {
   sources: EventSource[];
   manualSource: ManualEventSource;
   simulatedSource: SimulatedEventSource;
+  integrations: PlatformIntegration[];
+  coordinator: RedemptionCoordinator;
   getOverlayKey(): string;
   start(): Promise<{ port: number; host: string; url: string; overlayUrl: string; dashboardUrl: string }>;
   stop(): Promise<void>;
@@ -352,6 +364,10 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
   const debug = process.env.CZERO_DEBUG === "1";
 
+  // El coordinador se crea más abajo (necesita al motor), pero la moderación ya
+  // lo usa desde sus callbacks: por eso la referencia se declara acá.
+  let coordinatorRef: RedemptionCoordinator | null = null;
+
   const moderation = new ModerationService({
     db,
     limits: (): ModerationLimits => {
@@ -387,11 +403,28 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         label: proposal.userName,
       });
     },
+    // El canje de origen queda en sincronía con el estado final de la propuesta.
+    // `accept`/`reject` NO resuelven en la plataforma acá (ya lo hizo la
+    // moderación con su propio `resolve`); `failed` sí, según la política.
+    onSettled: (proposal, outcome) => {
+      void coordinatorRef?.handleProposalSettled(proposal.platform, proposal.eventId, outcome);
+    },
   });
 
   const manualSource = new ManualEventSource();
   const simulatedSource = new SimulatedEventSource();
+
+  // Integraciones reales de plataforma (Fase 4B). En tests se pueden inyectar.
+  const integrations =
+    options.platforms ??
+    createPlatformIntegrations({
+      db,
+      pollIntervalMs: () => readSettings(db).redemptionsPollIntervalMs,
+      logger: debug ? (message) => console.log(`[platform] ${message}`) : undefined,
+    });
+
   const sources: EventSource[] = [manualSource, simulatedSource];
+  for (const integration of integrations) sources.push(integration.source);
 
   const engine = new RuleEngine({
     queue,
@@ -414,8 +447,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   });
   engine.setRules(listRules(db).map(toRule));
 
-  const recordEvent = async (event: NormalizedEvent): Promise<void> => {
-    const result = await engine.handle(event);
+  const recordHistory = async (event: NormalizedEvent, result: EngineResult): Promise<void> => {
     const settings = readSettings(db);
     addHistory(
       db,
@@ -436,7 +468,70 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     );
   };
 
-  for (const source of sources) source.onEvent((event) => void recordEvent(event));
+  const recordEvent = async (event: NormalizedEvent): Promise<void> => {
+    const result = await engine.handle(event);
+    await recordHistory(event, result);
+  };
+
+  // Coordinador del ciclo de vida de los canjes (Fase 4B). Solo se usa para
+  // fuentes que soportan `resolve` (canjes que quedan pendientes hasta resolverlos).
+  const coordinator = new RedemptionCoordinator({
+    db,
+    policy: () => {
+      const settings = readSettings(db);
+      return {
+        onSkip: settings.redemptionsOnSkip,
+        oldMinutes: settings.redemptionsOldMinutes,
+        oldAction: settings.redemptionsOldAction,
+      };
+    },
+    resolve: async (event, outcome) => {
+      const source = sources.find(
+        (item) => item.platform === event.platform && typeof item.resolve === "function",
+      );
+      if (source?.resolve) await source.resolve(event.id, outcome);
+    },
+    process: async (event): Promise<ProcessOutcome> => {
+      // Un canje puede reprocesarse a mano: el motor olvida el id para volver a
+      // evaluarlo (la idempotencia persistente ya se aplica en la fuente).
+      engine.forget(event.id);
+      const result = await engine.handle(event);
+      await recordHistory(event, result);
+      // Si la regla fue `SubmitUserUrl`, hay una propuesta ligada a este canje.
+      const proposal = findProposalByEvent(db, event.platform, event.id);
+      if (proposal) {
+        if (proposal.status === "pending" || proposal.status === "approved" || proposal.status === "downloading") {
+          return { outcome: "awaiting_moderation", reason: "Esperando aprobación" };
+        }
+        return { outcome: "proposal_settled", reason: proposal.reason ?? undefined };
+      }
+      switch (result.outcome) {
+        case "fired":
+          return { outcome: "fired" };
+        case "skipped":
+          return { outcome: "skipped", reason: result.reason };
+        case "error":
+          return { outcome: "error", reason: result.reason };
+        default:
+          return { outcome: "no_match", reason: result.reason };
+      }
+    },
+    logger: debug ? (message) => console.log(`[redemptions] ${message}`) : undefined,
+  });
+  coordinatorRef = coordinator;
+
+  for (const source of sources) {
+    // Los canjes que la plataforma deja pendientes pasan por el coordinador; el
+    // resto de los eventos (locales) van directo al motor.
+    const resolvable = typeof source.resolve === "function";
+    source.onEvent((event) => {
+      if (event.type === "reward_redeemed" && resolvable) {
+        void coordinator.receive(event);
+      } else {
+        void recordEvent(event);
+      }
+    });
+  }
 
   // --- Helpers de autenticación del overlay ---------------------------------
 
@@ -532,6 +627,15 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   });
 
   app.get("/overlay", async (_request, reply) => sendHtml(reply, overlayHtmlPath));
+
+  // Callback OAuth de plataformas (Fase 4B). Es público a propósito: la
+  // navegación desde la plataforma no lleva la cookie de sesión; se valida solo
+  // con state + PKCE. Al terminar redirige al dashboard de loopback.
+  registerOAuthCallback(app, {
+    integrations,
+    port,
+    debug,
+  });
 
   // --- Autenticación (público) ----------------------------------------------
 
@@ -903,7 +1007,23 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
     // --- Simulación de eventos (sin plataforma) ------------------------------
 
-    api.get("/api/sources", async () => ({ ok: true, sources: listSourceInfo() }));
+    api.get("/api/sources", async () => ({
+      ok: true,
+      sources: listSourceInfo(),
+      // Plataformas de forma genérica (nombre, estado, capabilities): este es el
+      // único lugar del dashboard que las lista; no conoce nombres de plataforma.
+      platforms: integrations.map((integration) => integration.status()),
+    }));
+
+    // --- Rutas de plataformas (Fase 4B) --------------------------------------
+    registerPlatformApiRoutes(api, {
+      integrations,
+      coordinator,
+      db,
+      port,
+      refreshRules: () => engine.setRules(listRules(db).map(toRule)),
+      debug,
+    });
 
     api.post<{ Body: SimulateBody }>(
       "/api/simulate",
@@ -952,9 +1072,14 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     sources,
     manualSource,
     simulatedSource,
+    integrations,
+    coordinator,
     getOverlayKey: () => overlayKey,
     async start() {
       await app.listen({ port, host });
+
+      // Las integraciones arrancan su polling solo si la cuenta está vinculada.
+      for (const integration of integrations) await integration.start();
 
       const address = app.server.address();
       const actualPort = typeof address === "object" && address !== null ? address.port : port;
@@ -968,6 +1093,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       };
     },
     async stop() {
+      for (const integration of integrations) await integration.stop();
       await hub.close();
       await app.close();
     },

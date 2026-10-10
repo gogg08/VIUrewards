@@ -130,6 +130,18 @@ export class KickApi {
     return Array.isArray(json.data) ? json.data : [];
   }
 
+  /**
+   * Usuario autorizado por el token actual. Verificado en docs.kick.com: si no se
+   * pasan ids, `GET /public/v1/users` devuelve el usuario autenticado. Requiere
+   * el scope `user:read`.
+   */
+  async getSelfUser(): Promise<KickUser | null> {
+    const response = await this.ensureOk(await this.request("/public/v1/users"), "users.self");
+    const json = (await response.json()) as ApiEnvelope<KickUser[]>;
+    const first = Array.isArray(json.data) ? json.data[0] : undefined;
+    return first && typeof first.name === "string" ? first : null;
+  }
+
   async listRewards(): Promise<ChannelReward[]> {
     const response = await this.ensureOk(await this.request("/public/v1/channels/rewards"), "rewards.list");
     const json = (await response.json()) as ApiEnvelope<ChannelReward[]>;

@@ -23,8 +23,20 @@ export const SETTING_PORT = "server.port";
 export const SETTING_MODERATION_MAX_PENDING = "moderation.maxPending";
 export const SETTING_MODERATION_MAX_PENDING_PER_USER = "moderation.maxPendingPerUser";
 export const SETTING_EVENT_HISTORY_MAX = "events.historyMax";
+export const SETTING_REDEMPTIONS_POLL_INTERVAL = "redemptions.pollIntervalMs";
+export const SETTING_REDEMPTIONS_ON_SKIP = "redemptions.onSkip";
+export const SETTING_REDEMPTIONS_OLD_MINUTES = "redemptions.oldMinutes";
+export const SETTING_REDEMPTIONS_OLD_ACTION = "redemptions.oldAction";
 
 export const DEFAULT_PORT = 8787;
+
+/** Política al omitir un canje (sin regla, cooldown o sin permiso). */
+export type OnSkipPolicy = "leave_pending" | "reject";
+/** Qué hacer con canjes más viejos que `redemptionsOldMinutes` al iniciar. */
+export type OldRedemptionAction = "ignore" | "reject" | "process";
+
+export const ON_SKIP_POLICIES: readonly OnSkipPolicy[] = ["leave_pending", "reject"];
+export const OLD_REDEMPTION_ACTIONS: readonly OldRedemptionAction[] = ["ignore", "reject", "process"];
 
 /** Configuración resuelta, con todos los valores aplicados. */
 export interface AppSettings {
@@ -48,6 +60,14 @@ export interface AppSettings {
   moderationMaxPendingPerUser: number;
   /** Máximo de eventos guardados en el historial. */
   eventHistoryMax: number;
+  /** Intervalo de polling de canjes de recompensa, en ms (mínimo 1000). */
+  redemptionsPollIntervalMs: number;
+  /** Política al omitir un canje (sin regla, cooldown o sin permiso). */
+  redemptionsOnSkip: OnSkipPolicy;
+  /** Antigüedad (min) a partir de la cual un canje se considera "viejo". */
+  redemptionsOldMinutes: number;
+  /** Qué hacer con los canjes viejos al iniciar. */
+  redemptionsOldAction: OldRedemptionAction;
 }
 
 /** Campos editables desde el dashboard. */
@@ -62,6 +82,10 @@ export interface SettingsPatch {
   moderationMaxPending?: number;
   moderationMaxPendingPerUser?: number;
   eventHistoryMax?: number;
+  redemptionsPollIntervalMs?: number;
+  redemptionsOnSkip?: OnSkipPolicy;
+  redemptionsOldMinutes?: number;
+  redemptionsOldAction?: OldRedemptionAction;
 }
 
 /** Rangos aceptados para cada valor numérico. */
@@ -75,6 +99,8 @@ export const SETTINGS_LIMITS = {
   moderationMaxPending: { min: 0, max: 500 },
   moderationMaxPendingPerUser: { min: 0, max: 100 },
   eventHistoryMax: { min: 10, max: 5000 },
+  redemptionsPollIntervalMs: { min: 1000, max: 60000 },
+  redemptionsOldMinutes: { min: 0, max: 1440 },
 } as const;
 
 const MAX_DOMAINS = 50;
@@ -90,6 +116,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   moderationMaxPending: 25,
   moderationMaxPendingPerUser: 3,
   eventHistoryMax: 500,
+  // El valor por defecto del polling vive acá (no se importa de la plataforma:
+  // el adaptador lo lee desde settings, así el aislamiento de AGENTS.md se mantiene).
+  redemptionsPollIntervalMs: 5000,
+  redemptionsOnSkip: "leave_pending",
+  redemptionsOldMinutes: 10,
+  redemptionsOldAction: "ignore",
 };
 
 export type SettingsValidation =
@@ -106,9 +138,13 @@ const NUMERIC_KEYS = [
   "moderationMaxPending",
   "moderationMaxPendingPerUser",
   "eventHistoryMax",
+  "redemptionsPollIntervalMs",
+  "redemptionsOldMinutes",
 ] as const;
 
-const KNOWN_KEYS = new Set<string>([...NUMERIC_KEYS, "allowedDomains"]);
+const ENUM_KEYS = ["redemptionsOnSkip", "redemptionsOldAction"] as const;
+
+const KNOWN_KEYS = new Set<string>([...NUMERIC_KEYS, ...ENUM_KEYS, "allowedDomains"]);
 
 function isIpv4(host: string): boolean {
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
@@ -206,6 +242,25 @@ export function validateSettingsPatch(patch: unknown): SettingsValidation {
     value[key] = raw;
   }
 
+  if ("redemptionsOnSkip" in record) {
+    const raw = record.redemptionsOnSkip;
+    if (typeof raw !== "string" || !ON_SKIP_POLICIES.includes(raw as OnSkipPolicy)) {
+      return { ok: false, reason: "INVALID_SETTINGS", message: "redemptionsOnSkip debe ser 'leave_pending' o 'reject'." };
+    }
+    value.redemptionsOnSkip = raw as OnSkipPolicy;
+  }
+  if ("redemptionsOldAction" in record) {
+    const raw = record.redemptionsOldAction;
+    if (typeof raw !== "string" || !OLD_REDEMPTION_ACTIONS.includes(raw as OldRedemptionAction)) {
+      return {
+        ok: false,
+        reason: "INVALID_SETTINGS",
+        message: "redemptionsOldAction debe ser 'ignore', 'reject' o 'process'.",
+      };
+    }
+    value.redemptionsOldAction = raw as OldRedemptionAction;
+  }
+
   if ("allowedDomains" in record) {
     const raw = record.allowedDomains;
     if (!Array.isArray(raw)) {
@@ -243,6 +298,17 @@ function readNumber(
   const value = Number(raw);
   if (!Number.isInteger(value) || value < limits.min || value > limits.max) return fallback;
   return value;
+}
+
+function readEnum<T extends string>(
+  db: SqliteDatabase,
+  key: string,
+  fallback: T,
+  allowed: readonly T[],
+): T {
+  const raw = getSetting(db, key);
+  if (raw === null) return fallback;
+  return (allowed as readonly string[]).includes(raw) ? (raw as T) : fallback;
 }
 
 function readDomains(db: SqliteDatabase): string[] {
@@ -296,6 +362,25 @@ export function readSettings(db: SqliteDatabase): AppSettings {
       DEFAULT_SETTINGS.eventHistoryMax,
       SETTINGS_LIMITS.eventHistoryMax,
     ),
+    redemptionsPollIntervalMs: readNumber(
+      db,
+      SETTING_REDEMPTIONS_POLL_INTERVAL,
+      DEFAULT_SETTINGS.redemptionsPollIntervalMs,
+      SETTINGS_LIMITS.redemptionsPollIntervalMs,
+    ),
+    redemptionsOnSkip: readEnum(db, SETTING_REDEMPTIONS_ON_SKIP, DEFAULT_SETTINGS.redemptionsOnSkip, ON_SKIP_POLICIES),
+    redemptionsOldMinutes: readNumber(
+      db,
+      SETTING_REDEMPTIONS_OLD_MINUTES,
+      DEFAULT_SETTINGS.redemptionsOldMinutes,
+      SETTINGS_LIMITS.redemptionsOldMinutes,
+    ),
+    redemptionsOldAction: readEnum(
+      db,
+      SETTING_REDEMPTIONS_OLD_ACTION,
+      DEFAULT_SETTINGS.redemptionsOldAction,
+      OLD_REDEMPTION_ACTIONS,
+    ),
   };
 }
 
@@ -324,5 +409,17 @@ export function writeSettings(db: SqliteDatabase, patch: SettingsPatch): void {
   }
   if (patch.eventHistoryMax !== undefined) {
     setSetting(db, SETTING_EVENT_HISTORY_MAX, String(patch.eventHistoryMax));
+  }
+  if (patch.redemptionsPollIntervalMs !== undefined) {
+    setSetting(db, SETTING_REDEMPTIONS_POLL_INTERVAL, String(patch.redemptionsPollIntervalMs));
+  }
+  if (patch.redemptionsOnSkip !== undefined) {
+    setSetting(db, SETTING_REDEMPTIONS_ON_SKIP, patch.redemptionsOnSkip);
+  }
+  if (patch.redemptionsOldMinutes !== undefined) {
+    setSetting(db, SETTING_REDEMPTIONS_OLD_MINUTES, String(patch.redemptionsOldMinutes));
+  }
+  if (patch.redemptionsOldAction !== undefined) {
+    setSetting(db, SETTING_REDEMPTIONS_OLD_ACTION, patch.redemptionsOldAction);
   }
 }
