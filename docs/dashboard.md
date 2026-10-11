@@ -1,4 +1,4 @@
-# Dashboard local (Fase 3 + Fase 4A + Fase 4B)
+# Dashboard local (VIUrewards)
 
 El dashboard es la interfaz que usa el streamer en el navegador. Todo corre en su
 PC; el servidor escucha solo en `127.0.0.1`.
@@ -46,26 +46,19 @@ Después, para entrar, se usa esa contraseña. La sesión va en una cookie
   **Mostrar** y **Copiar**, y un aviso de no mostrarla en pantalla durante el
   stream.
 
-### Secciones nuevas (Fase 4A, motor de reglas sin plataformas)
+### Motor de reglas (interno)
 
-- **Reglas**: crear, editar, activar/desactivar y borrar reglas. Cada regla tiene
-  un *trigger* (tipo de evento y, según el tipo, comando, id de recompensa o monto
-  mínimo), *condiciones* (permiso `todos/subs/mods`, cooldown global y por usuario)
-  y una *acción* (`play_clip` o `submit_url`). El selector de tipo de evento se
-  arma con las **capabilities** de las fuentes conectadas, así no se ofrecen
-  triggers que ninguna plataforma soporta.
-- **Moderación de URLs**: lista de propuestas del público pendientes, con la URL y
-  botones **Aprobar / Rechazar**. Aprobar dispara la descarga con el job existente
-  y, al terminar, encola el clip; rechazar la descarta.
+Las **reglas** ya no son una sección visible: cada recompensa tiene una **regla
+interna 1:1** que se crea y se mantiene sola al crear/editar la recompensa (trigger
+`reward_redeemed` con el id de la recompensa y acción `PlayClip`). El motor de
+eventos sigue igual por debajo; ver `docs/rules.md`.
+
 - **Historial de eventos**: últimas 100 entradas con hora, plataforma, tipo,
   usuario, resultado (`Disparó / Omitido / Error / Sin regla / Duplicado`) y motivo
   (por ejemplo `cooldown`, `sin permiso`).
 - **Simular evento**: dispara un evento de cualquier tipo sin ninguna plataforma
   conectada, y un botón **Evento manual** (el mismo que dispara `ManualEventSource`).
-  Sirve para probar reglas y el flujo de moderación de punta a punta.
-
-Ver `docs/rules.md` para el detalle del motor, las transiciones de estado y los
-límites.
+  Sirve para probar las reglas internas de punta a punta.
 
 Todo el texto de la interfaz está en español. Los nombres de los clips se
 insertan con bindings de texto (Alpine `x-text`), que escapan HTML; nunca con
@@ -80,9 +73,9 @@ insertan con bindings de texto (Alpine `x-text`), que escapan HTML; nunca con
   `state` + PKCE y redirige al dashboard. Desvincular borra los tokens pero
   conserva las credenciales.
 - **Recompensas del canal**: listar, crear, editar y borrar recompensas con la API
-  oficial. Al crear se puede asociar una regla en el mismo formulario: **modo A**
-  clip fijo (`PlayClip`) o **modo B** URL del espectador (`SubmitUserUrl`). Solo se
-  editan o borran las recompensas creadas por esta app (se marcan "De otra app").
+  oficial. Al crear se le asocia una **regla de clip fijo** (`PlayClip`) en el mismo
+  formulario. Solo se editan o borran las recompensas creadas por esta app (se
+  marcan "De otra app").
 - **Canjes pendientes antiguos**: los que superan la antigüedad configurada, con
   botones **Rechazar todos** y **Procesar ahora**.
 - **Diagnóstico**: intervalo de polling, último chequeo/resultado/error, latencias
@@ -95,8 +88,8 @@ Guía de alta paso a paso: `docs/kick-setup.md`.
 
 ## Archivos y datos
 
-- `data/app.db`: SQLite local (tablas `clips`, `settings`, `rules`,
-  `event_history` y `proposals`). Ignorado en git.
+- `data/app.db`: SQLite local (tablas `clips`, `settings`, `rules` y
+  `event_history`). Ignorado en git.
 - `media/`: clips `.mp4` y un sidecar `.json` por clip. Ignorado en git.
 - `logs/`: salida cruda de yt-dlp/ffmpeg. Ignorado en git.
 
@@ -132,8 +125,7 @@ caché **no pisa** el título ni el recorte que haya puesto el usuario.
 `GET /api/overlay`, `POST /api/overlay/regenerate`.
 
 Fase 4A: `GET/POST /api/rules`, `DELETE /api/rules/:id`,
-`POST /api/rules/:id/toggle`, `GET /api/events`, `GET /api/moderation`,
-`POST /api/moderation/:id/approve|reject`, `GET /api/sources`,
+`POST /api/rules/:id/toggle`, `GET /api/events`, `GET /api/sources`,
 `POST /api/simulate`, `POST /api/manual`. Todo input se valida con esquemas de
 Fastify.
 
@@ -194,13 +186,8 @@ clave del overlay.
 - **Cola en vivo por polling (1 s)** en vez de SSE o WebSocket: es una app local
   de un solo usuario y el costo es despreciable; evita conexiones de larga vida y
   los problemas de cierre que traen en los tests. Se consulta el `GET /api/state`
-  que ya existía. Si más adelante hiciera falta, se puede migrar a SSE. La
-  **moderación y el historial** también usan polling (2 s), por la misma razón.
-- **`resolve` de moderación en memoria**: cuando un evento de origen viene de una
-  plataforma que soporta marcar el canje como cumplido/rechazado, ese callback vive
-  **en memoria** y se pierde al reiniciar el servidor. Es aceptable mientras no
-  haya ninguna plataforma real conectada (Fase 4A); en la Fase 4B habrá que
-  persistir el `eventId` y reintentar. Ver `docs/rules.md`.
+  que ya existía. Si más adelante hiciera falta, se puede migrar a SSE. El
+  **historial** también usa polling (2 s), por la misma razón.
 - **Assets de `/web` públicos**: el HTML, Alpine (archivo local, sin CDN), CSS y JS
   del dashboard se sirven sin sesión; **los datos** salen siempre por `/api`, que
   sí está protegida. La ruta `/` (dashboard) redirige a `/login` sin sesión.
@@ -224,9 +211,9 @@ clave del overlay.
 Las verificaciones de `src/server/web-assets.test.ts` son **estáticas** (orden de
 los `<script>`, existencia de los archivos, favicon). No cubren el render real de
 Alpine, el comportamiento de `<video>` (seek del recorte), el panel de la cola, el
-formulario de reglas, la tabla de moderación, el historial ni el cambio de
-configuración en vivo. Eso hay que probarlo a mano en el navegador. Una prueba real
-con Playwright cubriría esto, pero no se instala sin confirmación.
+historial ni el cambio de configuración en vivo. Eso hay que probarlo a mano en el
+navegador. Una prueba real con Playwright cubriría esto, pero no se instala sin
+confirmación.
 
 En la Fase 4B se sumó `src/server/platforms-ui.test.ts`, que verifica
 **estáticamente** que cada handler `@click` del HTML está definido en `app.js`
@@ -239,5 +226,4 @@ diagnóstico y el flujo de canjes hay que probarlos a mano.
 
 - Sesiones persistentes, si se decide.
 - Migrar la cola en vivo a SSE si el polling molesta.
-- Persistir las resoluciones de canjes pendientes (Fase 4B).
 - Medir los rate limits reales de Kick y completar §11.4 de `docs/kick-research.md`.

@@ -49,17 +49,6 @@ export {
   type EventHistoryRecord,
 } from "./history.ts";
 
-export {
-  countPendingProposals,
-  findPendingProposalByUrl,
-  findProposalByEvent,
-  getProposal,
-  insertProposal,
-  listProposals,
-  updateProposalStatus,
-  type ProposalPatch,
-  type ProposalRecord,
-} from "./proposals.ts";
 
 export {
   deletePlatformAccount,

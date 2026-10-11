@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>czero-rewards · dashboard</title>
+    <title>VIUrewards</title>
     <!-- Evita el 404 de /favicon.ico. -->
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/web/style.css" />
@@ -17,7 +17,7 @@
   <body>
     <div x-data="dashboardApp()">
       <header class="topbar">
-        <div class="brand">czero<span>-rewards</span></div>
+        <div class="brand">VIU<span>rewards</span></div>
         <button @click="logout()">Salir</button>
       </header>
 
@@ -198,14 +198,6 @@
               <input type="number" min="1024" max="65535" x-model.number="settings.port" />
             </label>
             <label class="field">
-              <span>Máx. propuestas pendientes</span>
-              <input type="number" min="0" max="500" x-model.number="settings.moderationMaxPending" />
-            </label>
-            <label class="field">
-              <span>Máx. propuestas por usuario</span>
-              <input type="number" min="0" max="100" x-model.number="settings.moderationMaxPendingPerUser" />
-            </label>
-            <label class="field">
               <span>Máx. eventos en el historial</span>
               <input type="number" min="10" max="5000" x-model.number="settings.eventHistoryMax" />
             </label>
@@ -274,175 +266,6 @@
           </div>
           <p class="error" x-show="passwordMessage" x-text="passwordMessage"></p>
           <p class="ok" x-show="passwordSaved">Contraseña actualizada. Las demás sesiones se cerraron.</p>
-        </section>
-
-        <!-- Reglas (Fase 4A) -->
-        <section>
-          <div class="section-head">
-            <h2>Reglas</h2>
-            <button class="primary" @click="newRule()" x-show="!ruleForm">Nueva regla</button>
-          </div>
-
-          <p class="empty" x-show="rules.length === 0 && !ruleForm">
-            Todavía no hay reglas. Creá una para reaccionar a eventos del chat o canjes.
-          </p>
-
-          <div class="rule-form" x-show="ruleForm" x-cloak>
-            <div class="settings-grid">
-              <label class="field">
-                <span>Nombre</span>
-                <input type="text" maxlength="100" x-model="ruleForm.name" />
-              </label>
-              <label class="field">
-                <span>Activa</span>
-                <input type="checkbox" x-model="ruleForm.enabled" />
-              </label>
-              <label class="field">
-                <span>Tipo de evento</span>
-                <select x-model="ruleForm.trigger.type">
-                  <template x-for="type in eventTypes" :key="type">
-                    <option :value="type" x-text="eventTypeLabel(type)"></option>
-                  </template>
-                </select>
-              </label>
-              <label class="field" x-show="ruleForm.trigger.type === 'chat_command'">
-                <span>Comando (sin !)</span>
-                <input type="text" maxlength="100" x-model="ruleForm.trigger.command" />
-              </label>
-              <label class="field" x-show="ruleForm.trigger.type === 'reward_redeemed'">
-                <span>Id de la recompensa</span>
-                <input type="text" maxlength="200" x-model="ruleForm.trigger.rewardId" />
-              </label>
-              <label
-                class="field"
-                x-show="['sub', 'gift', 'follow'].includes(ruleForm.trigger.type)"
-              >
-                <span>Monto mínimo (opcional)</span>
-                <input type="number" min="0" x-model.number="ruleForm.trigger.minAmount" />
-              </label>
-              <label class="field">
-                <span>Permiso</span>
-                <select x-model="ruleForm.conditions.permission">
-                  <option value="everyone">Todos</option>
-                  <option value="subs">Solo subs</option>
-                  <option value="mods">Solo mods</option>
-                </select>
-              </label>
-              <label class="field">
-                <span>Cooldown global (s)</span>
-                <input type="number" min="0" max="86400" x-model.number="ruleForm.conditions.cooldownSec" />
-              </label>
-              <label class="field">
-                <span>Cooldown por usuario (s)</span>
-                <input type="number" min="0" max="86400" x-model.number="ruleForm.conditions.userCooldownSec" />
-              </label>
-              <label class="field">
-                <span>Acción</span>
-                <select x-model="ruleForm.action.kind">
-                  <option value="play_clip">Reproducir un clip</option>
-                  <option value="submit_url">URL del público (moderación)</option>
-                </select>
-              </label>
-              <label class="field" x-show="ruleForm.action.kind === 'play_clip'">
-                <span>Clip</span>
-                <select x-model="ruleForm.action.clipId">
-                  <option value="">Elegí un clip</option>
-                  <template x-for="clip in clips" :key="clip.id">
-                    <option :value="clip.id" x-text="clip.title"></option>
-                  </template>
-                </select>
-              </label>
-              <label class="field" x-show="ruleForm.action.kind === 'submit_url'">
-                <span>Aprobación automática</span>
-                <input type="checkbox" x-model="ruleForm.action.autoApprove" />
-              </label>
-            </div>
-
-            <div class="row">
-              <button class="primary" @click="saveRule()">Guardar regla</button>
-              <button @click="cancelRule()">Cancelar</button>
-              <span class="error" x-show="ruleMessage" x-text="ruleMessage"></span>
-            </div>
-          </div>
-
-          <div class="table-wrap" x-show="rules.length > 0">
-            <table class="grid">
-              <thead>
-                <tr>
-                  <th>Nombre</th>
-                  <th>Trigger</th>
-                  <th>Condiciones</th>
-                  <th>Acción</th>
-                  <th>Estado</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="rule in rules" :key="rule.id">
-                  <tr>
-                    <td x-text="rule.name"></td>
-                    <td x-text="triggerLabel(rule)"></td>
-                    <td x-text="conditionsLabel(rule)"></td>
-                    <td x-text="actionLabel(rule)"></td>
-                    <td>
-                      <span class="badge" :class="rule.enabled ? 'ok' : 'off'" x-text="rule.enabled ? 'Activa' : 'Inactiva'"></span>
-                    </td>
-                    <td class="actions">
-                      <button @click="editRule(rule)">Editar</button>
-                      <button @click="toggleRule(rule)" x-text="rule.enabled ? 'Desactivar' : 'Activar'"></button>
-                      <button class="danger" @click="deleteRule(rule)">Borrar</button>
-                    </td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <!-- Moderación de URLs propuestas (Fase 4A) -->
-        <section>
-          <div class="section-head">
-            <h2>Moderación de URLs</h2>
-            <span class="muted">Propuestas del público pendientes de aprobación</span>
-          </div>
-
-          <p class="empty" x-show="moderation.length === 0">
-            No hay propuestas pendientes.
-          </p>
-
-          <p class="error" x-show="moderationMessage" x-text="moderationMessage"></p>
-
-          <div class="table-wrap" x-show="moderation.length > 0">
-            <table class="grid">
-              <thead>
-                <tr>
-                  <th>Usuario</th>
-                  <th>Plataforma</th>
-                  <th>URL</th>
-                  <th>Estado</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="proposal in moderation" :key="proposal.id">
-                  <tr>
-                    <td x-text="proposal.userName"></td>
-                    <td x-text="proposal.platform"></td>
-                    <td><a :href="proposal.url" target="_blank" rel="noreferrer" x-text="proposal.url"></a></td>
-                    <td><span class="badge warn" x-text="statusLabel(proposal.status)"></span></td>
-                    <td class="actions">
-                      <button class="primary" @click="approveProposal(proposal)" :disabled="proposal.status !== 'pending'">
-                        Aprobar
-                      </button>
-                      <button class="danger" @click="rejectProposal(proposal)" :disabled="proposal.status !== 'pending'">
-                        Rechazar
-                      </button>
-                    </td>
-                  </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
         </section>
 
         <!-- Historial de eventos (Fase 4A) -->
@@ -653,13 +476,6 @@
                     <input type="checkbox" x-model="rewardForm.userInputRequired" />
                   </label>
                   <label class="field" x-show="!rewardForm.id">
-                    <span>Acción al canjear</span>
-                    <select x-model="rewardForm.mode">
-                      <option value="play_clip">Reproducir un clip fijo</option>
-                      <option value="submit_url">URL del espectador (moderación)</option>
-                    </select>
-                  </label>
-                  <label class="field" x-show="!rewardForm.id && rewardForm.mode === 'play_clip'">
                     <span>Clip</span>
                     <select x-model="rewardForm.clipId">
                       <option value="">Elegí un clip</option>
@@ -668,11 +484,11 @@
                       </template>
                     </select>
                   </label>
-                  <label class="field" x-show="!rewardForm.id && rewardForm.mode === 'play_clip'">
+                  <label class="field" x-show="!rewardForm.id">
                     <span>Volumen (0 a 1)</span>
                     <input type="number" min="0" max="1" step="0.05" x-model.number="rewardForm.volume" />
                   </label>
-                  <label class="field" x-show="!rewardForm.id && rewardForm.mode === 'play_clip'">
+                  <label class="field" x-show="!rewardForm.id">
                     <span>Duración máxima (s)</span>
                     <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
                   </label>
@@ -681,9 +497,6 @@
                     <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
                   </label>
                 </div>
-                <p class="muted" x-show="!rewardForm.id && rewardForm.mode === 'submit_url'">
-                  El modo "URL del espectador" exige que la recompensa pida texto (marcá la casilla).
-                </p>
                 <div class="row">
                   <button class="primary" @click="saveReward(activePlatform)">Guardar recompensa</button>
                   <button @click="cancelReward()">Cancelar</button>

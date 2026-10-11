@@ -120,57 +120,6 @@ describe("RedemptionCoordinator: canje omitido (sin regla / cooldown / sin permi
   });
 });
 
-describe("RedemptionCoordinator: acción SubmitUserUrl (moderación)", () => {
-  it("queda en awaiting_moderation hasta que la propuesta se resuelve", async () => {
-    const h = makeHarness({ process: async () => ({ outcome: "awaiting_moderation" }) });
-    const result = await h.coordinator.receive(rewardEvent("r1"));
-    expect(result.status).toBe("awaiting_moderation");
-
-    await h.coordinator.handleProposalSettled("fake", "r1", "accept");
-    expect(h.coordinator.get("fake", "r1")?.status).toBe("accepted");
-    // La moderación es la dueña de `resolve`: el coordinador no volvió a llamarla.
-    expect(h.resolveCalls).toHaveLength(0);
-  });
-
-  it("rechazar la propuesta rechaza el canje (sin doble resolve)", async () => {
-    const h = makeHarness({ process: async () => ({ outcome: "awaiting_moderation" }) });
-    await h.coordinator.receive(rewardEvent("r1"));
-    await h.coordinator.handleProposalSettled("fake", "r1", "reject");
-    expect(h.coordinator.get("fake", "r1")?.status).toBe("rejected");
-    expect(h.resolveCalls).toHaveLength(0);
-  });
-
-  it("si ya se resolvió durante el proceso (proposal_settled), refleja el estado final", async () => {
-    // El proceso (moderación) deja el canje en rejected de forma síncrona: en el
-    // servidor real `onSettled` corre durante el `process`. Acá se simula el mismo
-    // orden: primero el settle, y el `receive` termina reflejando el estado final.
-    const h = makeHarness({ process: async () => ({ outcome: "proposal_settled", reason: "URL inválida" }) });
-    const pending = h.coordinator.receive(rewardEvent("r2"));
-    await h.coordinator.handleProposalSettled("fake", "r2", "reject");
-    const result = await pending;
-    expect(result.status).toBe("rejected");
-    expect(h.coordinator.get("fake", "r2")?.status).toBe("rejected");
-  });
-
-  it("si la descarga falla y la política es leave_pending, el canje queda en ignored", async () => {
-    const h = makeHarness({ process: async () => ({ outcome: "awaiting_moderation" }) });
-    await h.coordinator.receive(rewardEvent("r9"));
-    await h.coordinator.handleProposalSettled("fake", "r9", "failed");
-    expect(h.coordinator.get("fake", "r9")?.status).toBe("ignored");
-  });
-
-  it("si la descarga falla y la política es reject, rechaza el canje en la plataforma", async () => {
-    const h = makeHarness({
-      process: async () => ({ outcome: "awaiting_moderation" }),
-      policy: { onSkip: "reject" },
-    });
-    await h.coordinator.receive(rewardEvent("r1"));
-    await h.coordinator.handleProposalSettled("fake", "r1", "failed");
-    expect(h.coordinator.get("fake", "r1")?.status).toBe("failed");
-    expect(h.resolveCalls).toEqual([{ id: "r1", outcome: "reject" }]);
-  });
-});
-
 describe("RedemptionCoordinator: canjes viejos", () => {
   const old = () => rewardEvent("r1", NOW - 30 * MINUTE);
 
@@ -222,18 +171,5 @@ describe("RedemptionCoordinator: aislamiento de errores", () => {
     });
     const result = await h.coordinator.receive(rewardEvent("r1"));
     expect(result.status).toBe("failed");
-  });
-
-  it("una transición ilegal se ignora sin corromper el estado", async () => {
-    const h = makeHarness({ process: async () => ({ outcome: "fired" }) });
-    await h.coordinator.receive(rewardEvent("r1"));
-    // accepted es terminal: otro settle no debe cambiar nada.
-    await h.coordinator.handleProposalSettled("fake", "r1", "reject");
-    expect(h.coordinator.get("fake", "r1")?.status).toBe("accepted");
-  });
-
-  it("handleProposalSettled de un canje desconocido no hace nada", async () => {
-    const h = makeHarness();
-    await expect(h.coordinator.handleProposalSettled("fake", "nope", "accept")).resolves.toBeUndefined();
   });
 });

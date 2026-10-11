@@ -7,7 +7,6 @@
  */
 
 import type { EventType, NormalizedEvent } from "../events/index.ts";
-import type { ModerationSink } from "../moderation/index.ts";
 import type { AnimationName, EnqueueSink, OverlayPosition } from "../queue/index.ts";
 
 /** Criterio de disparo de una regla: tipo de evento + filtros opcionales. */
@@ -45,13 +44,7 @@ export interface PlayClipActionConfig {
   exitAnimation?: AnimationName;
 }
 
-export interface SubmitUserUrlActionConfig {
-  kind: "submit_url";
-  /** Si es `true`, la propuesta se aprueba automáticamente (pasa validación e igual). */
-  autoApprove: boolean;
-}
-
-export type RuleActionConfig = PlayClipActionConfig | SubmitUserUrlActionConfig;
+export type RuleActionConfig = PlayClipActionConfig;
 
 export interface Rule {
   id: string;
@@ -66,7 +59,6 @@ export interface Rule {
 export interface RuleActionContext {
   event: NormalizedEvent;
   queue: EnqueueSink;
-  moderation: ModerationSink;
   /** Resuelve el evento de origen (accept/reject) si la plataforma lo soporta. */
   resolveEvent(outcome: "accept" | "reject"): Promise<void>;
 }

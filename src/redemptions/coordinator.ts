@@ -8,10 +8,7 @@
  *
  * Quién resuelve en la plataforma:
  *  - Acción `PlayClip`: acepta el canje al encolar la alerta (acción del motor).
- *  - Moderación (`SubmitUserUrl`): resuelve accept/reject a través de su propio
- *    `resolve` (ver src/moderation). El coordinador solo refleja el estado.
- *  - Omitido / viejo rechazado / descarga fallida con política "reject": el
- *    coordinador es el único que llama a `resolve` en esos caminos.
+ *  - Omitido / viejo rechazado: el coordinador llama a `resolve` en esos caminos.
  *
  * Políticas configurables (settings):
  *  - onSkip:    "leave_pending" (default) | "reject"
@@ -42,8 +39,6 @@ export interface RedemptionPolicy {
 /** Resultado que devuelve el procesamiento de un canje normal (el motor de reglas). */
 export type ProcessOutcome =
   | { outcome: "fired" }
-  | { outcome: "awaiting_moderation"; reason?: string }
-  | { outcome: "proposal_settled"; reason?: string }
   | { outcome: "skipped"; reason?: string }
   | { outcome: "no_match"; reason?: string }
   | { outcome: "error"; reason?: string };
@@ -140,42 +135,11 @@ export class RedemptionCoordinator {
     return this.listByStatus("ignored").filter((row) => row.platform === platform);
   }
 
-  /** Estado de un canje, para la UI y los tests. */
+  /**
+   * Estado de un canje, para la UI y los tests.
+   */
   get(platform: string, eventId: string): RedemptionRecord | null {
     return getRedemption(this.db, platform, eventId);
-  }
-
-  /**
-   * Refleja el resultado final de una propuesta de moderación en el canje de
-   * origen. No resuelve en la plataforma salvo en el caso "failed" con política
-   * de rechazo (la moderación no resuelve ese caso).
-   */
-  async handleProposalSettled(
-    platform: string,
-    eventId: string,
-    outcome: "accept" | "reject" | "failed",
-  ): Promise<void> {
-    const record = getRedemption(this.db, platform, eventId);
-    if (!record) return;
-    const from = record.status as RedemptionStatus;
-
-    if (outcome === "accept") {
-      this.transition(platform, eventId, from, "accepted", "Clip listo");
-      return;
-    }
-    if (outcome === "reject") {
-      this.transition(platform, eventId, from, "rejected", record.reason ?? "Rechazado");
-      return;
-    }
-    // Descarga fallida: según la política del producto.
-    const policy = this.policy();
-    if (policy.onSkip === "reject") {
-      const event = this.readEvent(record);
-      if (event) await this.safeResolve(event, "reject");
-      this.transition(platform, eventId, from, "failed", "La descarga falló");
-    } else {
-      this.transition(platform, eventId, from, "ignored", "La descarga falló");
-    }
   }
 
   private async handleOld(event: NormalizedEvent, policy: RedemptionPolicy): Promise<ReceiveResult> {
@@ -198,20 +162,6 @@ export class RedemptionCoordinator {
       return this.settleFromRecord(event, "failed", message);
     }
 
-    if (outcome.outcome === "proposal_settled") {
-      // La moderación ya dejó la propuesta en un estado terminal y (si correspondía)
-      // resolvió el canje. Solo leemos el estado actual.
-      const current = getRedemption(this.db, event.platform, event.id);
-      return {
-        status: (current?.status ?? "received") as RedemptionStatus,
-        reason: current?.reason ?? outcome.reason ?? null,
-      };
-    }
-    if (outcome.outcome === "awaiting_moderation") {
-      const reason = outcome.reason ?? "Esperando aprobación";
-      this.transitionFromCurrent(event, "awaiting_moderation", reason);
-      return { status: "awaiting_moderation", reason };
-    }
     if (outcome.outcome === "fired") {
       // `PlayClip` ya aceptó el canje al encolar; acá solo se refleja.
       return this.settleFromRecord(event, "accepted", null);

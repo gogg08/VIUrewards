@@ -14,7 +14,7 @@ function authApp() {
     get title() {
       if (this.mode === "setup") return "Creá tu contraseña";
       if (this.mode === "login") return "Entrá al dashboard";
-      return "czero-rewards";
+      return "VIUrewards";
     },
     get hint() {
       if (this.mode === "setup") {

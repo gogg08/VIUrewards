@@ -4,18 +4,12 @@
  * Modelado explícito, como pide AGENTS.md: cada estado es visible en el
  * dashboard y solo se permiten las transiciones definidas acá.
  *
- *   received ──► accepted            (alerta encolada, o clip listo)
- *      │   ├──► awaiting_moderation  (URL esperando aprobación)
- *      │   ├──► rejected            (rechazado en la plataforma)
- *      │   ├──► ignored             (canje viejo o en espera manual)
- *      │   ├──► failed              (la descarga o la resolución fallaron)
- *      │   └──► skipped             (sin regla, cooldown o sin permiso)
- *   awaiting_moderation ──► accepted | rejected | failed | skipped | ignored
+ *   received ──► accepted            (alerta encolada)
+ *      │   ├──► rejected             (rechazado en la plataforma)
+ *      │   ├──► ignored              (canje viejo o en espera manual)
+ *      │   ├──► failed               (la resolución falló)
+ *      │   └──► skipped              (sin regla, cooldown o sin permiso)
  *   ignored ──► received (reprocesar) | rejected
- *
- * `awaiting_moderation ──► ignored`: si la descarga falla y la política es
- * "dejarlo pendiente", el canje queda a la vista para decidir (reprocesar o
- * rechazar), igual que un canje viejo ignorado.
  *
  * `accepted`, `rejected`, `failed` y `skipped` son terminales, salvo que el
  * canje siga pendiente en Kick (ver `leave_pending`).
@@ -24,7 +18,6 @@
 export const REDEMPTION_STATUSES = [
   "received",
   "accepted",
-  "awaiting_moderation",
   "rejected",
   "ignored",
   "failed",
@@ -34,8 +27,7 @@ export const REDEMPTION_STATUSES = [
 export type RedemptionStatus = (typeof REDEMPTION_STATUSES)[number];
 
 export const REDEMPTION_TRANSITIONS: Record<RedemptionStatus, readonly RedemptionStatus[]> = {
-  received: ["accepted", "awaiting_moderation", "rejected", "ignored", "failed", "skipped"],
-  awaiting_moderation: ["accepted", "rejected", "failed", "skipped", "ignored"],
+  received: ["accepted", "rejected", "ignored", "failed", "skipped"],
   ignored: ["received", "rejected"],
   accepted: [],
   rejected: [],
@@ -58,8 +50,6 @@ export function redemptionStatusLabel(status: RedemptionStatus): string {
       return "Recibido";
     case "accepted":
       return "Aceptado";
-    case "awaiting_moderation":
-      return "Esperando moderación";
     case "rejected":
       return "Rechazado";
     case "ignored":

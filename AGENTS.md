@@ -4,7 +4,7 @@ Instrucciones para el agente de código. Leer completo antes de cada tarea.
 
 ## Qué es este proyecto
 
-App self-hosted para streamers de Kick. Corre en la PC del streamer y expone un dashboard en el navegador. Permite pegar la URL de un video, descargarlo y convertirlo, y usarlo como alerta o recompensa reproducida en OBS (Browser Source). Ver `ROADMAP.md` para las fases.
+App self-hosted para streamers de Kick, llamada **VIUrewards**. Corre en la PC del streamer y expone un dashboard en el navegador. Permite pegar la URL de un video, descargarlo y convertirlo, y usarlo como alerta reproducida en OBS (Browser Source). Ver `ROADMAP.md` para las fases y `UI-DESIGN.md` para el diseño de la interfaz.
 
 ## Stack
 
@@ -43,6 +43,7 @@ App self-hosted para streamers de Kick. Corre en la PC del streamer y expone un 
 8. **No inventar endpoints ni campos de la API de Kick.** Si no está documentado o no se verificó, preguntar o marcar con `TODO(verificar)`.
 9. **Rutas de archivos:** nunca construir paths con input del usuario sin normalizar y verificar que queden dentro de `/media`.
 10. **El producto es una app local para usuarios no técnicos:** nada de requerir infraestructura pública, cuentas de desarrollador por usuario o configuración manual de red para el usuario final, salvo en modos avanzados opcionales.
+11. **El público no envía links ni archivos.** El texto libre de un canje o comando (`user_input`) es input NO confiable, nunca se usa para lanzar descargas y nunca se pasa a un proceso (yt-dlp/ffmpeg) sin validar.
 
 ## Arquitectura de triggers (multi-plataforma)
 
@@ -81,4 +82,4 @@ npm test           # vitest
 
 ## Estado actual
 
-Fase en curso: **Fase 4B implementada** (adaptador real de Kick, **solo canjes de recompensas por REST + polling**; sin webhooks, sin túnel y sin Pusher —el chat queda para una 4C aparte—), **pendiente de probarla contra un canal de Kick real** (ver `docs/kick-setup.md`). Incluye: OAuth con PKCE del broadcaster (redirect a `localhost`, `state` de un solo uso), gestión de recompensas (crear/editar/listar/borrar) con regla asociada (`PlayClip` o `SubmitUserUrl`), `KickEventSource` que hace polling de canjes pendientes con paginación por cursor, idempotencia persistente, backoff exponencial con jitter ante `429`/`5xx` y `resolve` (accept/reject) por lotes de 25; coordinador de ciclo de vida de canjes con estados explícitos; sección **Plataformas** del dashboard (vínculo, credenciales de solo escritura, recompensas, canjes pendientes antiguos y panel de diagnóstico con latencias, 429 y headers de rate limit) y settings de canjes. Todo lo específico de Kick vive en `/src/platforms/kick/`, con test de aislamiento. Las **Fases 1, 2, 3 y 4A** están implementadas. La **Fase 0** (investigación de Kick) queda abierta: falta completar §11.4 de `docs/kick-research.md` con las mediciones del panel de diagnóstico (rate limits reales, latencia de detección y si `reject` reembolsa), y `scripts/kick-rewards.ts` **no se debe tocar**. Próximo paso: **Fase 4C** (chat). Actualizar esta línea al avanzar.
+Fase en curso: **Rediseño de la interfaz (VIUrewards)**, según `UI-DESIGN.md` (fuente de verdad). **Etapa 1 (limpieza y base) completada**: se eliminó el flujo de "el espectador envía links" (moderación de URLs, tabla y flujo de propuestas, acción `SubmitUserUrl`, y las secciones Reglas y Moderación del dashboard). El motor de reglas y `PlayClip` se conservan: cada recompensa tiene una **regla interna 1:1** que se crea y se mantiene sola. El nombre visible pasa a **VIUrewards**. Las **Fases 1, 2, 3, 4A y 4B** están implementadas; la 4B (adaptador de Kick, solo canjes de recompensas por REST + polling) sigue **pendiente de probar contra un canal de Kick real** (`docs/kick-setup.md`). La **Fase 0** (investigación de Kick) queda abierta: falta completar §11.4 de `docs/kick-research.md` con las mediciones del panel de diagnóstico, y `scripts/kick-rewards.ts` **no se debe tocar**. Próximas etapas del rediseño: 2) estructura y sistema de diseño, 3) clips y descargas, 4) recompensas, 5) Ajustes completos. Actualizar esta línea al avanzar.

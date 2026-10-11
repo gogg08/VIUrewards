@@ -20,8 +20,6 @@ export const SETTING_MEDIA_MAX_DURATION = "media.maxDurationSec";
 export const SETTING_MEDIA_MAX_BYTES = "media.maxBytes";
 export const SETTING_ALLOWED_DOMAINS = "media.allowedDomains";
 export const SETTING_PORT = "server.port";
-export const SETTING_MODERATION_MAX_PENDING = "moderation.maxPending";
-export const SETTING_MODERATION_MAX_PENDING_PER_USER = "moderation.maxPendingPerUser";
 export const SETTING_EVENT_HISTORY_MAX = "events.historyMax";
 export const SETTING_REDEMPTIONS_POLL_INTERVAL = "redemptions.pollIntervalMs";
 export const SETTING_REDEMPTIONS_ON_SKIP = "redemptions.onSkip";
@@ -54,10 +52,6 @@ export interface AppSettings {
   allowedDomains: string[];
   /** Puerto del servidor local (requiere reiniciar). */
   port: number;
-  /** Máximo de propuestas pendientes de moderación (global). */
-  moderationMaxPending: number;
-  /** Máximo de propuestas pendientes por usuario. */
-  moderationMaxPendingPerUser: number;
   /** Máximo de eventos guardados en el historial. */
   eventHistoryMax: number;
   /** Intervalo de polling de canjes de recompensa, en ms (mínimo 1000). */
@@ -79,8 +73,6 @@ export interface SettingsPatch {
   maxVideoBytes?: number;
   allowedDomains?: string[];
   port?: number;
-  moderationMaxPending?: number;
-  moderationMaxPendingPerUser?: number;
   eventHistoryMax?: number;
   redemptionsPollIntervalMs?: number;
   redemptionsOnSkip?: OnSkipPolicy;
@@ -96,8 +88,6 @@ export const SETTINGS_LIMITS = {
   maxVideoDurationSec: { min: 1, max: 3600 },
   maxVideoBytes: { min: 1 * 1024 * 1024, max: 2 * 1024 * 1024 * 1024 },
   port: { min: 1024, max: 65535 },
-  moderationMaxPending: { min: 0, max: 500 },
-  moderationMaxPendingPerUser: { min: 0, max: 100 },
   eventHistoryMax: { min: 10, max: 5000 },
   redemptionsPollIntervalMs: { min: 1000, max: 60000 },
   redemptionsOldMinutes: { min: 0, max: 1440 },
@@ -113,8 +103,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   maxVideoBytes: DEFAULT_MEDIA_LIMITS.maxBytes,
   allowedDomains: [...DEFAULT_ALLOWED_DOMAINS],
   port: DEFAULT_PORT,
-  moderationMaxPending: 25,
-  moderationMaxPendingPerUser: 3,
   eventHistoryMax: 500,
   // El valor por defecto del polling vive acá (no se importa de la plataforma:
   // el adaptador lo lee desde settings, así el aislamiento de AGENTS.md se mantiene).
@@ -135,8 +123,6 @@ const NUMERIC_KEYS = [
   "maxVideoDurationSec",
   "maxVideoBytes",
   "port",
-  "moderationMaxPending",
-  "moderationMaxPendingPerUser",
   "eventHistoryMax",
   "redemptionsPollIntervalMs",
   "redemptionsOldMinutes",
@@ -344,18 +330,6 @@ export function readSettings(db: SqliteDatabase): AppSettings {
     maxVideoBytes: readNumber(db, SETTING_MEDIA_MAX_BYTES, DEFAULT_SETTINGS.maxVideoBytes, SETTINGS_LIMITS.maxVideoBytes),
     allowedDomains: readDomains(db),
     port: readNumber(db, SETTING_PORT, DEFAULT_SETTINGS.port, SETTINGS_LIMITS.port),
-    moderationMaxPending: readNumber(
-      db,
-      SETTING_MODERATION_MAX_PENDING,
-      DEFAULT_SETTINGS.moderationMaxPending,
-      SETTINGS_LIMITS.moderationMaxPending,
-    ),
-    moderationMaxPendingPerUser: readNumber(
-      db,
-      SETTING_MODERATION_MAX_PENDING_PER_USER,
-      DEFAULT_SETTINGS.moderationMaxPendingPerUser,
-      SETTINGS_LIMITS.moderationMaxPendingPerUser,
-    ),
     eventHistoryMax: readNumber(
       db,
       SETTING_EVENT_HISTORY_MAX,
@@ -401,12 +375,6 @@ export function writeSettings(db: SqliteDatabase, patch: SettingsPatch): void {
     setSetting(db, SETTING_ALLOWED_DOMAINS, patch.allowedDomains.join(","));
   }
   if (patch.port !== undefined) setSetting(db, SETTING_PORT, String(patch.port));
-  if (patch.moderationMaxPending !== undefined) {
-    setSetting(db, SETTING_MODERATION_MAX_PENDING, String(patch.moderationMaxPending));
-  }
-  if (patch.moderationMaxPendingPerUser !== undefined) {
-    setSetting(db, SETTING_MODERATION_MAX_PENDING_PER_USER, String(patch.moderationMaxPendingPerUser));
-  }
   if (patch.eventHistoryMax !== undefined) {
     setSetting(db, SETTING_EVENT_HISTORY_MAX, String(patch.eventHistoryMax));
   }

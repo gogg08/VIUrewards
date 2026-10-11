@@ -1,44 +1,17 @@
 /**
  * Tests del motor de reglas (Fase 4A): coincidencia de triggers, permisos,
  * cooldowns (global y por usuario), idempotencia por event.id, aislamiento de
- * errores entre reglas y ejecución de acciones (play_clip y submit_url).
+ * errores entre reglas y ejecución de la acción play_clip.
  */
 
 import { describe, expect, it } from "vitest";
 
 import { createEvent, type NormalizedEvent } from "../events/index.ts";
 import { AlertQueue } from "../queue/index.ts";
-import type {
-  ModerationSink,
-  ModerationSubmitInput,
-  ModerationSubmitResult,
-} from "../moderation/index.ts";
-import type { ProposalRecord } from "../db/proposals.ts";
 import { CooldownTracker } from "./cooldown.ts";
 import { RuleEngine } from "./engine.ts";
 import { hasPermission, matchesTrigger, normalizeCommand } from "./matching.ts";
 import type { Rule, RuleActionConfig } from "./types.ts";
-
-class FakeModeration implements ModerationSink {
-  readonly submissions: ModerationSubmitInput[] = [];
-  submit(input: ModerationSubmitInput): ModerationSubmitResult {
-    this.submissions.push(input);
-    const proposal: ProposalRecord = {
-      id: "p1",
-      platform: input.platform,
-      userId: input.userId,
-      userName: input.userName,
-      url: "https://www.youtube.com/watch?v=x",
-      eventId: input.eventId,
-      status: "pending",
-      reason: null,
-      clipId: null,
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-    };
-    return { status: "pending", proposal };
-  }
-}
 
 function chatEvent(command: string, args: string[] = [], roles: string[] = []): NormalizedEvent {
   return createEvent({
@@ -75,21 +48,18 @@ function playRule(overrides: Partial<Rule> = {}): Rule {
 interface EngineHarness {
   engine: RuleEngine;
   queue: AlertQueue;
-  moderation: FakeModeration;
   clock: { value: number };
 }
 
 function makeEngine(resolveAction?: (config: RuleActionConfig) => { kind: string; execute: () => void }): EngineHarness {
   const queue = new AlertQueue();
-  const moderation = new FakeModeration();
   const clock = { value: 1_000 };
   const engine = new RuleEngine({
     queue,
-    moderation,
     now: () => clock.value,
     resolveAction,
   });
-  return { engine, queue, moderation, clock };
+  return { engine, queue, clock };
 }
 
 describe("matching", () => {
@@ -202,20 +172,6 @@ describe("RuleEngine", () => {
     const result = await h.engine.handle(chatEvent("alerta"));
     expect(result).toMatchObject({ outcome: "fired", ruleId: "r2" });
     expect(h.queue.getState().current?.clipId).toBe("clip-2");
-  });
-
-  it("submit_url manda el texto del usuario a moderación con resolve", async () => {
-    const h = makeEngine();
-    h.engine.setRules([
-      playRule({
-        trigger: { type: "chat_command", command: "alerta" },
-        action: { kind: "submit_url", autoApprove: false },
-      }),
-    ]);
-    await h.engine.handle(chatEvent("alerta", ["https://youtu.be/abc"]));
-    expect(h.moderation.submissions).toHaveLength(1);
-    expect(h.moderation.submissions[0].userInput).toBe("https://youtu.be/abc");
-    expect(typeof h.moderation.submissions[0].resolve).toBe("function");
   });
 
   it("devuelve no_match cuando ninguna regla aplica", async () => {

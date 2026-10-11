@@ -67,9 +67,9 @@ describe("UI del dashboard (plataformas)", () => {
     expect(app).toContain("maskedOverlayUrl");
   });
 
-  it("ofrece los modos de regla asociada (clip fijo y URL del espectador)", () => {
-    expect(html).toContain("Reproducir un clip fijo");
-    expect(html).toContain("URL del espectador");
+  it("asocia una regla de clip fijo a la recompensa (sin URL del espectador)", () => {
+    expect(html).toContain("Cooldown de la regla");
+    expect(html).not.toContain("URL del espectador");
   });
 
   it("no expone tokens de OAuth en los assets del frontend", () => {

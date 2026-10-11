@@ -11,7 +11,7 @@ export {
 
 export { CooldownTracker, type CooldownResult } from "./cooldown.ts";
 
-export { defaultActionResolver, SubmitUserUrl } from "./actions.ts";
+export { defaultActionResolver } from "./actions.ts";
 
 export {
   MAX_COOLDOWN_SEC,
@@ -41,5 +41,4 @@ export type {
   RuleActionContext,
   RuleConditions,
   RuleTrigger,
-  SubmitUserUrlActionConfig,
 } from "./types.ts";

@@ -23,13 +23,11 @@ import {
   addHistory,
   deleteClip as deleteClipRow,
   deleteRule,
-  findProposalByEvent,
   getClip,
   getOrCreateSecret,
   getRuleRecord,
   listClips,
   listHistory,
-  listProposals,
   listRules,
   openMemoryDatabase,
   renameClip,
@@ -61,9 +59,7 @@ import {
   type EventType,
   type NormalizedEvent,
 } from "../events/index.ts";
-import { ModerationService, type ModerationLimits } from "../moderation/index.ts";
 import { RuleEngine, validateRuleInput, type EngineResult } from "../rules/index.ts";
-import { validateUrl } from "../media/validate-url.ts";
 import type { Clip, MediaOptions } from "../media/index.ts";
 import { createPlatformIntegrations, type PlatformIntegration } from "../platforms/index.ts";
 import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index.ts";
@@ -122,7 +118,6 @@ export interface AppServer {
   jobs: DownloadJobManager;
   db: SqliteDatabase;
   engine: RuleEngine;
-  moderation: ModerationService;
   sources: EventSource[];
   manualSource: ManualEventSource;
   simulatedSource: SimulatedEventSource;
@@ -190,8 +185,6 @@ const settingsSchema = {
       items: { type: "string", minLength: 1, maxLength: 253 },
     },
     port: { type: "integer", minimum: 1024, maximum: 65535 },
-    moderationMaxPending: { type: "integer", minimum: 0, maximum: 500 },
-    moderationMaxPendingPerUser: { type: "integer", minimum: 0, maximum: 100 },
     eventHistoryMax: { type: "integer", minimum: 10, maximum: 5000 },
   },
 } as const;
@@ -229,12 +222,11 @@ const ruleSchema = {
       additionalProperties: false,
       required: ["kind"],
       properties: {
-        kind: { type: "string", enum: ["play_clip", "submit_url"] },
+        kind: { type: "string", enum: ["play_clip"] },
         clipId: { type: "string", maxLength: 128 },
         priority: { type: "number" },
         volume: { type: "number", minimum: 0, maximum: 1 },
         maxDurationSec: { type: "number", minimum: 1 },
-        autoApprove: { type: "boolean" },
       },
     },
   },
@@ -360,56 +352,9 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   });
   if (requireOverlay) queue.setPlayerReady(hub.clientCount() > 0);
 
-  // --- Moderación, motor de reglas y fuentes locales (Fase 4A) ---------------
+  // --- Motor de reglas y fuentes locales (Fase 4A) ---------------------------
 
   const debug = process.env.CZERO_DEBUG === "1";
-
-  // El coordinador se crea más abajo (necesita al motor), pero la moderación ya
-  // lo usa desde sus callbacks: por eso la referencia se declara acá.
-  let coordinatorRef: RedemptionCoordinator | null = null;
-
-  const moderation = new ModerationService({
-    db,
-    limits: (): ModerationLimits => {
-      const settings = readSettings(db);
-      return {
-        maxPendingGlobal: settings.moderationMaxPending,
-        maxPendingPerUser: settings.moderationMaxPendingPerUser,
-      };
-    },
-    validate: (raw) => {
-      const result = validateUrl(raw, { allowedDomains: readSettings(db).allowedDomains });
-      return result.ok ? { ok: true, url: result.url } : { ok: false, reason: result.reason };
-    },
-    startDownload: (proposal) => {
-      jobs.create(proposal.url, {
-        tag: proposal.id,
-        onDone: (job) => {
-          moderation.markDownloadResult(
-            proposal.id,
-            job.status === "ready" && job.clipId
-              ? { ok: true, clipId: job.clipId }
-              : { ok: false, message: job.message ?? "La descarga falló." },
-          );
-        },
-      });
-    },
-    onReady: (proposal, clipId) => {
-      const settings = readSettings(db);
-      queue.enqueue({
-        clipId,
-        volume: settings.globalVolume / 100,
-        maxDurationSec: settings.defaultMaxDurationSec,
-        label: proposal.userName,
-      });
-    },
-    // El canje de origen queda en sincronía con el estado final de la propuesta.
-    // `accept`/`reject` NO resuelven en la plataforma acá (ya lo hizo la
-    // moderación con su propio `resolve`); `failed` sí, según la política.
-    onSettled: (proposal, outcome) => {
-      void coordinatorRef?.handleProposalSettled(proposal.platform, proposal.eventId, outcome);
-    },
-  });
 
   const manualSource = new ManualEventSource();
   const simulatedSource = new SimulatedEventSource();
@@ -428,7 +373,6 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
   const engine = new RuleEngine({
     queue,
-    moderation,
     now: options.now,
     resolveEvent: async (event, outcome) => {
       const source = sources.find(
@@ -497,14 +441,6 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       engine.forget(event.id);
       const result = await engine.handle(event);
       await recordHistory(event, result);
-      // Si la regla fue `SubmitUserUrl`, hay una propuesta ligada a este canje.
-      const proposal = findProposalByEvent(db, event.platform, event.id);
-      if (proposal) {
-        if (proposal.status === "pending" || proposal.status === "approved" || proposal.status === "downloading") {
-          return { outcome: "awaiting_moderation", reason: "Esperando aprobación" };
-        }
-        return { outcome: "proposal_settled", reason: proposal.reason ?? undefined };
-      }
       switch (result.outcome) {
         case "fired":
           return { outcome: "fired" };
@@ -518,7 +454,6 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     },
     logger: debug ? (message) => console.log(`[redemptions] ${message}`) : undefined,
   });
-  coordinatorRef = coordinator;
 
   for (const source of sources) {
     // Los canjes que la plataforma deja pendientes pasan por el coordinador; el
@@ -980,31 +915,6 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       return { ok: true, events: listHistory(db, Number.isInteger(limit) && limit > 0 ? limit : 200) };
     });
 
-    // --- Moderación de URLs propuestas ---------------------------------------
-
-    api.get<{ Querystring: { status?: string } }>("/api/moderation", async (request) => ({
-      ok: true,
-      proposals: listProposals(db, { status: request.query.status, limit: 200 }),
-    }));
-
-    api.post<{ Params: { id: string } }>("/api/moderation/:id/approve", async (request, reply) => {
-      const result = moderation.approve(request.params.id);
-      if (!result.ok) {
-        const code = result.reason === "NOT_FOUND" ? 404 : result.reason === "INVALID_TRANSITION" ? 409 : 400;
-        return reply.code(code).send({ ok: false, reason: result.reason, message: result.message });
-      }
-      return { ok: true, proposal: result.proposal };
-    });
-
-    api.post<{ Params: { id: string } }>("/api/moderation/:id/reject", async (request, reply) => {
-      const result = moderation.reject(request.params.id);
-      if (!result.ok) {
-        const code = result.reason === "NOT_FOUND" ? 404 : 409;
-        return reply.code(code).send({ ok: false, reason: result.reason, message: result.message });
-      }
-      return { ok: true, proposal: result.proposal };
-    });
-
     // --- Simulación de eventos (sin plataforma) ------------------------------
 
     api.get("/api/sources", async () => ({
@@ -1068,7 +978,6 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     jobs,
     db,
     engine,
-    moderation,
     sources,
     manualSource,
     simulatedSource,

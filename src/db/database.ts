@@ -13,7 +13,7 @@ import Database from "better-sqlite3";
 export type SqliteDatabase = Database.Database;
 
 /** Cantidad de migraciones aplicadas; equivale al `user_version` esperado. */
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const MIGRATIONS: ReadonlyArray<(db: SqliteDatabase) => void> = [
   (db) => {
@@ -136,6 +136,15 @@ const MIGRATIONS: ReadonlyArray<(db: SqliteDatabase) => void> = [
       CREATE INDEX IF NOT EXISTS idx_redemptions_status ON redemptions(status);
       CREATE INDEX IF NOT EXISTS idx_redemptions_created ON redemptions(created_at);
     `);
+  },
+  // Rediseño (Etapa 1): el público ya no envía links. Se eliminan la tabla de
+  // propuestas de moderación y los settings que solo usaba ese flujo. NO se toca
+  // ninguna otra tabla (clips, settings activos, reglas, historial, canjes).
+  (db) => {
+    db.exec(`DROP TABLE IF EXISTS proposals;`);
+    db.exec(
+      `DELETE FROM settings WHERE key IN ('moderation.maxPending', 'moderation.maxPendingPerUser');`,
+    );
   },
 ];
 

@@ -1,7 +1,7 @@
 # Guía: conectar Kick (Fase 4B)
 
 Esta guía explica cómo vincular la cuenta de Kick y administrar recompensas de
-canal desde **czero-rewards**, usando la **API oficial** de Kick.
+canal desde **VIUrewards**, usando la **API oficial** de Kick.
 
 Todo corre en la PC del streamer. El único tráfico de red de esta integración es
 **saliente** hacia Kick (`https://id.kick.com` para OAuth y `https://api.kick.com`
@@ -97,12 +97,8 @@ En **Recompensas del canal** → **Nueva recompensa**:
 
 - **Título** (≤50), **Costo** (puntos, ≥1), **Descripción** (≤200), **Color**,
   **Habilitada** y **Pide texto al espectador**.
-- **Acción al canjear** (la regla asociada):
-  - **Modo A — "Reproducir un clip fijo"**: elegís un clip de la biblioteca,
-    volumen, duración máxima y cooldown. Crea una acción `PlayClip`.
-  - **Modo B — "URL del espectador (moderación)"**: el texto del canje es una URL
-    que entra a la **cola de moderación**. Crea una acción `SubmitUserUrl` y
-    **exige** que la recompensa pida texto.
+- **Regla asociada (clip fijo)**: elegís un clip de la biblioteca, volumen,
+  duración máxima y cooldown. Crea una acción `PlayClip`.
 
 La regla usa un trigger `reward_redeemed` con el **id de la recompensa**. La API
 de Kick **no** tiene campos de video/volumen/duración: esos son locales
@@ -123,10 +119,6 @@ Ciclo de vida de un canje:
 
 - **Regla `PlayClip`**: el clip se **encola** y el canje se **acepta al encolar**
   (decisión documentada; ver `docs/dashboard.md`).
-- **Regla `SubmitUserUrl`**: el canje queda **pendiente en Kick** mientras la URL
-  espera moderación. **Aprobar** la propuesta descarga el clip y **acepta** el
-  canje; **rechazar** (o una URL inválida, o una descarga fallida) sigue la
-  política configurada.
 - **Canje omitido** (cooldown, permisos o sin regla): según **"Al omitir un
   canje"** en Configuración:
   - **Dejarlo pendiente** (por defecto).
@@ -141,8 +133,8 @@ Aceptar/rechazar se hace en **lotes de máximo 25** (`{ ids: [...] }`). La API s
 devuelve los que **fallaron**, con `reason` ∈ `UNKNOWN | NOT_PENDING | NOT_FOUND |
 NOT_OWNED`; esos motivos quedan en el historial.
 
-`user_input` es **input no confiable**: se valida como URL (whitelist, https,
-longitud) antes de encolar una descarga.
+`user_input` es **input no confiable**: se marca como tal y **nunca** se pasa a un
+proceso ni se usa para lanzar descargas.
 
 ## 8. Diagnóstico y límites de tasa
 

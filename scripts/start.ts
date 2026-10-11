@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     : " (primera vez: te va a pedir crear una contraseña)";
 
   console.log("");
-  console.log("czero-rewards está corriendo.");
+  console.log("VIUrewards está corriendo.");
   console.log(`  Dashboard: ${info.dashboardUrl}`);
   console.log(`  Overlay:   ${info.overlayUrl}`);
   console.log(`  Abrí el dashboard en el navegador${firstRun}.`);

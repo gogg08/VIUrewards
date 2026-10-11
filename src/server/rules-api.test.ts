@@ -1,9 +1,9 @@
 /**
- * Integración de la API de reglas, historial y moderación (Fase 4A).
+ * Integración de la API de reglas e historial (Fase 4A).
  *
  * Usa `app.inject` (sin socket) y una fuente simulada; el motor se ejercita de
  * punta a punta. Cubre: sesión requerida, alta/edición/baja de reglas, simulación
- * de eventos, historial y el flujo aprobar -> descargar -> encolar con `resolve`.
+ * de eventos e historial.
  */
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -241,81 +241,8 @@ describe("disparo de reglas por eventos simulados", () => {
   });
 });
 
-describe("moderación de punta a punta", () => {
-  it("propone, lista, aprueba, descarga, encola y resuelve", async () => {
-    const ctx = await withServer();
-    await postJson(ctx, "/api/rules", playRuleBody({
-      name: "Propuestas",
-      trigger: { type: "chat_command", command: "alerta" },
-      action: { kind: "submit_url", autoApprove: false },
-    }));
-
-    // El público propone una URL por el chat.
-    await postJson(ctx, "/api/simulate", {
-      type: "chat_command",
-      command: "alerta",
-      args: ["https://www.youtube.com/watch?v=abc12345678"],
-      userName: "Ana",
-      userId: "u1",
-    });
-
-    const pending = await waitFor(async () => {
-      const response = await ctx.server.app.inject({ method: "GET", url: "/api/moderation?status=pending", headers: { cookie: ctx.cookie } });
-      const proposals = response.json().proposals;
-      return proposals.length > 0 ? proposals : null;
-    });
-    const proposalId = pending[0].id as string;
-
-    // Rechazar/aceptar por API.
-    const approved = await postJson(ctx, `/api/moderation/${proposalId}/approve`, {});
-    expect(approved.statusCode).toBe(200);
-
-    // La descarga (fake) corre en segundo plano y la propuesta queda lista.
-    const ready = await waitFor(async () => {
-      const response = await ctx.server.app.inject({ method: "GET", url: "/api/moderation", headers: { cookie: ctx.cookie } });
-      const proposal = response.json().proposals.find((p: { id: string }) => p.id === proposalId);
-      return proposal && proposal.status === "ready" ? proposal : null;
-    });
-    expect(ready.clipId).toBeTruthy();
-
-    // El clip aprobado se encola para el overlay.
-    const state = await waitFor(async () => {
-      const response = await ctx.server.app.inject({ method: "GET", url: "/api/state", headers: { cookie: ctx.cookie } });
-      const state = response.json();
-      return state.current && state.current.clipId === ready.clipId ? state : null;
-    });
-    expect(state.current.label).toBe("Ana");
-
-    // La plataforma simulada registró el resolve "accept".
-    expect(ctx.server.simulatedSource.getResolutions().some((r) => r.outcome === "accept")).toBe(true);
-  });
-
-  it("rechazar no dispara descarga", async () => {
-    const ctx = await withServer();
-    await postJson(ctx, "/api/rules", playRuleBody({
-      trigger: { type: "chat_command", command: "alerta" },
-      action: { kind: "submit_url", autoApprove: false },
-    }));
-    await postJson(ctx, "/api/simulate", {
-      type: "chat_command",
-      command: "alerta",
-      args: ["https://youtu.be/xyz"],
-      userName: "Ana",
-      userId: "u1",
-    });
-
-    const pending = await waitFor(async () => {
-      const response = await ctx.server.app.inject({ method: "GET", url: "/api/moderation?status=pending", headers: { cookie: ctx.cookie } });
-      const proposals = response.json().proposals;
-      return proposals.length > 0 ? proposals : null;
-    });
-
-    const rejected = await postJson(ctx, `/api/moderation/${pending[0].id}/reject`, {});
-    expect(rejected.statusCode).toBe(200);
-    expect(ctx.server.jobs.list()).toHaveLength(0);
-  });
-
-  it("plantilla de clip en la base para referencias de la UI", async () => {
+describe("API de clips", () => {
+  it("lista un clip cargado en la base", async () => {
     const ctx = await withServer();
     upsertClip(ctx.server.db, {
       id: "clip-x",

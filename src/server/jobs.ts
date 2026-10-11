@@ -19,7 +19,7 @@ export interface DownloadJob {
   clipId?: string;
   title?: string;
   message?: string;
-  /** Etiqueta del trabajo (p. ej. el id de una propuesta de moderación). */
+  /** Etiqueta opcional del trabajo. */
   tag?: string;
   createdAt: number;
   updatedAt: number;
@@ -58,7 +58,7 @@ export interface DownloadJobManagerOptions {
 }
 
 export interface CreateJobOptions {
-  /** Etiqueta para identificar el trabajo por fuera (p. ej. una propuesta). */
+  /** Etiqueta opcional para identificar el trabajo por fuera. */
   tag?: string;
   /** Se llama cuando el trabajo termina (listo o con error). */
   onDone?: (job: DownloadJob) => void;

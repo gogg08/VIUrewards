@@ -13,11 +13,10 @@ import type {
   RuleActionConfig,
   RuleConditions,
   RuleTrigger,
-  SubmitUserUrlActionConfig,
 } from "./types.ts";
 
 export const PERMISSIONS: readonly Permission[] = ["everyone", "subs", "mods"];
-export const RULE_ACTIONS = ["play_clip", "submit_url"] as const;
+export const RULE_ACTIONS = ["play_clip"] as const;
 
 export const MAX_RULE_NAME_LENGTH = 100;
 export const MAX_COOLDOWN_SEC = 86_400;
@@ -123,12 +122,6 @@ function validateAction(raw: unknown): RuleActionConfig | string {
       }
       action.maxDurationSec = raw.maxDurationSec;
     }
-    return action;
-  }
-
-  if (raw.kind === "submit_url") {
-    const autoApprove = raw.autoApprove === true;
-    const action: SubmitUserUrlActionConfig = { kind: "submit_url", autoApprove };
     return action;
   }
 

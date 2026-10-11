@@ -291,26 +291,26 @@ describe("/api/platforms/* : recompensas y regla asociada", () => {
     expect(response.json()).toMatchObject({ ok: true, rule: null });
   });
 
-  it("crea una recompensa con una regla modo B (URL del espectador) en el mismo formulario", async () => {
+  it("crea una recompensa con una regla de clip fijo en el mismo formulario", async () => {
     const { server, cookie } = await withServer();
     const response = await server.app.inject({
       method: "POST",
       url: "/api/platforms/fake/rewards",
       headers: { cookie, origin: ORIGIN },
-      payload: { title: "URL", cost: 50, userInputRequired: true, rule: { mode: "submit_url" } },
+      payload: { title: "Alerta", cost: 50, rule: { mode: "play_clip", clipId: "clip-1" } },
     });
     expect(response.statusCode).toBe(200);
     const body = response.json() as { rule: { trigger: { rewardId: string } } | null };
     expect(body.rule?.trigger.rewardId).toBe("rw-1");
   });
 
-  it("avisa si el modo B no pide texto al espectador, sin romper", async () => {
+  it("avisa si a la regla le falta el clip, sin romper", async () => {
     const { server, cookie } = await withServer();
     const response = await server.app.inject({
       method: "POST",
       url: "/api/platforms/fake/rewards",
       headers: { cookie, origin: ORIGIN },
-      payload: { title: "URL", cost: 50, rule: { mode: "submit_url" } },
+      payload: { title: "Alerta", cost: 50, rule: { mode: "play_clip" } },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ ok: true, rule: null });
@@ -323,7 +323,7 @@ describe("/api/platforms/* : recompensas y regla asociada", () => {
       method: "POST",
       url: "/api/platforms/fake/rewards",
       headers: { cookie, origin: ORIGIN },
-      payload: { title: "URL", cost: 50, userInputRequired: true, rule: { mode: "submit_url" } },
+      payload: { title: "Alerta", cost: 50, rule: { mode: "play_clip", clipId: "clip-1" } },
     });
     expect(created.statusCode).toBe(200);
 

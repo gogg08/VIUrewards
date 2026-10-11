@@ -10,7 +10,6 @@
  */
 
 import type { EventType, NormalizedEvent } from "../events/index.ts";
-import type { ModerationSink } from "../moderation/index.ts";
 import type { EnqueueSink } from "../queue/index.ts";
 import { defaultActionResolver } from "./actions.ts";
 import { CooldownTracker } from "./cooldown.ts";
@@ -39,14 +38,13 @@ export interface EngineLogEntry {
 
 export interface RuleEngineOptions {
   queue: EnqueueSink;
-  moderation: ModerationSink;
   /** Reloj inyectable para cooldowns. */
   now?: () => number;
   /** Máximo de ids de eventos recordados para idempotencia. */
   maxRecentEventIds?: number;
   /** Resuelve el evento de origen (accept/reject) si la plataforma lo soporta. */
   resolveEvent?: (event: NormalizedEvent, outcome: "accept" | "reject") => Promise<void>;
-  /** Fábrica de acciones; por defecto arma PlayClip / SubmitUserUrl. */
+  /** Fábrica de acciones; por defecto arma `PlayClip`. */
   resolveAction?: ActionResolver;
   logger?: (entry: EngineLogEntry) => void;
 }
@@ -56,7 +54,6 @@ const DEFAULT_MAX_RECENT = 500;
 export class RuleEngine {
   private rules: Rule[] = [];
   private readonly queue: EnqueueSink;
-  private readonly moderation: ModerationSink;
   private readonly cooldowns: CooldownTracker;
   private readonly resolveAction: ActionResolver;
   private readonly resolveEvent?: (event: NormalizedEvent, outcome: "accept" | "reject") => Promise<void>;
@@ -68,7 +65,6 @@ export class RuleEngine {
 
   constructor(options: RuleEngineOptions) {
     this.queue = options.queue;
-    this.moderation = options.moderation;
     this.cooldowns = new CooldownTracker(options.now);
     this.resolveAction = options.resolveAction ?? defaultActionResolver;
     this.resolveEvent = options.resolveEvent;
@@ -127,7 +123,6 @@ export class RuleEngine {
       const context: RuleActionContext = {
         event,
         queue: this.queue,
-        moderation: this.moderation,
         resolveEvent: (outcome) => this.resolveEvent?.(event, outcome) ?? Promise.resolve(),
       };
 

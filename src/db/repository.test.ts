@@ -1,27 +1,20 @@
 /**
- * Persistencia de reglas, historial de eventos y propuestas (Fase 4A).
+ * Persistencia de reglas e historial de eventos (Fase 4A).
  */
 
 import { describe, expect, it } from "vitest";
 
 import {
   addHistory,
-  countPendingProposals,
   deleteRule,
-  findPendingProposalByUrl,
-  getProposal,
   getRuleRecord,
-  insertProposal,
   listHistory,
-  listProposals,
   listRules,
   openMemoryDatabase,
   pruneHistory,
   SCHEMA_VERSION,
   toRule,
-  updateProposalStatus,
   upsertRule,
-  type ProposalRecord,
   type RuleRecord,
 } from "./index.ts";
 
@@ -39,30 +32,17 @@ function sampleRule(overrides: Partial<RuleRecord> = {}): RuleRecord {
   };
 }
 
-function sampleProposal(overrides: Partial<ProposalRecord> = {}): ProposalRecord {
-  return {
-    id: "p1",
-    platform: "simulated",
-    userId: "u1",
-    userName: "Ana",
-    url: "https://www.youtube.com/watch?v=abc",
-    eventId: "evt-1",
-    status: "pending",
-    reason: null,
-    clipId: null,
-    createdAt: "2026-01-01T00:00:00.000Z",
-    updatedAt: "2026-01-01T00:00:00.000Z",
-    ...overrides,
-  };
-}
-
 describe("migración Fase 4A", () => {
-  it("crea rules, event_history y proposals", () => {
+  it("crea rules y event_history", () => {
     const db = openMemoryDatabase();
     expect(db.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
     expect(() => db.prepare("SELECT * FROM rules").all()).not.toThrow();
     expect(() => db.prepare("SELECT * FROM event_history").all()).not.toThrow();
-    expect(() => db.prepare("SELECT * FROM proposals").all()).not.toThrow();
+  });
+
+  it("elimina la tabla proposals (el público ya no envía links)", () => {
+    const db = openMemoryDatabase();
+    expect(() => db.prepare("SELECT * FROM proposals").all()).toThrow();
   });
 });
 
@@ -124,28 +104,5 @@ describe("event_history", () => {
     expect(listHistory(db)).toHaveLength(5);
     expect(pruneHistory(db, 2)).toBe(3);
     expect(listHistory(db)).toHaveLength(2);
-  });
-});
-
-describe("proposals", () => {
-  it("inserta, lee, lista y cuenta pendientes", () => {
-    const db = openMemoryDatabase();
-    insertProposal(db, sampleProposal());
-    insertProposal(db, sampleProposal({ id: "p2", url: "https://youtu.be/x", userId: "u2" }));
-    expect(getProposal(db, "p1")?.userName).toBe("Ana");
-    expect(listProposals(db, { status: "pending" })).toHaveLength(2);
-    expect(countPendingProposals(db)).toBe(2);
-    expect(countPendingProposals(db, "u1")).toBe(1);
-    expect(findPendingProposalByUrl(db, "https://www.youtube.com/watch?v=abc")?.id).toBe("p1");
-  });
-
-  it("actualiza el estado y conserva campos no tocados", () => {
-    const db = openMemoryDatabase();
-    insertProposal(db, sampleProposal());
-    expect(updateProposalStatus(db, "p1", "ready", { clipId: "clip-9" })).toBe(true);
-    const proposal = getProposal(db, "p1");
-    expect(proposal?.status).toBe("ready");
-    expect(proposal?.clipId).toBe("clip-9");
-    expect(proposal?.reason).toBeNull();
   });
 });

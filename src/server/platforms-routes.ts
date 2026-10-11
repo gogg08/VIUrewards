@@ -46,7 +46,7 @@ export interface OAuthCallbackContext {
 }
 
 interface RewardRuleBody {
-  mode: "play_clip" | "submit_url";
+  mode: "play_clip";
   clipId?: string;
   volume?: number;
   maxDurationSec?: number;
@@ -77,7 +77,7 @@ const rewardProperties = {
     additionalProperties: false,
     required: ["mode"],
     properties: {
-      mode: { type: "string", enum: ["play_clip", "submit_url"] },
+      mode: { type: "string", enum: ["play_clip"] },
       clipId: { type: "string", maxLength: 128 },
       volume: { type: "number", minimum: 0, maximum: 1 },
       maxDurationSec: { type: "number", minimum: 1 },
@@ -290,7 +290,7 @@ export function registerPlatformApiRoutes(app: FastifyInstance, ctx: PlatformRou
       const created = await integration.createReward(input);
       if (!created.ok) return reply.code(httpStatusFor(created.reason)).send({ ok: false, reason: created.reason, message: created.message });
 
-      // Regla opcional en el mismo formulario (modo A: clip fijo; modo B: URL).
+      // Regla asociada en el mismo formulario (reproduce un clip fijo).
       const ruleSpec = request.body.rule;
       if (ruleSpec) {
         const built = buildRewardRule(ruleSpec, created.value);
@@ -387,8 +387,8 @@ export function registerPlatformApiRoutes(app: FastifyInstance, ctx: PlatformRou
 type BuiltRule = { ok: true; rule: RuleRecord } | { ok: false; message: string };
 
 /**
- * Arma la regla asociada a una recompensa. Modo A: clip fijo (`PlayClip`).
- * Modo B: URL del espectador (`SubmitUserUrl`), exige que la recompensa pida texto.
+ * Arma la regla asociada a una recompensa. La única acción es reproducir un clip
+ * fijo (`PlayClip`); el público no envía links.
  */
 function buildRewardRule(spec: RewardRuleBody, reward: RewardView): BuiltRule {
   const id = randomUUID();
@@ -399,18 +399,10 @@ function buildRewardRule(spec: RewardRuleBody, reward: RewardView): BuiltRule {
     userCooldownSec: 0,
   };
 
-  let action: Record<string, unknown>;
-  if (spec.mode === "play_clip") {
-    if (!spec.clipId) return { ok: false, message: "Elegí un clip de la biblioteca." };
-    action = { kind: "play_clip", clipId: spec.clipId };
-    if (spec.volume !== undefined) action.volume = spec.volume;
-    if (spec.maxDurationSec !== undefined) action.maxDurationSec = spec.maxDurationSec;
-  } else {
-    if (!reward.userInputRequired) {
-      return { ok: false, message: "El modo \"URL del espectador\" exige que la recompensa pida texto." };
-    }
-    action = { kind: "submit_url", autoApprove: false };
-  }
+  if (!spec.clipId) return { ok: false, message: "Elegí un clip de la biblioteca." };
+  const action: Record<string, unknown> = { kind: "play_clip", clipId: spec.clipId };
+  if (spec.volume !== undefined) action.volume = spec.volume;
+  if (spec.maxDurationSec !== undefined) action.maxDurationSec = spec.maxDurationSec;
 
   const candidate = {
     id,
