@@ -21,25 +21,46 @@ Se guarda solo su hash (`crypto.scrypt` con salt aleatorio), nunca en texto plan
 Después, para entrar, se usa esa contraseña. La sesión va en una cookie
 `httpOnly`, `SameSite=Strict`.
 
-## Estructura de la interfaz (Etapa 2 del rediseño)
+## Estructura de la interfaz (Etapas 2 y 2B del rediseño)
 
-El dashboard es una **sola pantalla de uso** con **tres columnas con scroll
-independiente**; la página no scrollea (el encabezado y las columnas ocupan la
-altura de la ventana). En ventanas angostas las columnas se apilan.
+El dashboard es una **sola pantalla de uso** con **tres columnas**; la página no
+scrollea (el encabezado y las columnas ocupan la altura de la ventana).
+
+**Cada columna es una caja** (borde, fondo y radios del sistema) con **scroll
+vertical interno** y **sin scroll horizontal** (`overflow-y: auto; overflow-x:
+hidden`). El desborde siempre ocurre dentro de una caja, nunca en la página ni en
+una columna. En ventana angosta (<1024 px) se muestra **una columna por vez** con
+una **barra de pestañas fija** arriba (Recompensas, Clips, Cola).
 
 - **Encabezado:** logo VIUrewards; indicadores de **Overlay** (conectado / sin
   conexión) y **Kick** (no vinculado / conectado / requiere volver a vincular),
-  ambos clicables y abren **Ajustes** en su pestaña; botón **Descargas** (vacío por
-  ahora; se completa en la Etapa 3), engranaje (Ajustes) y Salir.
-- **Columna izquierda:** **Recompensas del canal**.
-- **Columna central:** **Agregar un clip** y la **Biblioteca**.
-- **Columna derecha:** **Cola** e **Historial** con un botón que alterna entre ambos.
+  ambos clicables y abren **Ajustes** en su pestaña. El indicador de Overlay, sin
+  conexión, muestra el tooltip "Revisá la fuente en OBS". A la derecha, **Descargas**
+  y **Ajustes** son **íconos SVG inline** (`currentColor`, sin archivos externos),
+  con `title`/`aria-label`; el de Descargas lleva el punto superpuesto en la esquina
+  (sin punto sin actividad, verde si hay algo en curso, rojo si hubo un error sin
+  ver). Después, Salir. El desplegable de Descargas sigue vacío (Etapa 3).
+- **Columna izquierda:** caja **Recompensas del canal**. Título, **Recargar** y
+  **Nueva recompensa** fijos arriba; el formulario y la lista scrollean dentro. La
+  lista se muestra como **tarjetas compactas** (nombre que hace wrap, costo, etiqueta
+  de estado y botones Editar/Borrar en una fila); las columnas Texto y Regla salen de
+  la vista (el dato se conserva). Es provisional hasta la Etapa 4.
+- **Columna central:** dos cajas apiladas, **Agregar un clip** (fija) y **Biblioteca**
+  (título fijo; la grilla scrollea dentro).
+- **Columna derecha:** **una sola caja** con el selector **Cola | Historial** dentro;
+  el contenido de la pestaña scrollea dentro. Los cuatro controles de la cola
+  (Saltar/Pausar/Reanudar/Vaciar) van en una sola fila, sin wrap (Vaciar en estilo
+  peligro). El panel **no** repite el aviso de overlay desconectado. El Historial usa
+  **filas de dos líneas** (título/recompensa + resultado; usuario · hora en 24 h
+  corto · motivo).
 - **Ajustes** es una **ventana flotante** con pestañas a la izquierda (Kick, Overlay
   y OBS, Alertas, Biblioteca y descargas, Seguridad, Apariencia —vacía por ahora— y
   Avanzado). Se cierra con Esc, con la X o con clic afuera; si hay cambios sin
-  guardar, avisa. Cada pestaña tiene su propio botón de guardado o su acción
-  inmediata. En esta etapa el contenido se movió a su pestaña **sin rediseñar cada
-  una** (la sección 7.3 de `UI-DESIGN.md` define el contenido final, Etapa 5).
+  guardar, avisa **y dice qué pestaña** los tiene. Cada pestaña tiene su propio botón
+  de guardado o su acción inmediata; el aviso de "sin guardar" es **por pestaña**
+  (guardar una no limpia el de otra). En esta etapa el contenido se movió a su pestaña
+  **sin rediseñar cada una** (la sección 7.3 de `UI-DESIGN.md` define el contenido
+  final, Etapa 5).
 
 El **sistema de diseño** vive en `web/style.css` y está hecho **solo con variables
 CSS** (colores, espaciados, radios y tipografías). Ningún componente escribe colores
@@ -226,6 +247,10 @@ clave del overlay.
   (`src/server/cookies.ts`) para no sumar una dependencia sin consultar.
 - **Sin `@types/better-sqlite3`**: hay una declaración ambiental mínima en
   `src/types/better-sqlite3.d.ts`.
+- **Título de la recompensa en el Historial (Etapa 2B)**: el evento lo guarda como
+  texto dentro del `payload` serializado (`payload_json`), que `/api/events` ya
+  devuelve; el frontend lo parsea y, si no viene, muestra el tipo de evento en
+  español. No hizo falta cambiar la API.
 - **Runtime TS de Node**: el código se ejecuta con el *type stripping* nativo de
   Node 22 (`node scripts/start.ts`), que **no soporta `enum` ni parameter
   properties**.
@@ -245,6 +270,13 @@ En la Fase 4B se sumó `src/server/platforms-ui.test.ts`, que verifica
 Plataformas existe y que no hay tokens de OAuth en el frontend. Sigue sin cubrir
 el render real: el vínculo OAuth contra Kick, la tabla de recompensas, el panel de
 diagnóstico y el flujo de canjes hay que probarlos a mano.
+
+La Etapa 2B (presentación: cajas, scroll interno, íconos SVG del encabezado, aviso
+por pestaña, una columna por vez en ventana angosta) es **solo CSS/HTML/JS de
+presentación**: el no-scroll horizontal, el punto de Descargas, el tooltip del
+indicador de Overlay y la barra de pestañas angosta **no** se pueden verificar sin
+navegador. Los tests existentes siguen cubriendo el orden de scripts, la existencia
+de assets, los handlers `@click` y la ausencia de tokens.
 
 ## Pendiente
 

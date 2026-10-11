@@ -46,7 +46,12 @@ function dashboardApp() {
     settingsTab: "kick",
     rightTab: "queue",
     downloadsOpen: false,
-    dirty: false,
+    // En ventana angosta se muestra una columna por vez (Recompensas/Clips/Cola).
+    mobileTab: "rewards",
+    // Pestañas de Ajustes con cambios sin guardar (el aviso es por pestaña).
+    dirtyTabs: {},
+    // El punto de Descargas se pone rojo si hubo un error que todavía no se vio.
+    downloadErrorUnseen: false,
 
     queue: { status: "idle", current: null, pending: [], size: 0, overlay: { connected: false, clients: 0 } },
 
@@ -180,8 +185,38 @@ function dashboardApp() {
     },
 
     get downloadStatusClass() {
-      if (this.job && this.job.status === "error") return "error";
-      return this.downloading ? "ok" : "";
+      if (this.downloading) return "ok";
+      if (this.job && this.job.status === "error" && this.downloadErrorUnseen) return "error";
+      // Cadena vacía: no se muestra el punto.
+      return "";
+    },
+
+    // Tooltip del indicador de Overlay cuando no hay nada conectado.
+    get overlayStatusTitle() {
+      return this.queue.overlay && this.queue.overlay.connected
+        ? "El overlay está conectado."
+        : "Revisá la fuente en OBS.";
+    },
+
+    // --- Cambios sin guardar (por pestaña de Ajustes) ------------------------
+
+    get hasUnsavedTabs() {
+      return Object.values(this.dirtyTabs).some(Boolean);
+    },
+
+    get dirtyTabNames() {
+      const labels = {
+        kick: "Kick",
+        overlay: "Overlay y OBS",
+        alerts: "Alertas",
+        library: "Biblioteca y descargas",
+        security: "Seguridad",
+        appearance: "Apariencia",
+        advanced: "Avanzado",
+      };
+      return Object.keys(this.dirtyTabs)
+        .filter((tab) => this.dirtyTabs[tab])
+        .map((tab) => labels[tab] ?? tab);
     },
 
     // --- Ajustes (ventana flotante) ------------------------------------------
@@ -190,13 +225,15 @@ function dashboardApp() {
       if (tab) this.settingsTab = tab;
       this.settingsOpen = true;
       this.downloadsOpen = false;
-      this.dirty = false;
     },
 
     closeSettings() {
-      if (this.dirty && !window.confirm("Hay cambios sin guardar. ¿Cerrar igual?")) return;
+      if (this.hasUnsavedTabs) {
+        const names = this.dirtyTabNames.join(", ");
+        if (!window.confirm("Hay cambios sin guardar en: " + names + ". ¿Cerrar igual?")) return;
+      }
       this.settingsOpen = false;
-      this.dirty = false;
+      this.dirtyTabs = {};
     },
 
     closeIfBackdrop($event) {
@@ -211,12 +248,24 @@ function dashboardApp() {
       this.rightTab = tab;
     },
 
-    toggleDownloads() {
-      this.downloadsOpen = !this.downloadsOpen;
+    // Barra de pestañas para ventana angosta (una columna por vez).
+    setMobileTab(tab) {
+      this.mobileTab = tab;
     },
 
+    toggleDownloads() {
+      this.downloadsOpen = !this.downloadsOpen;
+      // Abrir el panel marca el error como visto.
+      if (this.downloadsOpen) this.downloadErrorUnseen = false;
+    },
+
+    // Marca la pestaña actual de Ajustes como con cambios sin guardar.
     markDirty() {
-      this.dirty = true;
+      this.dirtyTabs[this.settingsTab] = true;
+    },
+
+    tabDirty(tab) {
+      return this.dirtyTabs[tab] === true;
     },
 
     // Esc cierra lo que esté abierto arriba de todo (desplegable, luego Ajustes).
@@ -283,6 +332,7 @@ function dashboardApp() {
         return;
       }
       this.job = data.job;
+      this.downloadErrorUnseen = false;
       this.pollJob(data.job.id);
     },
 
@@ -299,7 +349,9 @@ function dashboardApp() {
         if (this.job.status === "ready") {
           this.url = "";
           await this.loadClips();
-        } else if (this.job.status !== "error") {
+        } else if (this.job.status === "error") {
+          this.downloadErrorUnseen = true;
+        } else {
           this.pollJob(id);
         }
       }, 1000);
@@ -492,7 +544,8 @@ function dashboardApp() {
       this.settingsForm.domainsText = (data.settings.allowedDomains || []).join("\n");
       this.settingsRestart = Boolean(data.restartRequired);
       this.settingsSaved = true;
-      this.dirty = false;
+      // Solo se limpia el aviso de la pestaña que se guardó.
+      this.dirtyTabs[this.settingsTab] = false;
       setTimeout(() => (this.settingsSaved = false), 2000);
     },
 
@@ -971,6 +1024,42 @@ function dashboardApp() {
       return "Reproducir: " + (clip ? clip.title : action.clipId);
     },
 
+    // --- Historial (filas de dos líneas) ---------------------------------------
+
+    // Parsea el payload del evento (llega serializado como JSON en `payloadJson`).
+    eventPayload(entry) {
+      if (typeof entry.payloadJson !== "string") return null;
+      try {
+        const parsed = JSON.parse(entry.payloadJson);
+        return parsed && typeof parsed === "object" ? parsed : null;
+      } catch {
+        return null;
+      }
+    },
+
+    // Título de la recompensa si el evento lo trae; si no, el tipo en español.
+    historyTitle(entry) {
+      const payload = this.eventPayload(entry);
+      if (payload && typeof payload.rewardTitle === "string" && payload.rewardTitle.trim()) {
+        return payload.rewardTitle;
+      }
+      return this.eventTypeLabel(entry.type);
+    },
+
+    outcomeBadgeClass(outcome) {
+      switch (outcome) {
+        case "fired":
+          return "ok";
+        case "skipped":
+        case "duplicate":
+          return "warn";
+        case "error":
+          return "error";
+        default:
+          return "off";
+      }
+    },
+
     outcomeLabel(outcome) {
       switch (outcome) {
         case "fired":
@@ -1010,7 +1099,8 @@ function dashboardApp() {
     formatTime(iso) {
       const date = new Date(iso);
       if (Number.isNaN(date.getTime())) return "";
-      return date.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      // Hora corta en 24 h (por ejemplo 18:59).
+      return date.toLocaleTimeString("es-AR", { hour: "2-digit", minute: "2-digit", hour12: false });
     },
 
     formatDuration(seconds) {

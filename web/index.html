@@ -25,7 +25,7 @@
             class="status-pill"
             :class="overlayStatusClass"
             @click="openSettings('overlay')"
-            title="Estado del overlay. Abre Ajustes → Overlay y OBS."
+            :title="overlayStatusTitle"
           >
             <span class="dot"></span>
             <span x-text="overlayStatusLabel"></span>
@@ -44,8 +44,24 @@
 
         <div class="topbar-right">
           <div class="dropdown" @click.outside="downloadsOpen = false">
-            <button @click="toggleDownloads()">
-              Descargas <span class="dot" :class="downloadStatusClass"></span>
+            <button class="icon-btn" @click="toggleDownloads()" title="Descargas" aria-label="Descargas">
+              <svg
+                viewBox="0 0 24 24"
+                width="18"
+                height="18"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 3v12" />
+                <path d="M7 10l5 5 5-5" />
+                <path d="M5 21h14" />
+              </svg>
+              <!-- Punto: vacío si no hay actividad, verde si hay algo en curso, rojo si hubo un error sin ver. -->
+              <span class="dot dot-corner" x-show="downloadStatusClass" :class="downloadStatusClass"></span>
             </button>
             <div class="dropdown-menu" x-show="downloadsOpen" x-cloak>
               <h3>Descargas de esta sesión</h3>
@@ -53,125 +69,142 @@
             </div>
           </div>
 
-          <button class="ghost" @click="openSettings('kick')" title="Ajustes" aria-label="Ajustes">⚙</button>
+          <button class="icon-btn ghost" @click="openSettings('kick')" title="Ajustes" aria-label="Ajustes">
+            <svg
+              viewBox="0 0 24 24"
+              width="18"
+              height="18"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <circle cx="12" cy="12" r="3" />
+              <path
+                d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"
+              />
+            </svg>
+          </button>
           <button @click="logout()">Salir</button>
         </div>
       </header>
 
+      <!-- Barra de pestañas solo para ventana angosta: una columna por vez. -->
+      <nav class="mobile-tabs" aria-label="Paneles">
+        <button :class="{ active: mobileTab === 'rewards' }" @click="setMobileTab('rewards')">Recompensas</button>
+        <button :class="{ active: mobileTab === 'clips' }" @click="setMobileTab('clips')">Clips</button>
+        <button :class="{ active: mobileTab === 'queue' }" @click="setMobileTab('queue')">Cola</button>
+      </nav>
+
       <!-- ================= Tres columnas ================= -->
       <main class="app-grid">
         <!-- -------- Panel izquierdo: Recompensas -------- -->
-        <aside class="col col-left">
-          <div class="col-head">
-            <h2>Recompensas del canal</h2>
-            <button
-              class="small"
-              @click="loadRewards(activePlatform)"
-              :disabled="!isKickConnected"
-              title="Contrastar las recompensas con Kick"
-            >
-              Recargar
-            </button>
-          </div>
+        <aside class="col col-left" :class="{ 'narrow-hidden': mobileTab !== 'rewards' }">
+          <div class="box box-grow">
+            <div class="box-head">
+              <div class="box-title-row">
+                <h2>Recompensas del canal</h2>
+                <button
+                  class="small"
+                  @click="loadRewards(activePlatform)"
+                  :disabled="!isKickConnected"
+                  title="Contrastar las recompensas con Kick"
+                >
+                  Recargar
+                </button>
+              </div>
+              <button class="primary block" x-show="isKickConnected && !rewardForm" @click="newReward()">
+                Nueva recompensa
+              </button>
+            </div>
 
-          <p class="empty" x-show="!isKickConnected">
-            Vinculá tu cuenta de Kick en Ajustes para administrar tus recompensas.
-          </p>
-
-          <template x-if="isKickConnected">
-            <div class="stack">
-              <button class="primary block" @click="newReward()" x-show="!rewardForm">Nueva recompensa</button>
-              <p class="warn" x-show="!rewardForm && clips.length === 0">
-                Primero agregá un clip a la biblioteca.
+            <div class="box-body">
+              <p class="empty" x-show="!isKickConnected">
+                Vinculá tu cuenta de Kick en Ajustes para administrar tus recompensas.
               </p>
 
-              <!-- Formulario de recompensa (se rediseña en la Etapa 4) -->
-              <template x-if="rewardForm">
-                <div class="rule-form">
-                  <div class="settings-grid">
-                    <label class="field">
-                      <span>Título (máx. 50)</span>
-                      <input type="text" maxlength="50" x-model="rewardForm.title" />
-                    </label>
-                    <label class="field">
-                      <span>Costo (puntos)</span>
-                      <input type="number" min="1" max="1000000" x-model.number="rewardForm.cost" />
-                    </label>
-                    <label class="field">
-                      <span>Descripción (máx. 200)</span>
-                      <input type="text" maxlength="200" x-model="rewardForm.description" />
-                    </label>
-                    <label class="field">
-                      <span>Color</span>
-                      <input type="text" maxlength="32" x-model="rewardForm.color" placeholder="#00e701" />
-                    </label>
-                    <label class="field">
-                      <span>Habilitada</span>
-                      <input type="checkbox" x-model="rewardForm.enabled" />
-                    </label>
-                    <label class="field">
-                      <span>Pide texto al espectador</span>
-                      <input type="checkbox" x-model="rewardForm.userInputRequired" />
-                    </label>
-                    <label class="field" x-show="!rewardForm.id">
-                      <span>Clip</span>
-                      <select x-model="rewardForm.clipId">
-                        <option value="">Elegí un clip</option>
-                        <template x-for="clip in clips" :key="clip.id">
-                          <option :value="clip.id" x-text="clip.title"></option>
-                        </template>
-                      </select>
-                    </label>
-                    <label class="field" x-show="!rewardForm.id">
-                      <span>Volumen (0 a 1)</span>
-                      <input type="number" min="0" max="1" step="0.05" x-model.number="rewardForm.volume" />
-                    </label>
-                    <label class="field" x-show="!rewardForm.id">
-                      <span>Duración máxima (s)</span>
-                      <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
-                    </label>
-                    <label class="field" x-show="!rewardForm.id">
-                      <span>Cooldown de la regla (s)</span>
-                      <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
-                    </label>
-                  </div>
-                  <div class="row">
-                    <button class="primary" @click="saveReward(activePlatform)">Guardar recompensa</button>
-                    <button @click="cancelReward()">Cancelar</button>
-                    <span class="error" x-show="rewardMessage" x-text="rewardMessage"></span>
-                  </div>
-                </div>
-              </template>
+              <template x-if="isKickConnected">
+                <div class="stack">
+                  <p class="warn" x-show="!rewardForm && clips.length === 0">Primero agregá un clip a la biblioteca.</p>
 
-              <p class="empty" x-show="rewards.length === 0 && !rewardForm">
-                Todavía no creaste ninguna recompensa.
-              </p>
+                  <!-- Formulario de recompensa (se rediseña en la Etapa 4) -->
+                  <template x-if="rewardForm">
+                    <div class="rule-form">
+                      <div class="settings-grid">
+                        <label class="field">
+                          <span>Título (máx. 50)</span>
+                          <input type="text" maxlength="50" x-model="rewardForm.title" />
+                        </label>
+                        <label class="field">
+                          <span>Costo (puntos)</span>
+                          <input type="number" min="1" max="1000000" x-model.number="rewardForm.cost" />
+                        </label>
+                        <label class="field">
+                          <span>Descripción (máx. 200)</span>
+                          <input type="text" maxlength="200" x-model="rewardForm.description" />
+                        </label>
+                        <label class="field">
+                          <span>Color</span>
+                          <input type="text" maxlength="32" x-model="rewardForm.color" placeholder="#00e701" />
+                        </label>
+                        <label class="field">
+                          <span>Habilitada</span>
+                          <input type="checkbox" x-model="rewardForm.enabled" />
+                        </label>
+                        <label class="field">
+                          <span>Pide texto al espectador</span>
+                          <input type="checkbox" x-model="rewardForm.userInputRequired" />
+                        </label>
+                        <label class="field" x-show="!rewardForm.id">
+                          <span>Clip</span>
+                          <select x-model="rewardForm.clipId">
+                            <option value="">Elegí un clip</option>
+                            <template x-for="clip in clips" :key="clip.id">
+                              <option :value="clip.id" x-text="clip.title"></option>
+                            </template>
+                          </select>
+                        </label>
+                        <label class="field" x-show="!rewardForm.id">
+                          <span>Volumen (0 a 1)</span>
+                          <input type="number" min="0" max="1" step="0.05" x-model.number="rewardForm.volume" />
+                        </label>
+                        <label class="field" x-show="!rewardForm.id">
+                          <span>Duración máxima (s)</span>
+                          <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
+                        </label>
+                        <label class="field" x-show="!rewardForm.id">
+                          <span>Cooldown de la regla (s)</span>
+                          <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
+                        </label>
+                      </div>
+                      <div class="row">
+                        <button class="primary" @click="saveReward(activePlatform)">Guardar recompensa</button>
+                        <button @click="cancelReward()">Cancelar</button>
+                        <span class="error" x-show="rewardMessage" x-text="rewardMessage"></span>
+                      </div>
+                    </div>
+                  </template>
 
-              <div class="table-wrap" x-show="rewards.length > 0">
-                <table class="grid">
-                  <thead>
-                    <tr>
-                      <th>Título</th>
-                      <th>Costo</th>
-                      <th>Texto</th>
-                      <th>Regla</th>
-                      <th>Estado</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
+                  <p class="empty" x-show="rewards.length === 0 && !rewardForm">
+                    Todavía no creaste ninguna recompensa.
+                  </p>
+
+                  <!-- Lista de recompensas (provisional hasta la Etapa 4) -->
+                  <div class="reward-list" x-show="rewards.length > 0">
                     <template x-for="reward in rewards" :key="reward.id">
-                      <tr>
-                        <td x-text="reward.title"></td>
-                        <td x-text="reward.cost"></td>
-                        <td x-text="reward.userInputRequired ? 'Sí' : 'No'"></td>
-                        <td x-text="rewardRuleLabel(reward)"></td>
-                        <td>
+                      <div class="reward-card">
+                        <div class="reward-card-top">
+                          <span class="reward-name" x-text="reward.title"></span>
                           <span
                             class="badge"
                             :class="reward.enabled ? 'ok' : 'off'"
                             x-text="reward.enabled ? 'Habilitada' : 'Deshabilitada'"
                           ></span>
+                        </div>
+                        <div class="reward-card-bottom">
+                          <span class="muted" x-text="reward.cost + ' pts'"></span>
                           <span
                             class="badge warn"
                             x-show="!reward.managed"
@@ -179,180 +212,182 @@
                           >
                             De otra app
                           </span>
-                        </td>
-                        <td class="actions">
-                          <button @click="editReward(reward)" :disabled="!reward.managed">Editar</button>
-                          <button class="danger" @click="deleteReward(activePlatform, reward)" :disabled="!reward.managed">
-                            Borrar
-                          </button>
-                        </td>
-                      </tr>
+                          <span class="reward-card-actions">
+                            <button class="small" @click="editReward(reward)" :disabled="!reward.managed">Editar</button>
+                            <button
+                              class="small danger"
+                              @click="deleteReward(activePlatform, reward)"
+                              :disabled="!reward.managed"
+                              title="Solo se pueden editar las recompensas creadas por esta app"
+                            >
+                              Borrar
+                            </button>
+                          </span>
+                        </div>
+                      </div>
                     </template>
-                  </tbody>
-                </table>
-              </div>
+                  </div>
+                </div>
+              </template>
             </div>
-          </template>
+          </div>
         </aside>
 
         <!-- -------- Panel central: Agregar clip y Biblioteca -------- -->
-        <section class="col col-center">
-          <div class="panel stack">
-            <h2>Agregar un clip</h2>
-            <form class="row" @submit.prevent="startDownload()">
-              <input
-                type="url"
-                x-model="url"
-                placeholder="https://www.youtube.com/watch?v=..."
-                :disabled="downloading"
-              />
-              <button class="primary" type="submit" :disabled="downloading || !url">Descargar</button>
-            </form>
-            <div class="progress" x-show="job" :class="{ error: job && job.status === 'error' }">
-              <span x-text="jobLabel"></span>
-              <span x-show="job && job.status === 'ready'"> — ya está en la biblioteca.</span>
+        <section class="col col-center" :class="{ 'narrow-hidden': mobileTab !== 'clips' }">
+          <div class="box">
+            <div class="box-head">
+              <h2>Agregar un clip</h2>
             </div>
-            <p class="error" x-show="message" x-text="message"></p>
-          </div>
-
-          <div class="col-head">
-            <h2>Biblioteca <span class="muted" x-text="'(' + clips.length + ')'"></span></h2>
-          </div>
-
-          <p class="empty" x-show="clips.length === 0">
-            Todavía no hay clips. Pegá una URL arriba para empezar.
-          </p>
-
-          <div class="clip-grid">
-            <template x-for="clip in clips" :key="clip.id">
-              <div class="clip">
-                <video
-                  :id="'clip-video-' + clip.id"
-                  :src="'/media/' + clip.file"
-                  controls
-                  preload="metadata"
-                ></video>
-                <div class="body">
-                  <template x-if="editingId !== clip.id">
-                    <div class="title" x-text="clip.title"></div>
-                  </template>
-                  <template x-if="editingId === clip.id">
-                    <input type="text" x-model="editTitle" @keydown.enter.prevent="saveRename(clip)" />
-                  </template>
-
-                  <div class="meta">
-                    <span x-text="formatDuration(clip.durationSec)"></span> ·
-                    <span x-text="formatSize(clip.sizeBytes)"></span>
-                  </div>
-
-                  <!-- Recorte no destructivo (no modifica el archivo) -->
-                  <div class="trim">
-                    <div class="trim-row">
-                      <label>Inicio (s)</label>
-                      <input type="number" min="0" step="0.1" x-model.number="clip.trimStart" placeholder="0" />
-                      <button @click="useCurrentTime(clip, 'start')">Desde el video</button>
-                    </div>
-                    <div class="trim-row">
-                      <label>Fin (s)</label>
-                      <input type="number" min="0" step="0.1" x-model.number="clip.trimEnd" placeholder="final" />
-                      <button @click="useCurrentTime(clip, 'end')">Desde el video</button>
-                    </div>
-                    <div class="trim-row">
-                      <button class="primary" @click="saveTrim(clip)">Guardar recorte</button>
-                      <button @click="resetTrim(clip)">Restablecer</button>
-                      <span class="ok" x-show="clip.trimSaved">Guardado</span>
-                    </div>
-                  </div>
-
-                  <div class="row">
-                    <template x-if="editingId !== clip.id">
-                      <button @click="startRename(clip)">Renombrar</button>
-                    </template>
-                    <template x-if="editingId === clip.id">
-                      <button class="primary" @click="saveRename(clip)">Guardar</button>
-                    </template>
-                    <template x-if="editingId === clip.id">
-                      <button @click="editingId = null">Cancelar</button>
-                    </template>
-
-                    <button @click="play(clip)">Probar alerta</button>
-                    <button class="danger" @click="remove(clip)">Borrar</button>
-                  </div>
-                </div>
+            <div class="box-body">
+              <form class="row" @submit.prevent="startDownload()">
+                <input
+                  type="url"
+                  x-model="url"
+                  placeholder="https://www.youtube.com/watch?v=..."
+                  :disabled="downloading"
+                />
+                <button class="primary" type="submit" :disabled="downloading || !url">Descargar</button>
+              </form>
+              <div class="progress" x-show="job" :class="{ error: job && job.status === 'error' }">
+                <span x-text="jobLabel"></span>
+                <span x-show="job && job.status === 'ready'"> — ya está en la biblioteca.</span>
               </div>
-            </template>
+              <p class="error" x-show="message" x-text="message"></p>
+            </div>
+          </div>
+
+          <div class="box box-grow">
+            <div class="box-head">
+              <div class="box-title-row">
+                <h2>Biblioteca <span class="muted" x-text="'(' + clips.length + ')'"></span></h2>
+              </div>
+            </div>
+            <div class="box-body">
+              <p class="empty" x-show="clips.length === 0">Todavía no hay clips. Pegá una URL arriba para empezar.</p>
+
+              <div class="clip-grid">
+                <template x-for="clip in clips" :key="clip.id">
+                  <div class="clip">
+                    <video
+                      :id="'clip-video-' + clip.id"
+                      :src="'/media/' + clip.file"
+                      controls
+                      preload="metadata"
+                    ></video>
+                    <div class="body">
+                      <template x-if="editingId !== clip.id">
+                        <div class="title" x-text="clip.title"></div>
+                      </template>
+                      <template x-if="editingId === clip.id">
+                        <input type="text" x-model="editTitle" @keydown.enter.prevent="saveRename(clip)" />
+                      </template>
+
+                      <div class="meta">
+                        <span x-text="formatDuration(clip.durationSec)"></span> ·
+                        <span x-text="formatSize(clip.sizeBytes)"></span>
+                      </div>
+
+                      <!-- Recorte no destructivo (no modifica el archivo) -->
+                      <div class="trim">
+                        <div class="trim-row">
+                          <label>Inicio (s)</label>
+                          <input type="number" min="0" step="0.1" x-model.number="clip.trimStart" placeholder="0" />
+                          <button @click="useCurrentTime(clip, 'start')">Desde el video</button>
+                        </div>
+                        <div class="trim-row">
+                          <label>Fin (s)</label>
+                          <input type="number" min="0" step="0.1" x-model.number="clip.trimEnd" placeholder="final" />
+                          <button @click="useCurrentTime(clip, 'end')">Desde el video</button>
+                        </div>
+                        <div class="trim-row">
+                          <button class="primary" @click="saveTrim(clip)">Guardar recorte</button>
+                          <button @click="resetTrim(clip)">Restablecer</button>
+                          <span class="ok" x-show="clip.trimSaved">Guardado</span>
+                        </div>
+                      </div>
+
+                      <div class="row">
+                        <template x-if="editingId !== clip.id">
+                          <button @click="startRename(clip)">Renombrar</button>
+                        </template>
+                        <template x-if="editingId === clip.id">
+                          <button class="primary" @click="saveRename(clip)">Guardar</button>
+                        </template>
+                        <template x-if="editingId === clip.id">
+                          <button @click="editingId = null">Cancelar</button>
+                        </template>
+
+                        <button @click="play(clip)">Probar alerta</button>
+                        <button class="danger" @click="remove(clip)">Borrar</button>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+              </div>
+            </div>
           </div>
         </section>
 
         <!-- -------- Panel derecho: Cola e Historial -------- -->
-        <aside class="col col-right">
-          <div class="col-head">
-            <div class="segmented">
-              <button :class="{ active: rightTab === 'queue' }" @click="setRightTab('queue')">Cola</button>
-              <button :class="{ active: rightTab === 'history' }" @click="setRightTab('history')">Historial</button>
-            </div>
-          </div>
-
-          <!-- Cola de alertas -->
-          <div x-show="rightTab === 'queue'" class="stack">
-            <p class="error" x-show="queue.overlay && !queue.overlay.connected">
-              No hay ningún overlay conectado. Revisá la fuente en OBS.
-            </p>
-
-            <div class="panel stack">
-              <div class="row">
-                <button @click="skipQueue()" :disabled="!queue.current">Saltar</button>
-                <button @click="pauseQueue()" :disabled="queue.status !== 'playing'">Pausar</button>
-                <button @click="resumeQueue()" :disabled="queue.status !== 'paused'">Reanudar</button>
-                <button class="danger" @click="clearQueue()" :disabled="queue.pending.length === 0">Vaciar</button>
-              </div>
-
-              <p class="empty" x-show="!queue.current">No hay nada reproduciéndose.</p>
-
-              <div class="queue-current" x-show="queue.current">
-                <span class="badge" x-text="queue.status === 'paused' ? 'En pausa' : 'Reproduciendo'"></span>
-                <span x-text="queue.current ? queue.current.label || queue.current.clipId : ''"></span>
-              </div>
-
-              <div x-show="queue.pending.length > 0">
-                <p class="muted">En espera (<span x-text="queue.pending.length"></span>):</p>
-                <ol class="queue-list">
-                  <template x-for="item in queue.pending" :key="item.id">
-                    <li x-text="item.label || item.clipId"></li>
-                  </template>
-                </ol>
+        <aside class="col col-right" :class="{ 'narrow-hidden': mobileTab !== 'queue' }">
+          <div class="box box-grow">
+            <div class="box-head">
+              <div class="segmented">
+                <button :class="{ active: rightTab === 'queue' }" @click="setRightTab('queue')">Cola</button>
+                <button :class="{ active: rightTab === 'history' }" @click="setRightTab('history')">Historial</button>
               </div>
             </div>
-          </div>
 
-          <!-- Historial de eventos -->
-          <div x-show="rightTab === 'history'" class="stack">
-            <p class="muted">Últimos 100 eventos</p>
-            <p class="empty" x-show="eventLog.length === 0">Todavía no se recibió ningún evento.</p>
+            <div class="box-body">
+              <!-- Cola de alertas -->
+              <div x-show="rightTab === 'queue'" class="stack">
+                <div class="queue-controls">
+                  <button class="small" @click="skipQueue()" :disabled="!queue.current">Saltar</button>
+                  <button class="small" @click="pauseQueue()" :disabled="queue.status !== 'playing'">Pausar</button>
+                  <button class="small" @click="resumeQueue()" :disabled="queue.status !== 'paused'">Reanudar</button>
+                  <button class="small danger" @click="clearQueue()" :disabled="queue.pending.length === 0">Vaciar</button>
+                </div>
 
-            <div class="table-wrap" x-show="eventLog.length > 0">
-              <table class="grid">
-                <thead>
-                  <tr>
-                    <th>Hora</th>
-                    <th>Tipo</th>
-                    <th>Usuario</th>
-                    <th>Resultado</th>
-                    <th>Motivo</th>
-                  </tr>
-                </thead>
-                <tbody>
+                <p class="empty" x-show="!queue.current">No hay nada reproduciéndose.</p>
+
+                <div class="queue-current" x-show="queue.current">
+                  <span class="badge" x-text="queue.status === 'paused' ? 'En pausa' : 'Reproduciendo'"></span>
+                  <span x-text="queue.current ? queue.current.label || queue.current.clipId : ''"></span>
+                </div>
+
+                <div x-show="queue.pending.length > 0">
+                  <p class="muted">En espera (<span x-text="queue.pending.length"></span>):</p>
+                  <ol class="queue-list">
+                    <template x-for="item in queue.pending" :key="item.id">
+                      <li x-text="item.label || item.clipId"></li>
+                    </template>
+                  </ol>
+                </div>
+              </div>
+
+              <!-- Historial de eventos -->
+              <div x-show="rightTab === 'history'" class="stack">
+                <p class="muted">Últimos 100 eventos</p>
+                <p class="empty" x-show="eventLog.length === 0">Todavía no se recibió ningún evento.</p>
+
+                <div class="history-list" x-show="eventLog.length > 0">
                   <template x-for="entry in eventLog" :key="entry.id">
-                    <tr>
-                      <td x-text="formatTime(entry.createdAt)"></td>
-                      <td x-text="eventTypeLabel(entry.type)"></td>
-                      <td x-text="entry.userName"></td>
-                      <td x-text="outcomeLabel(entry.outcome)"></td>
-                      <td x-text="entry.reason || ''"></td>
-                    </tr>
+                    <div class="history-item">
+                      <div class="history-line-1">
+                        <span class="history-title" x-text="historyTitle(entry)"></span>
+                        <span class="badge" :class="outcomeBadgeClass(entry.outcome)" x-text="outcomeLabel(entry.outcome)"></span>
+                      </div>
+                      <div class="history-line-2">
+                        <span x-text="entry.userName"></span> · <span x-text="formatTime(entry.createdAt)"></span>
+                        <template x-if="entry.reason">
+                          <span> · <span x-text="entry.reason"></span></span>
+                        </template>
+                      </div>
+                    </div>
                   </template>
-                </tbody>
-              </table>
+                </div>
+              </div>
             </div>
           </div>
         </aside>
@@ -373,9 +408,15 @@
               <button :class="{ active: settingsTab === 'overlay' }" @click="setSettingsTab('overlay')">
                 Overlay y OBS
               </button>
-              <button :class="{ active: settingsTab === 'alerts' }" @click="setSettingsTab('alerts')">Alertas</button>
+              <button :class="{ active: settingsTab === 'alerts' }" @click="setSettingsTab('alerts')">
+                Alertas<span class="tab-dot" x-show="tabDirty('alerts')" title="Cambios sin guardar"></span>
+              </button>
               <button :class="{ active: settingsTab === 'library' }" @click="setSettingsTab('library')">
-                Biblioteca y descargas
+                Biblioteca y descargas<span
+                  class="tab-dot"
+                  x-show="tabDirty('library')"
+                  title="Cambios sin guardar"
+                ></span>
               </button>
               <button :class="{ active: settingsTab === 'security' }" @click="setSettingsTab('security')">
                 Seguridad
@@ -383,7 +424,9 @@
               <button :class="{ active: settingsTab === 'appearance' }" @click="setSettingsTab('appearance')">
                 Apariencia
               </button>
-              <button :class="{ active: settingsTab === 'advanced' }" @click="setSettingsTab('advanced')">Avanzado</button>
+              <button :class="{ active: settingsTab === 'advanced' }" @click="setSettingsTab('advanced')">
+                Avanzado<span class="tab-dot" x-show="tabDirty('advanced')" title="Cambios sin guardar"></span>
+              </button>
             </nav>
 
             <div class="tab-panels">

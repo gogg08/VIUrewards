@@ -15,21 +15,21 @@ El proyecto pasa a llamarse **VIUrewards** (antes `czero-rewards`). El logo es u
 
 ## 2. Pantalla principal
 
-Tres columnas con **scroll independiente por columna**. La página no scrollea: el encabezado y las columnas ocupan la altura de la ventana.
+Tres columnas, **cada una una caja** (borde, fondo y radios del sistema de diseño) con **scroll vertical interno** y **nunca horizontal**: la página no scrollea (el encabezado, las columnas y las cajas ocupan la altura de la ventana) y el desborde siempre ocurre dentro de una caja. La barra de pestañas Cola | Historial va **dentro** de la caja derecha.
 
 ```
-┌────────────────────────────────────────────────────────────────────┐
-│ [VIUrewards logo] [Overlay] [Kick]            [Descargas] [⚙] [Salir] │
-├───────────────┬───────────────────────────────────┬────────────────┤
-│ Recompensas   │ Agregar clip: [ link ] [+] [Desc.] │ Cola | Historial│
-│ (lista +      │ ─────────────────────────────────  │ [Saltar][Pausar]│
-│  nueva)       │ Biblioteca (scroll)                │ [Reanudar][Vaciar]│
-│               │  tarjetas de clips                 │ en reproducción │
-│               │                                    │ en espera       │
-└───────────────┴───────────────────────────────────┴────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│ [VIUrewards] [Overlay] [Kick]              [⬇ Descargas] [⚙] [Salir]  │
+├───────────────┬───────────────────────────────────┬──────────────────┤
+│ Recompensas   │ Agregar un clip  [link] [Descargar]│ Cola | Historial │
+│  (título +    │ ───────────────────────────────── │  [Saltar]        │
+│   Recargar +  │ Biblioteca (grilla con scroll)     │  [Pausar] ...    │
+│   Nueva) fijo │                                    │  en reproducción │
+│  lista scroll │                                    │  en espera       │
+└───────────────┴───────────────────────────────────┴──────────────────┘
 ```
 
-Ventana angosta (por ejemplo un dock de OBS): las columnas se apilan o se muestran una por vez con pestañas. Foco visible y navegación por teclado en todo.
+Ventana angosta (menos de 1024 px, por ejemplo un dock de OBS): se muestra **una columna por vez** con una barra de pestañas fija arriba (Recompensas, Clips, Cola), de modo que ningún panel queda inalcanzable. La página sigue sin scrollear. Foco visible y navegación por teclado en todo.
 
 ## 3. Encabezado
 
@@ -41,7 +41,9 @@ Ventana angosta (por ejemplo un dock de OBS): las columnas se apilan o se muestr
 
 ## 4. Panel izquierdo: Recompensas
 
-Lista de recompensas con un botón "Nueva recompensa".
+La columna es **una caja** con scroll vertical interno (nunca horizontal). Arriba, fijos: el título, **Recargar** y **Nueva recompensa**; el contenido (formulario y lista) scrollea dentro de la caja.
+
+Lista de recompensas con un botón "Nueva recompensa". Hasta la Etapa 4, la lista se muestra como **tarjetas compactas** con nombre (puede hacer wrap), costo, etiqueta de estado y los botones Editar/Borrar en una fila; las columnas Texto y Regla se quitan de la vista (el dato se conserva).
 
 **Tarjeta colapsada:** nombre de la alerta, costo, nombre del clip, color y un **toggle** de activa/desactiva. Sin miniatura.
 
@@ -64,6 +66,8 @@ Lista de recompensas con un botón "Nueva recompensa".
 
 ## 5. Panel central
 
+Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Biblioteca** (título fijo; la grilla de clips scrollea dentro de la caja). Scroll vertical interno, nunca horizontal.
+
 ### Agregar un clip
 - Campo de link (YouTube, TikTok, etc., según los dominios permitidos) con botón **Descargar**.
 - A la derecha del campo, un botón **+** para agregar un archivo local.
@@ -77,10 +81,10 @@ Lista de recompensas con un botón "Nueva recompensa".
 
 ## 6. Panel derecho: Cola e Historial
 
-Un solo panel con un botón que alterna entre **Cola de alertas** e **Historial de eventos**.
+**Una sola caja** con scroll vertical interno (nunca horizontal). Arriba, dentro de la caja, el selector **Cola | Historial**; debajo, el contenido de la pestaña, que scrollea dentro de la caja.
 
-- **Cola:** botones Saltar, Pausar, Reanudar y Vaciar. Muestra el clip en reproducción y los que esperan. Saltar es la forma de destrabar el clip en curso; Vaciar solo limpia la espera.
-- **Historial:** eventos recientes con hora, recompensa (el título se guarda como texto en el evento, para leerse aunque la recompensa ya no exista), usuario y resultado, con el motivo si no disparó (por ejemplo cooldown).
+- **Cola:** botones Saltar, Pausar, Reanudar y Vaciar en una sola fila (sin wrap). Muestra el clip en reproducción y los que esperan. Saltar es la forma de destrabar el clip en curso; Vaciar solo limpia la espera. El panel **no** muestra el aviso de overlay desconectado: eso lo informa el indicador del encabezado (con tooltip "Revisá la fuente en OBS").
+- **Historial:** **filas de dos líneas**, sin truncar. Línea 1: el título de la recompensa (guardado como texto en el evento, para leerse aunque la recompensa ya no exista; si el evento no lo trae, el tipo en español) y el resultado como etiqueta. Línea 2: usuario · hora · motivo si lo hay, en texto secundario. Hora en formato 24 h corto (por ejemplo 18:59).
 
 ## 7. Ventanas flotantes
 
@@ -88,23 +92,28 @@ Todas se muestran sobre el panel principal, que se oscurece con negro de opacida
 
 ### 7.1 Crear y editar recompensa
 
-**Siempre visible:**
-1. **Clip:** menú desplegable con **nombre y duración** (sin miniatura).
-2. **Nombre de la alerta:** por defecto el nombre del clip, limpiado (sin emojis ni hashtags) y recortado a 50 caracteres (límite de Kick), con contador. El creador puede cambiarlo.
-3. **Costo en puntos.**
-4. **Color:** selector de color.
-5. **Descripción:** opcional, hasta 200 caracteres.
-6. **Activar al guardar:** toggle.
+**Ventana flotante** (modal sobre el panel oscurecido), no un formulario dentro de la columna. Arranca chica, con **solo el menú desplegable de clip** (nombre y duración, sin miniatura), y crece hacia abajo al elegir un clip, mostrando el resto de los campos, con transición suave, altura máxima y scroll interno; no ocupa toda la pantalla. Al **editar** una recompensa existente el clip ya está elegido, así que abre expandida; si el creador cambia de clip, no se vuelve a achicar. Si no hay ningún clip en la biblioteca, el desplegable muestra un estado vacío con el aviso de que primero hace falta agregar uno.
 
-**Opciones avanzadas (colapsadas, con valores por defecto razonables):** volumen de la alerta, duración máxima en pantalla, cooldown global y por usuario, posición y animación de entrada y salida. Si el clip es solo audio, posición y animación no se muestran.
+Campos:
+1. **Clip:** menú desplegable con nombre y duración.
+2. **Nombre de la alerta:** se completa solo con el nombre del clip (limpiado: sin emojis ni hashtags), recortado a 50 caracteres, con contador. Se actualiza al cambiar de clip **mientras el creador no lo haya editado a mano**.
+3. **Costo en puntos.**
+4. **Descripción:** opcional, hasta 200 caracteres.
+5. **Color:** campo hex y selector de color nativo a la derecha, sincronizados y validados (`#RRGGBB`).
+
+**Opciones avanzadas (colapsadas):** volumen como slider con porcentaje (0 a 100 %; se guarda 0 a 1), duración máxima y cooldown, uno al lado del otro en campos angostos, más posición y animación de entrada y salida.
+
+**Interruptores:** "Activar al guardar" es un interruptor (switch), no un checkbox. La tarjeta colapsada de la lista lleva un interruptor de activa/desactiva (`is_enabled`) con los estados de la sección 4.
 
 **Botones:** Probar alerta (reproduce con la configuración actual, sin guardar), Cancelar y Guardar.
 
 **Notas:**
-- El campo "requiere texto del usuario" de Kick queda siempre apagado y oculto.
+- Se elimina "Pide texto al espectador": va siempre apagado (se envía explícitamente falso a Kick).
 - La opción de Kick para saltar la cola de solicitudes no se muestra (pendiente de verificar).
 - Al editar, nombre, costo, color y descripción se envían a Kick; el clip y las opciones de reproducción son solo de la app.
-- Si el clip no existe todavía en la biblioteca, el botón de crear avisa que primero hace falta un clip.
+- La regla interna se crea y se mantiene sola; el creador no la ve.
+
+**Estado:** documentado en la Etapa 2B; la ventana se implementa en la Etapa 4.
 
 ### 7.2 Detalle del clip
 
@@ -133,7 +142,7 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar
 
 ## 8. Botón Descargas
 
-A la izquierda del engranaje, con un **punto verde** mientras hay algo en curso y **rojo** si hubo un error sin ver. Abre un **desplegable anclado al botón** (no modal, no oscurece el fondo; se cierra con clic afuera o Esc).
+**Descargas y Ajustes (engranaje) son íconos SVG inline** (`currentColor`, sin archivos externos), con `title` y `aria-label`. Van a la izquierda de Salir. El de Descargas lleva el **punto superpuesto en la esquina**: no hay punto si no hay nada en curso, verde si hay algo, rojo si hubo un error sin ver. Abre un **desplegable anclado al botón** (no modal, no oscurece el fondo; se cierra con clic afuera o Esc).
 
 - Una fila por elemento: nombre (o link recortado) y estado: en cola, descargando, convirtiendo, listo, error. Incluye los archivos locales y los arrastrados.
 - Acciones por fila: reintentar y quitar (en errores), "ver en la biblioteca" (en los listos), y "ya estaba en la biblioteca" si es un duplicado. Arriba, "Limpiar terminados".

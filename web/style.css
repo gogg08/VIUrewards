@@ -290,6 +290,7 @@ input[type="checkbox"] {
   border-radius: var(--radius-pill);
   text-transform: uppercase;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .badge.ok {
@@ -418,14 +419,70 @@ input[type="checkbox"] {
   overflow: hidden;
 }
 
+/* Cada columna es un contenedor; su contenido vive en cajas (.box). */
 .col {
+  min-width: 0;
   min-height: 0;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
 
+/* --- Caja (borde, fondo y radios del sistema de diseño) ------------------ */
+
+.box {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+/* La caja que ocupa el alto restante de la columna. */
+.box-grow {
+  flex: 1 1 auto;
+}
+
+/* Encabezado fijo de la caja. */
+.box-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.box-head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.box-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+/* Contenido de la caja: scroll vertical, nunca horizontal. */
+.box-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Cabecera de subsección (se usa dentro de Ajustes → Kick). */
 .col-head {
   display: flex;
   align-items: center;
@@ -517,6 +574,159 @@ input[type="checkbox"] {
   overflow-wrap: anywhere;
 }
 
+/* Controles de la cola: una sola fila, sin wrap. */
+.queue-controls {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--space-1);
+}
+
+.queue-controls button {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+/* --- Recompensas (tarjetas compactas, provisional hasta la Etapa 4) ------ */
+
+.reward-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.reward-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.reward-card-top {
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.reward-name {
+  min-width: 0;
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.reward-card-bottom {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.reward-card-actions {
+  display: inline-flex;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+/* --- Historial (filas de dos líneas) ------------------------------------- */
+
+.history-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.history-item {
+  min-width: 0;
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.history-item:last-child {
+  border-bottom: 0;
+}
+
+.history-line-1 {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.history-title {
+  min-width: 0;
+  font-weight: var(--weight-medium);
+  overflow-wrap: anywhere;
+}
+
+.history-line-2 {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* --- Botones de ícono del encabezado ------------------------------------- */
+
+.icon-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2);
+  line-height: 0;
+}
+
+.dot-corner {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+}
+
+/* --- Barra de pestañas (solo en ventana angosta) ------------------------- */
+
+.mobile-tabs {
+  display: none;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-4) 0;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-panel);
+}
+
+.mobile-tabs button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-muted);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  padding: var(--space-2) var(--space-3);
+}
+
+.mobile-tabs button.active {
+  background: var(--color-panel-2);
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+  border-color: var(--color-border);
+  border-bottom-color: transparent;
+}
+
+/* Marca de "cambios sin guardar" en una pestaña de Ajustes. */
+.tab-dot {
+  display: inline-block;
+  width: 0.45rem;
+  height: 0.45rem;
+  margin-left: var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--color-warn);
+  vertical-align: middle;
+}
+
 .stack {
   display: flex;
   flex-direction: column;
@@ -558,7 +768,7 @@ input[type="checkbox"] {
 .clip-grid {
   display: grid;
   gap: var(--space-4);
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(240px, 100%), 1fr));
 }
 
 .clip {
@@ -786,13 +996,18 @@ table.grid td.actions button {
 /* --- Responsive (ventanas angostas, p. ej. un dock de OBS) --------------- */
 
 @media (max-width: 1024px) {
-  .app-grid {
-    grid-template-columns: minmax(0, 1fr);
-    overflow-y: auto;
+  /* Barra de pestañas visible y una columna por vez. */
+  .mobile-tabs {
+    display: flex;
   }
 
-  .col {
-    overflow-y: visible;
+  .app-grid {
+    grid-template-columns: minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .col.narrow-hidden {
+    display: none;
   }
 
   .modal-content {
