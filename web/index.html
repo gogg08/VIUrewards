@@ -15,76 +15,209 @@
     <script defer src="/web/alpine.min.js"></script>
   </head>
   <body>
-    <div x-data="dashboardApp()">
+    <div class="app" x-data="dashboardApp()" @keydown.escape.window="onEscape()">
+      <!-- ================= Encabezado ================= -->
       <header class="topbar">
-        <div class="brand">VIU<span>rewards</span></div>
-        <button @click="logout()">Salir</button>
-      </header>
+        <div class="topbar-left">
+          <div class="brand">VIU<span>rewards</span></div>
 
-      <main>
-        <!-- Cola en vivo -->
-        <section>
-          <div class="section-head">
-            <h2>Cola de alertas</h2>
-            <div class="row">
-              <span
-                class="badge"
-                :class="queue.overlay && queue.overlay.connected ? 'ok' : 'error'"
-                x-text="queue.overlay && queue.overlay.connected ? 'Overlay conectado' : 'Overlay sin conexión'"
-              ></span>
-              <button @click="skipQueue()" :disabled="!queue.current">Saltar</button>
-              <button @click="pauseQueue()" :disabled="queue.status !== 'playing'">Pausar</button>
-              <button @click="resumeQueue()" :disabled="queue.status !== 'paused'">Reanudar</button>
-              <button class="danger" @click="clearQueue()" :disabled="queue.pending.length === 0">Vaciar</button>
+          <button
+            class="status-pill"
+            :class="overlayStatusClass"
+            @click="openSettings('overlay')"
+            title="Estado del overlay. Abre Ajustes → Overlay y OBS."
+          >
+            <span class="dot"></span>
+            <span x-text="overlayStatusLabel"></span>
+          </button>
+
+          <button
+            class="status-pill"
+            :class="kickStatusClass"
+            @click="openSettings('kick')"
+            title="Estado de Kick. Abre Ajustes → Kick."
+          >
+            <span class="dot"></span>
+            <span x-text="kickStatusLabel"></span>
+          </button>
+        </div>
+
+        <div class="topbar-right">
+          <div class="dropdown" @click.outside="downloadsOpen = false">
+            <button @click="toggleDownloads()">
+              Descargas <span class="dot" :class="downloadStatusClass"></span>
+            </button>
+            <div class="dropdown-menu" x-show="downloadsOpen" x-cloak>
+              <h3>Descargas de esta sesión</h3>
+              <p class="empty">Todavía no hay descargas.</p>
             </div>
           </div>
 
-          <p class="error" x-show="queue.overlay && !queue.overlay.connected">
-            No hay ningún overlay conectado. Revisá la fuente en OBS.
+          <button class="ghost" @click="openSettings('kick')" title="Ajustes" aria-label="Ajustes">⚙</button>
+          <button @click="logout()">Salir</button>
+        </div>
+      </header>
+
+      <!-- ================= Tres columnas ================= -->
+      <main class="app-grid">
+        <!-- -------- Panel izquierdo: Recompensas -------- -->
+        <aside class="col col-left">
+          <div class="col-head">
+            <h2>Recompensas del canal</h2>
+            <button
+              class="small"
+              @click="loadRewards(activePlatform)"
+              :disabled="!isKickConnected"
+              title="Contrastar las recompensas con Kick"
+            >
+              Recargar
+            </button>
+          </div>
+
+          <p class="empty" x-show="!isKickConnected">
+            Vinculá tu cuenta de Kick en Ajustes para administrar tus recompensas.
           </p>
 
-          <p class="empty" x-show="!queue.current">No hay nada reproduciéndose.</p>
+          <template x-if="isKickConnected">
+            <div class="stack">
+              <button class="primary block" @click="newReward()" x-show="!rewardForm">Nueva recompensa</button>
+              <p class="warn" x-show="!rewardForm && clips.length === 0">
+                Primero agregá un clip a la biblioteca.
+              </p>
 
-          <div class="queue-current" x-show="queue.current">
-            <span class="badge" x-text="queue.status === 'paused' ? 'En pausa' : 'Reproduciendo'"></span>
-            <span x-text="queue.current ? queue.current.label || queue.current.clipId : ''"></span>
-          </div>
-
-          <div x-show="queue.pending.length > 0">
-            <p class="muted">En espera (<span x-text="queue.pending.length"></span>):</p>
-            <ol class="queue-list">
-              <template x-for="item in queue.pending" :key="item.id">
-                <li x-text="item.label || item.clipId"></li>
+              <!-- Formulario de recompensa (se rediseña en la Etapa 4) -->
+              <template x-if="rewardForm">
+                <div class="rule-form">
+                  <div class="settings-grid">
+                    <label class="field">
+                      <span>Título (máx. 50)</span>
+                      <input type="text" maxlength="50" x-model="rewardForm.title" />
+                    </label>
+                    <label class="field">
+                      <span>Costo (puntos)</span>
+                      <input type="number" min="1" max="1000000" x-model.number="rewardForm.cost" />
+                    </label>
+                    <label class="field">
+                      <span>Descripción (máx. 200)</span>
+                      <input type="text" maxlength="200" x-model="rewardForm.description" />
+                    </label>
+                    <label class="field">
+                      <span>Color</span>
+                      <input type="text" maxlength="32" x-model="rewardForm.color" placeholder="#00e701" />
+                    </label>
+                    <label class="field">
+                      <span>Habilitada</span>
+                      <input type="checkbox" x-model="rewardForm.enabled" />
+                    </label>
+                    <label class="field">
+                      <span>Pide texto al espectador</span>
+                      <input type="checkbox" x-model="rewardForm.userInputRequired" />
+                    </label>
+                    <label class="field" x-show="!rewardForm.id">
+                      <span>Clip</span>
+                      <select x-model="rewardForm.clipId">
+                        <option value="">Elegí un clip</option>
+                        <template x-for="clip in clips" :key="clip.id">
+                          <option :value="clip.id" x-text="clip.title"></option>
+                        </template>
+                      </select>
+                    </label>
+                    <label class="field" x-show="!rewardForm.id">
+                      <span>Volumen (0 a 1)</span>
+                      <input type="number" min="0" max="1" step="0.05" x-model.number="rewardForm.volume" />
+                    </label>
+                    <label class="field" x-show="!rewardForm.id">
+                      <span>Duración máxima (s)</span>
+                      <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
+                    </label>
+                    <label class="field" x-show="!rewardForm.id">
+                      <span>Cooldown de la regla (s)</span>
+                      <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
+                    </label>
+                  </div>
+                  <div class="row">
+                    <button class="primary" @click="saveReward(activePlatform)">Guardar recompensa</button>
+                    <button @click="cancelReward()">Cancelar</button>
+                    <span class="error" x-show="rewardMessage" x-text="rewardMessage"></span>
+                  </div>
+                </div>
               </template>
-            </ol>
+
+              <p class="empty" x-show="rewards.length === 0 && !rewardForm">
+                Todavía no creaste ninguna recompensa.
+              </p>
+
+              <div class="table-wrap" x-show="rewards.length > 0">
+                <table class="grid">
+                  <thead>
+                    <tr>
+                      <th>Título</th>
+                      <th>Costo</th>
+                      <th>Texto</th>
+                      <th>Regla</th>
+                      <th>Estado</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <template x-for="reward in rewards" :key="reward.id">
+                      <tr>
+                        <td x-text="reward.title"></td>
+                        <td x-text="reward.cost"></td>
+                        <td x-text="reward.userInputRequired ? 'Sí' : 'No'"></td>
+                        <td x-text="rewardRuleLabel(reward)"></td>
+                        <td>
+                          <span
+                            class="badge"
+                            :class="reward.enabled ? 'ok' : 'off'"
+                            x-text="reward.enabled ? 'Habilitada' : 'Deshabilitada'"
+                          ></span>
+                          <span
+                            class="badge warn"
+                            x-show="!reward.managed"
+                            title="Solo se pueden editar las recompensas creadas por esta app"
+                          >
+                            De otra app
+                          </span>
+                        </td>
+                        <td class="actions">
+                          <button @click="editReward(reward)" :disabled="!reward.managed">Editar</button>
+                          <button class="danger" @click="deleteReward(activePlatform, reward)" :disabled="!reward.managed">
+                            Borrar
+                          </button>
+                        </td>
+                      </tr>
+                    </template>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </template>
+        </aside>
+
+        <!-- -------- Panel central: Agregar clip y Biblioteca -------- -->
+        <section class="col col-center">
+          <div class="panel stack">
+            <h2>Agregar un clip</h2>
+            <form class="row" @submit.prevent="startDownload()">
+              <input
+                type="url"
+                x-model="url"
+                placeholder="https://www.youtube.com/watch?v=..."
+                :disabled="downloading"
+              />
+              <button class="primary" type="submit" :disabled="downloading || !url">Descargar</button>
+            </form>
+            <div class="progress" x-show="job" :class="{ error: job && job.status === 'error' }">
+              <span x-text="jobLabel"></span>
+              <span x-show="job && job.status === 'ready'"> — ya está en la biblioteca.</span>
+            </div>
+            <p class="error" x-show="message" x-text="message"></p>
           </div>
-        </section>
 
-        <!-- Agregar clip -->
-        <section>
-          <h2>Agregar un clip</h2>
-          <form class="row" @submit.prevent="startDownload()">
-            <input
-              type="url"
-              x-model="url"
-              placeholder="https://www.youtube.com/watch?v=..."
-              :disabled="downloading"
-            />
-            <button class="primary" type="submit" :disabled="downloading || !url">
-              Descargar
-            </button>
-          </form>
-
-          <div class="progress" x-show="job" :class="{ error: job && job.status === 'error' }">
-            <span x-text="jobLabel"></span>
-            <span x-show="job && job.status === 'ready'"> — ya está en la biblioteca.</span>
+          <div class="col-head">
+            <h2>Biblioteca <span class="muted" x-text="'(' + clips.length + ')'"></span></h2>
           </div>
-          <p class="error" x-show="message" x-text="message"></p>
-        </section>
-
-        <!-- Biblioteca -->
-        <section>
-          <h2>Biblioteca <span class="muted" x-text="'(' + clips.length + ')'"></span></h2>
 
           <p class="empty" x-show="clips.length === 0">
             Todavía no hay clips. Pegá una URL arriba para empezar.
@@ -131,7 +264,7 @@
                     </div>
                   </div>
 
-                  <div class="actions">
+                  <div class="row">
                     <template x-if="editingId !== clip.id">
                       <button @click="startRename(clip)">Renombrar</button>
                     </template>
@@ -151,488 +284,508 @@
           </div>
         </section>
 
-        <!-- Overlay -->
-        <section>
-          <h2>Overlay para OBS</h2>
-          <p class="muted">
-            Pegá esta URL como Browser Source (Navegador) en OBS, tamaño 1920x1080.
-          </p>
-          <p class="warn">
-            No muestres esta URL en pantalla durante un stream: incluye la clave del overlay.
-          </p>
-          <div class="row overlay-row">
-            <input type="text" readonly :value="overlayRevealed ? overlay.url : maskedOverlayUrl" />
-            <button @click="toggleOverlay()" x-text="overlayRevealed ? 'Ocultar' : 'Mostrar'"></button>
-            <button @click="copyOverlay()" x-text="copied ? '¡Copiado!' : 'Copiar'"></button>
-            <button @click="regenerate()">Regenerar clave</button>
-          </div>
-        </section>
-
-        <!-- Configuración -->
-        <section>
-          <h2>Configuración</h2>
-
-          <div class="settings-grid">
-            <label class="field">
-              <span>Volumen global (%)</span>
-              <input type="number" min="0" max="100" x-model.number="settings.globalVolume" />
-            </label>
-            <label class="field">
-              <span>Duración máxima de alerta (s)</span>
-              <input type="number" min="1" max="600" x-model.number="settings.defaultMaxDurationSec" />
-            </label>
-            <label class="field">
-              <span>Margen del watchdog (s)</span>
-              <input type="number" min="1" max="120" x-model.number="settings.watchdogMarginSec" />
-            </label>
-            <label class="field">
-              <span>Duración máxima del video (s)</span>
-              <input type="number" min="1" max="3600" x-model.number="settings.maxVideoDurationSec" />
-            </label>
-            <label class="field">
-              <span>Tamaño máximo (MB)</span>
-              <input type="number" min="1" x-model.number="settingsForm.maxVideoMb" />
-            </label>
-            <label class="field">
-              <span>Puerto (requiere reiniciar)</span>
-              <input type="number" min="1024" max="65535" x-model.number="settings.port" />
-            </label>
-            <label class="field">
-              <span>Máx. eventos en el historial</span>
-              <input type="number" min="10" max="5000" x-model.number="settings.eventHistoryMax" />
-            </label>
-            <label class="field">
-              <span>Intervalo de polling de canjes (ms)</span>
-              <input type="number" min="1000" max="60000" x-model.number="settings.redemptionsPollIntervalMs" />
-            </label>
-            <label class="field">
-              <span>Al omitir un canje</span>
-              <select x-model="settings.redemptionsOnSkip">
-                <option value="leave_pending">Dejarlo pendiente</option>
-                <option value="reject">Rechazarlo (recupera los puntos si Kick lo permite)</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>Canjes con más de (min)</span>
-              <input type="number" min="0" max="1440" x-model.number="settings.redemptionsOldMinutes" />
-            </label>
-            <label class="field">
-              <span>Qué hacer con canjes viejos</span>
-              <select x-model="settings.redemptionsOldAction">
-                <option value="ignore">Ignorar (decidir a mano)</option>
-                <option value="reject">Rechazar</option>
-                <option value="process">Procesar</option>
-              </select>
-            </label>
+        <!-- -------- Panel derecho: Cola e Historial -------- -->
+        <aside class="col col-right">
+          <div class="col-head">
+            <div class="segmented">
+              <button :class="{ active: rightTab === 'queue' }" @click="setRightTab('queue')">Cola</button>
+              <button :class="{ active: rightTab === 'history' }" @click="setRightTab('history')">Historial</button>
+            </div>
           </div>
 
-          <label class="field">
-            <span>Dominios permitidos (uno por línea)</span>
-            <textarea rows="5" x-model="settingsForm.domainsText"></textarea>
-          </label>
+          <!-- Cola de alertas -->
+          <div x-show="rightTab === 'queue'" class="stack">
+            <p class="error" x-show="queue.overlay && !queue.overlay.connected">
+              No hay ningún overlay conectado. Revisá la fuente en OBS.
+            </p>
 
-          <div class="row">
-            <button class="primary" @click="saveSettings()">Guardar configuración</button>
-            <span class="ok" x-show="settingsSaved">Guardado</span>
-            <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
-          </div>
-          <p class="warn" x-show="settingsRestart">
-            Cambiaste el puerto: reiniciá la app y actualizá la URL del overlay en OBS.
-          </p>
+            <div class="panel stack">
+              <div class="row">
+                <button @click="skipQueue()" :disabled="!queue.current">Saltar</button>
+                <button @click="pauseQueue()" :disabled="queue.status !== 'playing'">Pausar</button>
+                <button @click="resumeQueue()" :disabled="queue.status !== 'paused'">Reanudar</button>
+                <button class="danger" @click="clearQueue()" :disabled="queue.pending.length === 0">Vaciar</button>
+              </div>
 
-          <hr />
+              <p class="empty" x-show="!queue.current">No hay nada reproduciéndose.</p>
 
-          <h3>Cambiar contraseña</h3>
-          <div class="row">
-            <input
-              type="password"
-              placeholder="Contraseña actual"
-              x-model="passwordForm.current"
-              autocomplete="current-password"
-            />
-            <input
-              type="password"
-              placeholder="Nueva"
-              x-model="passwordForm.next"
-              autocomplete="new-password"
-            />
-            <input
-              type="password"
-              placeholder="Repetir nueva"
-              x-model="passwordForm.repeat"
-              autocomplete="new-password"
-            />
-            <button @click="changePassword()">Cambiar</button>
-          </div>
-          <p class="error" x-show="passwordMessage" x-text="passwordMessage"></p>
-          <p class="ok" x-show="passwordSaved">Contraseña actualizada. Las demás sesiones se cerraron.</p>
-        </section>
+              <div class="queue-current" x-show="queue.current">
+                <span class="badge" x-text="queue.status === 'paused' ? 'En pausa' : 'Reproduciendo'"></span>
+                <span x-text="queue.current ? queue.current.label || queue.current.clipId : ''"></span>
+              </div>
 
-        <!-- Historial de eventos (Fase 4A) -->
-        <section>
-          <div class="section-head">
-            <h2>Historial de eventos</h2>
-            <span class="muted">Últimos 100</span>
+              <div x-show="queue.pending.length > 0">
+                <p class="muted">En espera (<span x-text="queue.pending.length"></span>):</p>
+                <ol class="queue-list">
+                  <template x-for="item in queue.pending" :key="item.id">
+                    <li x-text="item.label || item.clipId"></li>
+                  </template>
+                </ol>
+              </div>
+            </div>
           </div>
 
-          <p class="empty" x-show="eventLog.length === 0">Todavía no se recibió ningún evento.</p>
+          <!-- Historial de eventos -->
+          <div x-show="rightTab === 'history'" class="stack">
+            <p class="muted">Últimos 100 eventos</p>
+            <p class="empty" x-show="eventLog.length === 0">Todavía no se recibió ningún evento.</p>
 
-          <div class="table-wrap" x-show="eventLog.length > 0">
-            <table class="grid">
-              <thead>
-                <tr>
-                  <th>Hora</th>
-                  <th>Plataforma</th>
-                  <th>Tipo</th>
-                  <th>Usuario</th>
-                  <th>Resultado</th>
-                  <th>Motivo</th>
-                </tr>
-              </thead>
-              <tbody>
-                <template x-for="entry in eventLog" :key="entry.id">
+            <div class="table-wrap" x-show="eventLog.length > 0">
+              <table class="grid">
+                <thead>
                   <tr>
-                    <td x-text="formatTime(entry.createdAt)"></td>
-                    <td x-text="entry.platform"></td>
-                    <td x-text="eventTypeLabel(entry.type)"></td>
-                    <td x-text="entry.userName"></td>
-                    <td x-text="outcomeLabel(entry.outcome)"></td>
-                    <td x-text="entry.reason || ''"></td>
+                    <th>Hora</th>
+                    <th>Tipo</th>
+                    <th>Usuario</th>
+                    <th>Resultado</th>
+                    <th>Motivo</th>
                   </tr>
-                </template>
-              </tbody>
-            </table>
-          </div>
-        </section>
-
-        <!-- Simular evento (Fase 4A) -->
-        <section>
-          <div class="section-head">
-            <h2>Simular evento</h2>
-            <span class="muted">Para probar las reglas sin ninguna plataforma conectada</span>
-          </div>
-
-          <div class="simulate-grid">
-            <label class="field">
-              <span>Tipo de evento</span>
-              <select x-model="simulateForm.type">
-                <template x-for="type in eventTypes" :key="type">
-                  <option :value="type" x-text="eventTypeLabel(type)"></option>
-                </template>
-              </select>
-            </label>
-            <label class="field">
-              <span>Usuario</span>
-              <input type="text" maxlength="100" x-model="simulateForm.userName" />
-            </label>
-            <label class="field">
-              <span>Roles (separados por coma)</span>
-              <input type="text" placeholder="subscriber, moderator" x-model="simulateForm.rolesText" />
-            </label>
-            <label class="field" x-show="simulateForm.type === 'chat_command'">
-              <span>Comando (sin !)</span>
-              <input type="text" maxlength="100" x-model="simulateForm.command" />
-            </label>
-            <label class="field" x-show="simulateForm.type === 'chat_command'">
-              <span>Argumentos</span>
-              <input type="text" placeholder="https://... separados por espacio" x-model="simulateForm.argsText" />
-            </label>
-            <label class="field" x-show="simulateForm.type === 'reward_redeemed'">
-              <span>Id de la recompensa</span>
-              <input type="text" maxlength="200" x-model="simulateForm.rewardId" />
-            </label>
-            <label class="field" x-show="simulateForm.type === 'reward_redeemed'">
-              <span>Título de la recompensa</span>
-              <input type="text" maxlength="200" x-model="simulateForm.rewardTitle" />
-            </label>
-            <label class="field" x-show="simulateForm.type === 'reward_redeemed'">
-              <span>Texto del usuario (no confiable)</span>
-              <input type="text" maxlength="2048" x-model="simulateForm.userInput" />
-            </label>
-          </div>
-
-          <div class="row">
-            <button class="primary" @click="simulate()">Simular evento</button>
-            <button @click="manual()">Evento manual</button>
-            <span class="ok" x-show="simulateMessage" x-text="simulateMessage"></span>
-          </div>
-        </section>
-
-        <!-- Plataformas (Fase 4B) -->
-        <section>
-          <div class="section-head">
-            <h2>Plataformas</h2>
-            <span class="muted">Vinculá tu cuenta y administrá tus recompensas</span>
-          </div>
-
-          <p class="empty" x-show="platforms.length === 0">No hay plataformas disponibles.</p>
-
-          <div class="row" x-show="platforms.length > 1">
-            <template x-for="item in platforms" :key="item.id">
-              <button
-                :class="item.id === activePlatformId ? 'primary' : ''"
-                @click="selectPlatform(item)"
-                x-text="item.name"
-              ></button>
-            </template>
-          </div>
-
-          <template x-if="activePlatform">
-            <div class="platform">
-              <div class="section-head">
-                <h3>
-                  <span x-text="activePlatform.name"></span>
-                  <span
-                    class="badge"
-                    :class="platformStateClass(activePlatform)"
-                    x-text="platformStateLabel(activePlatform)"
-                  ></span>
-                </h3>
-                <div class="row">
-                  <button @click="testConnection(activePlatform)">Probar conexión</button>
-                  <button @click="loadDiagnostics(activePlatform)">Ver diagnóstico</button>
-                </div>
-              </div>
-
-              <p class="muted" x-show="activePlatform.state === 'connected' && activePlatform.accountName">
-                Conectado como <strong x-text="activePlatform.accountName"></strong>
-              </p>
-              <p class="warn" x-show="activePlatform.state === 'requires_relink'">
-                La sesión venció o fue revocada. Volvé a vincular la cuenta.
-              </p>
-              <p class="error" x-show="platformMessage" x-text="platformMessage"></p>
-              <p class="ok" x-show="platformNotice" x-text="platformNotice"></p>
-
-              <div class="settings-grid">
-                <label class="field">
-                  <span>Client ID</span>
-                  <input type="text" maxlength="256" x-model="platformForm.clientId" placeholder="Client ID de tu app" />
-                </label>
-                <label class="field">
-                  <span>Client Secret <span class="muted">(se guarda y no se vuelve a mostrar)</span></span>
-                  <input
-                    type="password"
-                    maxlength="512"
-                    x-model="platformForm.clientSecret"
-                    :placeholder="activePlatform.hasCredentials ? '•••••••• (guardado)' : 'Client Secret de tu app'"
-                  />
-                </label>
-              </div>
-              <div class="row">
-                <button class="primary" @click="saveCredentials(activePlatform)">Guardar credenciales</button>
-                <button @click="beginLink(activePlatform)" :disabled="!activePlatform.hasCredentials">Vincular cuenta</button>
-                <button @click="unlink(activePlatform)" :disabled="activePlatform.state === 'unlinked'">Desvincular</button>
-                <button class="danger" @click="clearCredentials(activePlatform)" :disabled="!activePlatform.hasCredentials">
-                  Borrar credenciales
-                </button>
-              </div>
-              <p class="muted">
-                El redirect de la app se registra como <code>http://localhost:PUERTO/callback</code>: si cambiás el
-                puerto, actualizalo en la app de desarrollador.
-              </p>
-
-              <!-- Recompensas del canal -->
-              <h3>Recompensas del canal</h3>
-              <div class="row">
-                <button
-                  class="primary"
-                  @click="newReward()"
-                  x-show="!rewardForm"
-                  :disabled="activePlatform.state !== 'connected'"
-                >
-                  Nueva recompensa
-                </button>
-                <button @click="loadRewards(activePlatform)" :disabled="activePlatform.state !== 'connected'">Recargar</button>
-              </div>
-              <p class="empty" x-show="rewards.length === 0 && !rewardForm">
-                No hay recompensas para mostrar. Si la cuenta no está vinculada, vinculala primero.
-              </p>
-
-              <template x-if="rewardForm">
-              <div class="rule-form">
-                <div class="settings-grid">
-                  <label class="field">
-                    <span>Título (máx. 50)</span>
-                    <input type="text" maxlength="50" x-model="rewardForm.title" />
-                  </label>
-                  <label class="field">
-                    <span>Costo (puntos)</span>
-                    <input type="number" min="1" max="1000000" x-model.number="rewardForm.cost" />
-                  </label>
-                  <label class="field">
-                    <span>Descripción (máx. 200)</span>
-                    <input type="text" maxlength="200" x-model="rewardForm.description" />
-                  </label>
-                  <label class="field">
-                    <span>Color</span>
-                    <input type="text" maxlength="32" x-model="rewardForm.color" placeholder="#00e701" />
-                  </label>
-                  <label class="field">
-                    <span>Habilitada</span>
-                    <input type="checkbox" x-model="rewardForm.enabled" />
-                  </label>
-                  <label class="field">
-                    <span>Pide texto al espectador</span>
-                    <input type="checkbox" x-model="rewardForm.userInputRequired" />
-                  </label>
-                  <label class="field" x-show="!rewardForm.id">
-                    <span>Clip</span>
-                    <select x-model="rewardForm.clipId">
-                      <option value="">Elegí un clip</option>
-                      <template x-for="clip in clips" :key="clip.id">
-                        <option :value="clip.id" x-text="clip.title"></option>
-                      </template>
-                    </select>
-                  </label>
-                  <label class="field" x-show="!rewardForm.id">
-                    <span>Volumen (0 a 1)</span>
-                    <input type="number" min="0" max="1" step="0.05" x-model.number="rewardForm.volume" />
-                  </label>
-                  <label class="field" x-show="!rewardForm.id">
-                    <span>Duración máxima (s)</span>
-                    <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
-                  </label>
-                  <label class="field" x-show="!rewardForm.id">
-                    <span>Cooldown de la regla (s)</span>
-                    <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
-                  </label>
-                </div>
-                <div class="row">
-                  <button class="primary" @click="saveReward(activePlatform)">Guardar recompensa</button>
-                  <button @click="cancelReward()">Cancelar</button>
-                  <span class="error" x-show="rewardMessage" x-text="rewardMessage"></span>
-                </div>
-              </div>
-              </template>
-
-              <div class="table-wrap" x-show="rewards.length > 0">
-                <table class="grid">
-                  <thead>
+                </thead>
+                <tbody>
+                  <template x-for="entry in eventLog" :key="entry.id">
                     <tr>
-                      <th>Título</th>
-                      <th>Costo</th>
-                      <th>Texto</th>
-                      <th>Regla</th>
-                      <th>Estado</th>
-                      <th></th>
+                      <td x-text="formatTime(entry.createdAt)"></td>
+                      <td x-text="eventTypeLabel(entry.type)"></td>
+                      <td x-text="entry.userName"></td>
+                      <td x-text="outcomeLabel(entry.outcome)"></td>
+                      <td x-text="entry.reason || ''"></td>
                     </tr>
-                  </thead>
-                  <tbody>
-                    <template x-for="reward in rewards" :key="reward.id">
-                      <tr>
-                        <td x-text="reward.title"></td>
-                        <td x-text="reward.cost"></td>
-                        <td x-text="reward.userInputRequired ? 'Sí' : 'No'"></td>
-                        <td x-text="rewardRuleLabel(reward)"></td>
-                        <td>
-                          <span
-                            class="badge"
-                            :class="reward.enabled ? 'ok' : 'off'"
-                            x-text="reward.enabled ? 'Habilitada' : 'Deshabilitada'"
-                          ></span>
-                          <span
-                            class="badge warn"
-                            x-show="!reward.managed"
-                            title="Solo se pueden editar las recompensas creadas por esta app"
-                          >
-                            De otra app
-                          </span>
-                        </td>
-                        <td class="actions">
-                          <button @click="editReward(reward)" :disabled="!reward.managed">Editar</button>
-                          <button class="danger" @click="deleteReward(activePlatform, reward)" :disabled="!reward.managed">
-                            Borrar
-                          </button>
-                        </td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
-              </div>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </aside>
+      </main>
 
-              <!-- Canjes pendientes antiguos -->
-              <div x-show="oldRedemptions.length > 0">
-                <h3>Canjes pendientes antiguos (<span x-text="oldRedemptions.length"></span>)</h3>
-                <p class="muted">Canjes que quedaron pendientes y superan la antigüedad configurada.</p>
-                <div class="table-wrap">
-                  <table class="grid">
-                    <thead>
-                      <tr>
-                        <th>Cuándo</th>
-                        <th>Usuario</th>
-                        <th>Recompensa</th>
-                        <th>Texto</th>
-                        <th>Estado</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <template x-for="item in oldRedemptions" :key="item.eventId">
-                        <tr>
-                          <td x-text="formatTime(item.redeemedAt)"></td>
-                          <td x-text="item.userName"></td>
-                          <td x-text="item.rewardTitle || ''"></td>
-                          <td x-text="item.userInput || ''"></td>
-                          <td x-text="item.statusLabel"></td>
-                        </tr>
-                      </template>
-                    </tbody>
-                  </table>
+      <!-- ================= Ajustes (ventana flotante) ================= -->
+      <div class="modal" x-show="settingsOpen" x-cloak @click="closeIfBackdrop($event)">
+        <div class="modal-window" role="dialog" aria-modal="true" aria-label="Ajustes">
+          <div class="modal-head">
+            <h2>Ajustes</h2>
+            <button class="ghost" @click="closeSettings()" aria-label="Cerrar">✕</button>
+          </div>
+
+          <div class="modal-content">
+            <!-- Pestañas -->
+            <nav class="tabs">
+              <button :class="{ active: settingsTab === 'kick' }" @click="setSettingsTab('kick')">Kick</button>
+              <button :class="{ active: settingsTab === 'overlay' }" @click="setSettingsTab('overlay')">
+                Overlay y OBS
+              </button>
+              <button :class="{ active: settingsTab === 'alerts' }" @click="setSettingsTab('alerts')">Alertas</button>
+              <button :class="{ active: settingsTab === 'library' }" @click="setSettingsTab('library')">
+                Biblioteca y descargas
+              </button>
+              <button :class="{ active: settingsTab === 'security' }" @click="setSettingsTab('security')">
+                Seguridad
+              </button>
+              <button :class="{ active: settingsTab === 'appearance' }" @click="setSettingsTab('appearance')">
+                Apariencia
+              </button>
+              <button :class="{ active: settingsTab === 'advanced' }" @click="setSettingsTab('advanced')">Avanzado</button>
+            </nav>
+
+            <div class="tab-panels">
+              <!-- ---- Kick ---- -->
+              <section x-show="settingsTab === 'kick'" class="stack">
+                <h3>Plataformas</h3>
+
+                <p class="empty" x-show="platforms.length === 0">No hay plataformas disponibles.</p>
+
+                <div class="row" x-show="platforms.length > 1">
+                  <template x-for="item in platforms" :key="item.id">
+                    <button
+                      :class="item.id === activePlatformId ? 'primary' : ''"
+                      @click="selectPlatform(item)"
+                      x-text="item.name"
+                    ></button>
+                  </template>
                 </div>
+
+                <template x-if="activePlatform">
+                  <div class="stack">
+                    <div class="col-head">
+                      <h3>
+                        <span x-text="activePlatform.name"></span>
+                        <span
+                          class="badge"
+                          :class="platformStateClass(activePlatform)"
+                          x-text="platformStateLabel(activePlatform)"
+                        ></span>
+                      </h3>
+                      <button @click="testConnection(activePlatform)">Probar conexión</button>
+                    </div>
+
+                    <p class="muted" x-show="activePlatform.state === 'connected' && activePlatform.accountName">
+                      Conectado como <strong x-text="activePlatform.accountName"></strong>
+                    </p>
+                    <p class="warn" x-show="activePlatform.state === 'requires_relink'">
+                      La sesión venció o fue revocada. Volvé a vincular la cuenta.
+                    </p>
+                    <p class="error" x-show="platformMessage" x-text="platformMessage"></p>
+                    <p class="ok" x-show="platformNotice" x-text="platformNotice"></p>
+
+                    <div class="settings-grid">
+                      <label class="field">
+                        <span>Client ID</span>
+                        <input type="text" maxlength="256" x-model="platformForm.clientId" placeholder="Client ID de tu app" />
+                      </label>
+                      <label class="field">
+                        <span>Client Secret <span class="muted">(se guarda y no se vuelve a mostrar)</span></span>
+                        <input
+                          type="password"
+                          maxlength="512"
+                          x-model="platformForm.clientSecret"
+                          :placeholder="activePlatform.hasCredentials ? '•••••••• (guardado)' : 'Client Secret de tu app'"
+                        />
+                      </label>
+                    </div>
+                    <div class="row">
+                      <button class="primary" @click="saveCredentials(activePlatform)">Guardar credenciales</button>
+                      <button @click="beginLink(activePlatform)" :disabled="!activePlatform.hasCredentials">
+                        Vincular cuenta
+                      </button>
+                      <button @click="unlink(activePlatform)" :disabled="activePlatform.state === 'unlinked'">
+                        Desvincular
+                      </button>
+                      <button class="danger" @click="clearCredentials(activePlatform)" :disabled="!activePlatform.hasCredentials">
+                        Borrar credenciales
+                      </button>
+                    </div>
+                    <p class="muted">
+                      El redirect de la app se registra como <code>http://localhost:PUERTO/callback</code>: si cambiás el
+                      puerto, actualizalo en la app de desarrollador.
+                    </p>
+                  </div>
+                </template>
+              </section>
+
+              <!-- ---- Overlay y OBS ---- -->
+              <section x-show="settingsTab === 'overlay'" class="stack">
+                <h3>Overlay y OBS</h3>
+                <p class="muted">
+                  Pegá esta URL como Browser Source (Navegador) en OBS, tamaño 1920x1080.
+                </p>
+                <p class="warn">
+                  No muestres esta URL en pantalla durante un stream: incluye la clave del overlay.
+                </p>
                 <div class="row">
-                  <button class="danger" @click="rejectAllOld(activePlatform)">Rechazar todos</button>
-                  <button @click="processOld(activePlatform)">Procesar ahora</button>
-                  <span class="error" x-show="redemptionMessage" x-text="redemptionMessage"></span>
+                  <input
+                    type="text"
+                    readonly
+                    x-ref="overlayInput"
+                    :value="overlayRevealed ? overlay.url : maskedOverlayUrl"
+                  />
+                  <button @click="toggleOverlay()" x-text="overlayRevealed ? 'Ocultar' : 'Mostrar'"></button>
+                  <button @click="copyOverlay()" x-text="copied ? '¡Copiado!' : 'Copiar'"></button>
+                  <button @click="regenerate()">Regenerar clave</button>
                 </div>
-              </div>
+                <p class="ok">
+                  <span class="dot" :class="overlayStatusClass"></span>
+                  <span x-text="overlayStatusLabel"></span>
+                </p>
+              </section>
 
-              <!-- Diagnóstico -->
-              <template x-if="diagnostics">
-              <div>
-                <h3>Diagnóstico</h3>
+              <!-- ---- Alertas ---- -->
+              <section x-show="settingsTab === 'alerts'" class="stack">
+                <h3>Alertas</h3>
                 <div class="settings-grid">
                   <label class="field">
-                    <span>Polling activo</span>
-                    <input type="text" readonly :value="diagnostics.enabled ? 'Sí' : 'No'" />
+                    <span>Volumen global (%)</span>
+                    <input type="number" min="0" max="100" x-model.number="settings.globalVolume" @input="markDirty()" />
                   </label>
                   <label class="field">
-                    <span>Intervalo (ms)</span>
-                    <input type="text" readonly :value="diagnostics.intervalMs" />
-                  </label>
-                  <label class="field">
-                    <span>Último chequeo</span>
+                    <span>Duración máxima de alerta (s)</span>
                     <input
-                      type="text"
-                      readonly
-                      :value="diagnostics.lastCheckAt ? formatTime(new Date(diagnostics.lastCheckAt).toISOString()) : '—'"
+                      type="number"
+                      min="1"
+                      max="600"
+                      x-model.number="settings.defaultMaxDurationSec"
+                      @input="markDirty()"
                     />
                   </label>
                   <label class="field">
-                    <span>Último resultado</span>
-                    <input type="text" readonly :value="diagnostics.lastResult || '—'" />
+                    <span>Al omitir un canje</span>
+                    <select x-model="settings.redemptionsOnSkip" @change="markDirty()">
+                      <option value="leave_pending">Dejarlo pendiente</option>
+                      <option value="reject">Rechazarlo (recupera los puntos si Kick lo permite)</option>
+                    </select>
                   </label>
                   <label class="field">
-                    <span>Último error</span>
-                    <input type="text" readonly :value="diagnostics.lastError || '—'" />
+                    <span>Canjes con más de (min)</span>
+                    <input
+                      type="number"
+                      min="0"
+                      max="1440"
+                      x-model.number="settings.redemptionsOldMinutes"
+                      @input="markDirty()"
+                    />
                   </label>
                   <label class="field">
-                    <span>Latencia (últ/min/típ/máx) ms</span>
-                    <input type="text" readonly :value="latencyLabel()" />
-                  </label>
-                  <label class="field">
-                    <span>Respuestas 429</span>
-                    <input type="text" readonly :value="diagnostics.rateLimit429Count" />
-                  </label>
-                  <label class="field">
-                    <span>Headers de rate limit</span>
-                    <input type="text" readonly :value="rateLimitHeadersLabel()" />
+                    <span>Qué hacer con canjes viejos</span>
+                    <select x-model="settings.redemptionsOldAction" @change="markDirty()">
+                      <option value="ignore">Ignorar (decidir a mano)</option>
+                      <option value="reject">Rechazar</option>
+                      <option value="process">Procesar</option>
+                    </select>
                   </label>
                 </div>
-              </div>
-              </template>
+
+                <div x-show="oldRedemptions.length > 0">
+                  <h3>Canjes pendientes antiguos (<span x-text="oldRedemptions.length"></span>)</h3>
+                  <p class="muted">Canjes que quedaron pendientes y superan la antigüedad configurada.</p>
+                  <div class="table-wrap">
+                    <table class="grid">
+                      <thead>
+                        <tr>
+                          <th>Cuándo</th>
+                          <th>Usuario</th>
+                          <th>Recompensa</th>
+                          <th>Texto</th>
+                          <th>Estado</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <template x-for="item in oldRedemptions" :key="item.eventId">
+                          <tr>
+                            <td x-text="formatTime(item.redeemedAt)"></td>
+                            <td x-text="item.userName"></td>
+                            <td x-text="item.rewardTitle || ''"></td>
+                            <td x-text="item.userInput || ''"></td>
+                            <td x-text="item.statusLabel"></td>
+                          </tr>
+                        </template>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="row">
+                    <button class="danger" @click="rejectAllOld(activePlatform)">Rechazar todos</button>
+                    <button @click="processOld(activePlatform)">Procesar ahora</button>
+                    <span class="error" x-show="redemptionMessage" x-text="redemptionMessage"></span>
+                  </div>
+                </div>
+
+                <div class="row">
+                  <button class="primary" @click="saveSettings()">Guardar</button>
+                  <span class="ok" x-show="settingsSaved">Guardado</span>
+                  <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
+                </div>
+              </section>
+
+              <!-- ---- Biblioteca y descargas ---- -->
+              <section x-show="settingsTab === 'library'" class="stack">
+                <h3>Biblioteca y descargas</h3>
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>Duración máxima del video (s)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="3600"
+                      x-model.number="settings.maxVideoDurationSec"
+                      @input="markDirty()"
+                    />
+                  </label>
+                  <label class="field">
+                    <span>Tamaño máximo (MB)</span>
+                    <input type="number" min="1" x-model.number="settingsForm.maxVideoMb" @input="markDirty()" />
+                  </label>
+                </div>
+                <label class="field">
+                  <span>Dominios permitidos (uno por línea)</span>
+                  <textarea rows="5" x-model="settingsForm.domainsText" @input="markDirty()"></textarea>
+                </label>
+                <div class="row">
+                  <button class="primary" @click="saveSettings()">Guardar</button>
+                  <span class="ok" x-show="settingsSaved">Guardado</span>
+                  <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
+                </div>
+              </section>
+
+              <!-- ---- Seguridad ---- -->
+              <section x-show="settingsTab === 'security'" class="stack">
+                <h3>Seguridad</h3>
+                <div class="stack">
+                  <input
+                    type="password"
+                    placeholder="Contraseña actual"
+                    x-model="passwordForm.current"
+                    autocomplete="current-password"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Nueva"
+                    x-model="passwordForm.next"
+                    autocomplete="new-password"
+                  />
+                  <input
+                    type="password"
+                    placeholder="Repetir nueva"
+                    x-model="passwordForm.repeat"
+                    autocomplete="new-password"
+                  />
+                  <div class="row">
+                    <button class="primary" @click="changePassword()">Cambiar contraseña</button>
+                    <span class="ok" x-show="passwordSaved">Contraseña actualizada. Las demás sesiones se cerraron.</span>
+                    <span class="error" x-show="passwordMessage" x-text="passwordMessage"></span>
+                  </div>
+                </div>
+              </section>
+
+              <!-- ---- Apariencia ---- -->
+              <section x-show="settingsTab === 'appearance'" class="stack">
+                <h3>Apariencia</h3>
+                <p class="empty">Acá van a ir los temas. Todavía no hay opciones.</p>
+              </section>
+
+              <!-- ---- Avanzado ---- -->
+              <section x-show="settingsTab === 'advanced'" class="stack">
+                <h3>Avanzado</h3>
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>Margen del watchdog (s)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="120"
+                      x-model.number="settings.watchdogMarginSec"
+                      @input="markDirty()"
+                    />
+                  </label>
+                  <label class="field">
+                    <span>Puerto (requiere reiniciar)</span>
+                    <input type="number" min="1024" max="65535" x-model.number="settings.port" @input="markDirty()" />
+                  </label>
+                  <label class="field">
+                    <span>Máx. eventos en el historial</span>
+                    <input
+                      type="number"
+                      min="10"
+                      max="5000"
+                      x-model.number="settings.eventHistoryMax"
+                      @input="markDirty()"
+                    />
+                  </label>
+                  <label class="field">
+                    <span>Intervalo de polling de canjes (ms)</span>
+                    <input
+                      type="number"
+                      min="1000"
+                      max="60000"
+                      x-model.number="settings.redemptionsPollIntervalMs"
+                      @input="markDirty()"
+                    />
+                  </label>
+                </div>
+                <p class="warn" x-show="settingsRestart">
+                  Cambiaste el puerto: reiniciá la app y actualizá la URL del overlay en OBS.
+                </p>
+                <div class="row">
+                  <button class="primary" @click="saveSettings()">Guardar</button>
+                  <span class="ok" x-show="settingsSaved">Guardado</span>
+                  <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
+                </div>
+
+                <hr class="divider" />
+
+                <h3>Diagnóstico</h3>
+                <template x-if="diagnostics">
+                  <div class="settings-grid">
+                    <label class="field">
+                      <span>Polling activo</span>
+                      <input type="text" readonly :value="diagnostics.enabled ? 'Sí' : 'No'" />
+                    </label>
+                    <label class="field">
+                      <span>Intervalo (ms)</span>
+                      <input type="text" readonly :value="diagnostics.intervalMs" />
+                    </label>
+                    <label class="field">
+                      <span>Último chequeo</span>
+                      <input
+                        type="text"
+                        readonly
+                        :value="diagnostics.lastCheckAt ? formatTime(new Date(diagnostics.lastCheckAt).toISOString()) : '—'"
+                      />
+                    </label>
+                    <label class="field">
+                      <span>Último resultado</span>
+                      <input type="text" readonly :value="diagnostics.lastResult || '—'" />
+                    </label>
+                    <label class="field">
+                      <span>Último error</span>
+                      <input type="text" readonly :value="diagnostics.lastError || '—'" />
+                    </label>
+                    <label class="field">
+                      <span>Latencia (últ/min/típ/máx) ms</span>
+                      <input type="text" readonly :value="latencyLabel()" />
+                    </label>
+                    <label class="field">
+                      <span>Respuestas 429</span>
+                      <input type="text" readonly :value="diagnostics.rateLimit429Count" />
+                    </label>
+                    <label class="field">
+                      <span>Headers de rate limit</span>
+                      <input type="text" readonly :value="rateLimitHeadersLabel()" />
+                    </label>
+                  </div>
+                </template>
+                <div class="row">
+                  <button @click="loadDiagnostics(activePlatform)" :disabled="!activePlatform">Ver diagnóstico</button>
+                </div>
+
+                <hr class="divider" />
+
+                <h3>Simular evento</h3>
+                <p class="muted">Para probar las reglas sin ninguna plataforma conectada.</p>
+                <div class="settings-grid">
+                  <label class="field">
+                    <span>Tipo de evento</span>
+                    <select x-model="simulateForm.type">
+                      <template x-for="type in eventTypes" :key="type">
+                        <option :value="type" x-text="eventTypeLabel(type)"></option>
+                      </template>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Usuario</span>
+                    <input type="text" maxlength="100" x-model="simulateForm.userName" />
+                  </label>
+                  <label class="field">
+                    <span>Roles (separados por coma)</span>
+                    <input type="text" placeholder="subscriber, moderator" x-model="simulateForm.rolesText" />
+                  </label>
+                  <label class="field" x-show="simulateForm.type === 'chat_command'">
+                    <span>Comando (sin !)</span>
+                    <input type="text" maxlength="100" x-model="simulateForm.command" />
+                  </label>
+                  <label class="field" x-show="simulateForm.type === 'chat_command'">
+                    <span>Argumentos</span>
+                    <input type="text" placeholder="https://... separados por espacio" x-model="simulateForm.argsText" />
+                  </label>
+                  <label class="field" x-show="simulateForm.type === 'reward_redeemed'">
+                    <span>Id de la recompensa</span>
+                    <input type="text" maxlength="200" x-model="simulateForm.rewardId" />
+                  </label>
+                  <label class="field" x-show="simulateForm.type === 'reward_redeemed'">
+                    <span>Título de la recompensa</span>
+                    <input type="text" maxlength="200" x-model="simulateForm.rewardTitle" />
+                  </label>
+                  <label class="field" x-show="simulateForm.type === 'reward_redeemed'">
+                    <span>Texto del usuario (no confiable)</span>
+                    <input type="text" maxlength="2048" x-model="simulateForm.userInput" />
+                  </label>
+                </div>
+                <div class="row">
+                  <button class="primary" @click="simulate()">Simular evento</button>
+                  <button @click="manual()">Evento manual</button>
+                  <span class="ok" x-show="simulateMessage" x-text="simulateMessage"></span>
+                </div>
+              </section>
             </div>
-          </template>
-        </section>
-      </main>
+          </div>
+        </div>
+      </div>
     </div>
   </body>
 </html>

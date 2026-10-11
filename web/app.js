@@ -41,6 +41,13 @@ function dashboardApp() {
     queueTimer: null,
     feedTimer: null,
 
+    // --- Interfaz (Etapa 2 del rediseño) -------------------------------------
+    settingsOpen: false,
+    settingsTab: "kick",
+    rightTab: "queue",
+    downloadsOpen: false,
+    dirty: false,
+
     queue: { status: "idle", current: null, pending: [], size: 0, overlay: { connected: false, clients: 0 } },
 
     settings: {
@@ -134,6 +141,91 @@ function dashboardApp() {
     // Plataforma seleccionada en la sección Plataformas (por defecto, la primera).
     get activePlatform() {
       return this.platforms.find((item) => item.id === this.activePlatformId) ?? this.platforms[0] ?? null;
+    },
+
+    // --- Estado de la interfaz -----------------------------------------------
+
+    // El panel de Recompensas solo es interactivo con Kick vinculado y conectado.
+    get isKickConnected() {
+      return this.activePlatform !== null && this.activePlatform.state === "connected";
+    },
+
+    get overlayStatusLabel() {
+      return this.queue.overlay && this.queue.overlay.connected ? "Overlay conectado" : "Overlay sin conexión";
+    },
+
+    get overlayStatusClass() {
+      return this.queue.overlay && this.queue.overlay.connected ? "ok" : "error";
+    },
+
+    get kickStatusLabel() {
+      const platform = this.activePlatform;
+      if (!platform) return "Kick: sin configurar";
+      switch (platform.state) {
+        case "connected":
+          return "Kick: conectado";
+        case "requires_relink":
+          return "Kick: requiere volver a vincular";
+        default:
+          return "Kick: no vinculado";
+      }
+    },
+
+    get kickStatusClass() {
+      const platform = this.activePlatform;
+      if (!platform) return "";
+      if (platform.state === "connected") return "ok";
+      if (platform.state === "requires_relink") return "error";
+      return "";
+    },
+
+    get downloadStatusClass() {
+      if (this.job && this.job.status === "error") return "error";
+      return this.downloading ? "ok" : "";
+    },
+
+    // --- Ajustes (ventana flotante) ------------------------------------------
+
+    openSettings(tab) {
+      if (tab) this.settingsTab = tab;
+      this.settingsOpen = true;
+      this.downloadsOpen = false;
+      this.dirty = false;
+    },
+
+    closeSettings() {
+      if (this.dirty && !window.confirm("Hay cambios sin guardar. ¿Cerrar igual?")) return;
+      this.settingsOpen = false;
+      this.dirty = false;
+    },
+
+    closeIfBackdrop($event) {
+      if ($event.target === $event.currentTarget) this.closeSettings();
+    },
+
+    setSettingsTab(tab) {
+      this.settingsTab = tab;
+    },
+
+    setRightTab(tab) {
+      this.rightTab = tab;
+    },
+
+    toggleDownloads() {
+      this.downloadsOpen = !this.downloadsOpen;
+    },
+
+    markDirty() {
+      this.dirty = true;
+    },
+
+    // Esc cierra lo que esté abierto arriba de todo (desplegable, luego Ajustes).
+    onEscape() {
+      if (this.downloadsOpen) {
+        this.downloadsOpen = false;
+        return;
+      }
+      if (this.settingsOpen) this.closeSettings();
     },
 
     async init() {
@@ -400,6 +492,7 @@ function dashboardApp() {
       this.settingsForm.domainsText = (data.settings.allowedDomains || []).join("\n");
       this.settingsRestart = Boolean(data.restartRequired);
       this.settingsSaved = true;
+      this.dirty = false;
       setTimeout(() => (this.settingsSaved = false), 2000);
     },
 

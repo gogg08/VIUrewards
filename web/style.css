@@ -1,206 +1,570 @@
-/* Estilos del dashboard (Fase 3). Oscuro, sobrio, sin build. */
+/* ==========================================================================
+   VIUrewards — sistema de diseño (Etapa 2 del rediseño)
+   Tema oscuro por defecto. Todos los colores, espaciados, radios y tipografías
+   son variables CSS: los temas futuros (OLED, noche, día) son solo otro juego
+   de valores. Ningún componente escribe colores literales.
+   ========================================================================== */
 
 :root {
-  --bg: #12141a;
-  --panel: #1b1e27;
-  --panel-2: #222634;
-  --border: #2e3342;
-  --text: #e8eaf0;
-  --muted: #9aa1b4;
-  --accent: #53fc18;
-  --accent-ink: #0b1a06;
-  --danger: #ff5b6a;
+  /* --- Paleta (tema oscuro por defecto) --- */
+  --color-bg: #12141a;
+  --color-bg-2: #0d0f14;
+  --color-panel: #1b1e27;
+  --color-panel-2: #222634;
+  --color-panel-3: #2b3142;
+  --color-border: #2e3342;
+  --color-border-strong: #3b4256;
+  --color-text: #e8eaf0;
+  --color-muted: #9aa1b4;
+  --color-accent: #53fc18;
+  --color-accent-ink: #0b1a06;
+  --color-danger: #ff5b6a;
+  --color-danger-ink: #2a0a0e;
+  --color-warn: #ffcc66;
+  --color-warn-ink: #1a1400;
+  --color-scrim: rgba(0, 0, 0, 0.55);
+  --color-player: #000000;
+  --color-focus: #53fc18;
+
+  /* --- Espaciados --- */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+
+  /* --- Radios --- */
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  /* --- Tipografía --- */
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 0.78rem;
+  --text-sm: 0.85rem;
+  --text-base: 0.95rem;
+  --text-lg: 1.05rem;
+  --text-xl: 1.3rem;
+  --leading: 1.45;
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-bold: 700;
+
+  /* --- Sombras --- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.5);
+
+  /* --- Layout --- */
+  --topbar-height: 3.25rem;
+  --col-left-width: 320px;
+  --col-right-width: 360px;
 }
+
+/* --- Base ---------------------------------------------------------------- */
 
 * {
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  background: var(--bg);
-  color: var(--text);
-  line-height: 1.45;
+  font-family: var(--font-sans);
+  font-size: var(--text-base);
+  line-height: var(--leading);
+  background: var(--color-bg);
+  color: var(--color-text);
 }
 
 a {
-  color: var(--accent);
+  color: var(--color-accent);
 }
+
+h1,
+h2,
+h3 {
+  line-height: 1.2;
+}
+
+/* --- Botones ------------------------------------------------------------- */
 
 button {
   font: inherit;
+  font-size: var(--text-base);
   cursor: pointer;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  padding: 0.5rem 0.9rem;
-  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel-2);
+  color: var(--color-text);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius);
+  transition: border-color 0.12s ease, background 0.12s ease, filter 0.12s ease;
 }
 
-button:hover {
-  border-color: var(--accent);
+button:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
 }
 
-button.primary {
-  background: var(--accent);
-  color: var(--accent-ink);
-  border-color: var(--accent);
-  font-weight: 600;
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-button.primary:hover {
-  filter: brightness(1.08);
-}
-
-button.danger {
-  color: var(--danger);
-  border-color: var(--danger);
-  background: transparent;
-}
-
-input,
-select {
-  font: inherit;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.5rem 0.7rem;
-}
-
-input:focus,
-select:focus {
-  outline: 2px solid var(--accent);
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+a:focus-visible {
+  outline: 2px solid var(--color-focus);
   outline-offset: 1px;
 }
 
-/* --- Login / setup --- */
+/* Primario: la acción principal de cada zona. */
+button.primary {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  border-color: var(--color-accent);
+  font-weight: var(--weight-bold);
+}
+
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+
+/* Peligro: acciones destructivas. */
+button.danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: transparent;
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--color-danger);
+  color: var(--color-danger-ink);
+}
+
+/* Fantasma: acciones terciarias, sin borde visible. */
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-muted);
+}
+
+button.ghost:hover:not(:disabled) {
+  color: var(--color-text);
+  background: var(--color-panel-2);
+}
+
+button.small {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+}
+
+button.block {
+  display: block;
+  width: 100%;
+}
+
+/* --- Formularios --------------------------------------------------------- */
+
+input,
+select,
+textarea {
+  font: inherit;
+  font-size: var(--text-base);
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-2) var(--space-3);
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+input[type="checkbox"] {
+  width: auto;
+  accent-color: var(--color-accent);
+}
+
+.field {
+  display: block;
+  margin-bottom: var(--space-3);
+}
+
+.field > span {
+  display: block;
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  margin-bottom: var(--space-1);
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.field-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* --- Tarjetas / paneles -------------------------------------------------- */
+
+.card {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5);
+}
+
+.panel {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+/* --- Mensajes y estados -------------------------------------------------- */
+
+.empty {
+  color: var(--color-muted);
+  text-align: center;
+  padding: var(--space-5) var(--space-3);
+  margin: 0;
+}
+
+.error {
+  color: var(--color-danger);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+}
+
+.ok {
+  color: var(--color-accent);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+}
+
+.warn {
+  color: var(--color-warn);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+}
+
+.muted {
+  color: var(--color-muted);
+}
+
+.hint {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  margin-top: 0;
+}
+
+/* --- Badges y píldoras --------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-bold);
+  padding: 0.1rem var(--space-2);
+  border-radius: var(--radius-pill);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.badge.ok {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+}
+
+.badge.off {
+  background: transparent;
+  color: var(--color-muted);
+  border: 1px solid var(--color-border);
+}
+
+.badge.error {
+  background: transparent;
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+}
+
+.badge.warn {
+  background: var(--color-warn);
+  color: var(--color-warn-ink);
+}
+
+/* --- Login / setup ------------------------------------------------------- */
 
 .auth-wrap {
   min-height: 100vh;
   display: grid;
   place-items: center;
-  padding: 1rem;
+  padding: var(--space-4);
 }
 
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 1.5rem;
+.auth-wrap .card {
   width: 100%;
   max-width: 380px;
 }
 
-.card h1 {
-  margin: 0 0 0.25rem;
-  font-size: 1.3rem;
+.auth-wrap .card h1 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xl);
 }
 
-.card p.hint {
-  color: var(--muted);
-  margin-top: 0;
-  font-size: 0.9rem;
+/* ==========================================================================
+   Layout principal
+   ========================================================================== */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
 }
 
-.field {
-  display: block;
-  margin-bottom: 0.9rem;
-}
-
-.field span {
-  display: block;
-  font-size: 0.85rem;
-  color: var(--muted);
-  margin-bottom: 0.3rem;
-}
-
-.field input {
-  width: 100%;
-}
-
-.error {
-  color: var(--danger);
-  font-size: 0.9rem;
-  margin: 0.5rem 0;
-}
-
-/* --- Dashboard --- */
+/* --- Encabezado ---------------------------------------------------------- */
 
 .topbar {
+  flex: 0 0 auto;
+  height: var(--topbar-height);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.9rem 1.4rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
+  gap: var(--space-4);
+  padding: 0 var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-panel);
 }
 
-.topbar .brand {
-  font-weight: 700;
+.topbar-left,
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
 }
 
-.topbar .brand span {
-  color: var(--accent);
+.brand {
+  font-weight: var(--weight-bold);
+  font-size: var(--text-lg);
+  white-space: nowrap;
 }
 
-main {
-  max-width: 1100px;
-  margin: 0 auto;
-  padding: 1.4rem;
+.brand span {
+  color: var(--color-accent);
+}
+
+/* Indicador de estado clicable (Overlay / Kick). */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-sm);
+  border-radius: var(--radius-pill);
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  color: var(--color-muted);
+}
+
+.status-pill.ok {
+  color: var(--color-text);
+}
+
+.status-pill.ok .dot {
+  background: var(--color-accent);
+}
+
+.status-pill.error {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.status-pill.error .dot {
+  background: var(--color-danger);
+}
+
+/* --- Grilla de tres columnas --------------------------------------------- */
+
+.app-grid {
+  flex: 1 1 auto;
+  min-height: 0;
   display: grid;
-  gap: 1.4rem;
+  grid-template-columns: var(--col-left-width) minmax(0, 1fr) var(--col-right-width);
+  gap: var(--space-4);
+  padding: var(--space-4);
+  overflow: hidden;
 }
 
-section {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 1.2rem;
+.col {
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
 }
 
-section h2 {
-  margin: 0 0 0.9rem;
-  font-size: 1.05rem;
+.col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.col-head h2,
+.col-head h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+/* --- Desplegable anclado ------------------------------------------------- */
+
+.dropdown {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: 30;
+  min-width: 280px;
+  max-width: 360px;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-md);
+  padding: var(--space-3);
+}
+
+.dropdown-menu h3 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* --- Control segmentado (Cola | Historial) ------------------------------- */
+
+.segmented {
+  display: inline-flex;
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented button {
+  border: 0;
+  background: transparent;
+  color: var(--color-muted);
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+}
+
+.segmented button.active {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-weight: var(--weight-bold);
+}
+
+/* --- Cola en vivo -------------------------------------------------------- */
+
+.queue-current {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: var(--space-3);
+}
+
+.queue-list {
+  margin: var(--space-1) 0 0;
+  padding-left: var(--space-5);
+  color: var(--color-muted);
+}
+
+.queue-list li {
+  overflow-wrap: anywhere;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.dot {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-muted);
+  flex: 0 0 auto;
+}
+
+.dot.ok {
+  background: var(--color-accent);
+}
+
+.dot.error {
+  background: var(--color-danger);
 }
 
 .row {
   display: flex;
-  gap: 0.6rem;
+  gap: var(--space-2);
   flex-wrap: wrap;
   align-items: center;
 }
 
-.row input[type="url"],
-.row input[type="text"] {
-  flex: 1 1 320px;
-  min-width: 220px;
+.row > input[type="url"],
+.row > input[type="text"] {
+  flex: 1 1 220px;
+  min-width: 0;
 }
 
-.muted {
-  color: var(--muted);
-}
-
-.progress {
-  margin-top: 0.8rem;
-  font-size: 0.95rem;
-}
-
-.progress.error {
-  color: var(--danger);
-}
+/* --- Biblioteca (clips) -------------------------------------------------- */
 
 .clip-grid {
   display: grid;
-  gap: 1rem;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-4);
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
 }
 
 .clip {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -209,125 +573,47 @@ section h2 {
 .clip video {
   width: 100%;
   aspect-ratio: 16 / 9;
-  background: #000;
+  background: var(--color-player);
   display: block;
 }
 
 .clip .body {
-  padding: 0.7rem 0.8rem;
+  padding: var(--space-3);
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: var(--space-2);
 }
 
 .clip .title {
-  font-weight: 600;
+  font-weight: var(--weight-medium);
   overflow-wrap: anywhere;
 }
 
 .clip .meta {
-  color: var(--muted);
-  font-size: 0.82rem;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
 }
 
-.clip .actions {
-  display: flex;
-  gap: 0.4rem;
-  flex-wrap: wrap;
-}
-
-.clip .actions button {
-  padding: 0.35rem 0.6rem;
-  font-size: 0.85rem;
-}
-
-.empty {
-  color: var(--muted);
-  text-align: center;
-  padding: 1.5rem 0;
-}
-
-.overlay-row input {
-  flex: 1 1 420px;
-}
-
-/* --- Cola en vivo --- */
-
-.section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  flex-wrap: wrap;
-  margin-bottom: 0.9rem;
-}
-
-.section-head h2 {
-  margin: 0;
-}
-
-.queue-current {
-  display: flex;
-  align-items: center;
-  gap: 0.6rem;
-  padding: 0.6rem 0.8rem;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  margin-bottom: 0.8rem;
-}
-
-.badge {
-  background: var(--accent);
-  color: var(--accent-ink);
-  font-size: 0.75rem;
-  font-weight: 700;
-  padding: 0.15rem 0.5rem;
-  border-radius: 999px;
-  text-transform: uppercase;
-}
-
-.badge.ok {
-  background: var(--accent);
-  color: var(--accent-ink);
-}
-
-.badge.error {
-  background: transparent;
-  color: var(--danger);
-  border: 1px solid var(--danger);
-}
-
-.queue-list {
-  margin: 0.3rem 0 0;
-  padding-left: 1.4rem;
-  color: var(--muted);
-}
-
-.queue-list li {
-  overflow-wrap: anywhere;
-}
-
-/* --- Recorte por clip --- */
+/* --- Recorte ------------------------------------------------------------- */
 
 .trim {
-  border-top: 1px solid var(--border);
-  padding-top: 0.6rem;
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-2);
   display: flex;
   flex-direction: column;
-  gap: 0.4rem;
+  gap: var(--space-2);
 }
 
 .trim-row {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
 .trim-row label {
-  color: var(--muted);
-  font-size: 0.82rem;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
   min-width: 3.5rem;
 }
 
@@ -336,75 +622,11 @@ section h2 {
 }
 
 .trim-row button {
-  padding: 0.3rem 0.55rem;
-  font-size: 0.8rem;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
 }
 
-/* --- Configuración --- */
-
-.settings-grid {
-  display: grid;
-  gap: 0.9rem;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  margin-bottom: 0.9rem;
-}
-
-textarea {
-  font: inherit;
-  width: 100%;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 0.5rem 0.7rem;
-  resize: vertical;
-}
-
-textarea:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-hr {
-  border: 0;
-  border-top: 1px solid var(--border);
-  margin: 1.2rem 0;
-}
-
-section h3 {
-  margin: 0 0 0.7rem;
-  font-size: 0.95rem;
-}
-
-.ok {
-  color: var(--accent);
-  font-size: 0.9rem;
-}
-
-.warn {
-  color: #ffcc66;
-  font-size: 0.88rem;
-  margin: 0.5rem 0;
-}
-
-/* Alpine oculta los bloques hasta que su componente arranca. */
-[x-cloak] {
-  display: none !important;
-}
-
-/* --- Formulario de recompensa e historial --- */
-
-.rule-form {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-}
-
-.rule-form .settings-grid {
-  margin-bottom: 0.9rem;
-}
+/* --- Tablas -------------------------------------------------------------- */
 
 .table-wrap {
   overflow-x: auto;
@@ -413,21 +635,21 @@ section h3 {
 table.grid {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.88rem;
+  font-size: var(--text-sm);
 }
 
 table.grid th,
 table.grid td {
   text-align: left;
-  padding: 0.5rem 0.6rem;
-  border-bottom: 1px solid var(--border);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--color-border);
   vertical-align: top;
   overflow-wrap: anywhere;
 }
 
 table.grid th {
-  color: var(--muted);
-  font-weight: 600;
+  color: var(--color-muted);
+  font-weight: var(--weight-medium);
   white-space: nowrap;
 }
 
@@ -437,29 +659,155 @@ table.grid tr:last-child td {
 
 table.grid td.actions {
   display: flex;
-  gap: 0.4rem;
+  gap: var(--space-1);
   flex-wrap: wrap;
 }
 
 table.grid td.actions button {
-  padding: 0.3rem 0.55rem;
-  font-size: 0.8rem;
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-xs);
 }
 
-.badge.off {
-  background: transparent;
-  color: var(--muted);
-  border: 1px solid var(--border);
+.progress {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
 }
 
-.badge.warn {
-  background: #ffcc66;
-  color: #1a1400;
+.progress.error {
+  color: var(--color-danger);
 }
 
-.simulate-grid {
+/* ==========================================================================
+   Ventana flotante (modal)
+   ========================================================================== */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: var(--color-scrim);
   display: grid;
-  gap: 0.9rem;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  margin-bottom: 0.9rem;
+  place-items: center;
+  padding: var(--space-4);
+}
+
+.modal-window {
+  width: min(960px, 100%);
+  height: min(640px, 100%);
+  display: flex;
+  flex-direction: column;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.modal-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.modal-head h2 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.modal-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 200px minmax(0, 1fr);
+}
+
+.tabs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-right: 1px solid var(--color-border);
+  overflow-y: auto;
+}
+
+.tabs button {
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-muted);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+}
+
+.tabs button.active {
+  background: var(--color-panel-2);
+  color: var(--color-text);
+  font-weight: var(--weight-medium);
+}
+
+.tab-panels {
+  padding: var(--space-4);
+  overflow-y: auto;
+}
+
+.tab-panels section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.tab-panels h3 {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.settings-grid {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.rule-form {
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+.divider {
+  border: 0;
+  border-top: 1px solid var(--color-border);
+  margin: var(--space-2) 0;
+}
+
+/* --- Responsive (ventanas angostas, p. ej. un dock de OBS) --------------- */
+
+@media (max-width: 1024px) {
+  .app-grid {
+    grid-template-columns: minmax(0, 1fr);
+    overflow-y: auto;
+  }
+
+  .col {
+    overflow-y: visible;
+  }
+
+  .modal-content {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tabs {
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+  }
+}
+
+/* Alpine oculta los bloques hasta que su componente arranca. */
+[x-cloak] {
+  display: none !important;
 }

@@ -21,6 +21,30 @@ Se guarda solo su hash (`crypto.scrypt` con salt aleatorio), nunca en texto plan
 Después, para entrar, se usa esa contraseña. La sesión va en una cookie
 `httpOnly`, `SameSite=Strict`.
 
+## Estructura de la interfaz (Etapa 2 del rediseño)
+
+El dashboard es una **sola pantalla de uso** con **tres columnas con scroll
+independiente**; la página no scrollea (el encabezado y las columnas ocupan la
+altura de la ventana). En ventanas angostas las columnas se apilan.
+
+- **Encabezado:** logo VIUrewards; indicadores de **Overlay** (conectado / sin
+  conexión) y **Kick** (no vinculado / conectado / requiere volver a vincular),
+  ambos clicables y abren **Ajustes** en su pestaña; botón **Descargas** (vacío por
+  ahora; se completa en la Etapa 3), engranaje (Ajustes) y Salir.
+- **Columna izquierda:** **Recompensas del canal**.
+- **Columna central:** **Agregar un clip** y la **Biblioteca**.
+- **Columna derecha:** **Cola** e **Historial** con un botón que alterna entre ambos.
+- **Ajustes** es una **ventana flotante** con pestañas a la izquierda (Kick, Overlay
+  y OBS, Alertas, Biblioteca y descargas, Seguridad, Apariencia —vacía por ahora— y
+  Avanzado). Se cierra con Esc, con la X o con clic afuera; si hay cambios sin
+  guardar, avisa. Cada pestaña tiene su propio botón de guardado o su acción
+  inmediata. En esta etapa el contenido se movió a su pestaña **sin rediseñar cada
+  una** (la sección 7.3 de `UI-DESIGN.md` define el contenido final, Etapa 5).
+
+El **sistema de diseño** vive en `web/style.css` y está hecho **solo con variables
+CSS** (colores, espaciados, radios y tipografías). Ningún componente escribe colores
+literales, así los temas futuros (OLED, noche, día) son otro juego de valores.
+
 ## Qué permite hoy (Fase 3 completa)
 
 - **Agregar un clip**: pegás una URL (whitelist de dominios) y la descarga corre
