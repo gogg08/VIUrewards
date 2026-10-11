@@ -95,18 +95,34 @@ y muestra el resultado ("Conexión correcta como <usuario> · N recompensa(s)").
 
 En **Recompensas del canal** → **Nueva recompensa**:
 
-- **Título** (≤50), **Costo** (puntos, ≥1), **Descripción** (≤200), **Color**,
-  **Habilitada** y **Pide texto al espectador**.
-- **Regla asociada (clip fijo)**: elegís un clip de la biblioteca, volumen,
-  duración máxima y cooldown. Crea una acción `PlayClip`.
+- **Título** (≤50), **Costo** (puntos, ≥1), **Descripción** (≤200), **Color** y
+  **Habilitada**.
+- **Clip** de la biblioteca, volumen, duración máxima y cooldown.
 
-La regla usa un trigger `reward_redeemed` con el **id de la recompensa**. La API
-de Kick **no** tiene campos de video/volumen/duración: esos son locales
-(`docs/kick-research.md` §8.1). **Borrar una recompensa no borra el clip.**
+Cada recompensa tiene una **regla interna 1:1** que se crea y se mantiene sola
+(no se ve en la interfaz): trigger `reward_redeemed` con el **id de la
+recompensa** y acción `PlayClip`. La API de Kick **no** tiene campos de video,
+volumen o duración: esos son locales (`docs/kick-research.md` §8.1).
+
+`is_user_input_required` se envía **siempre en falso** en esta versión del
+producto (el público no envía texto). **Borrar una recompensa no borra el
+clip.**
+
+Estados que muestra la lista (rediseño, Etapa 4A):
+
+- **Habilitada / Deshabilitada**: el estado real en Kick.
+- **Falta en Kick**: la recompensa ya no está en Kick; se puede **Recrear** (crea
+  una nueva con los datos locales y vuelve a vincular la regla) o **Quitar de la
+  app**.
+- **De otra app**: la creó otra integración; es de solo lectura.
+
+Al **desactivar** o **borrar** una recompensa con canjes pendientes, la app
+**rechaza primero** esos canjes (pide confirmación: "Se rechazarán N canjes
+pendientes"). Si algún rechazo falla de verdad, **no** desactiva ni borra y
+ofrece hacerlo igual.
 
 Límites de la API: **máximo 50 recompensas** por canal, y **solo la app que creó
-una recompensa puede editarla o borrarla**. En la tabla, las recompensas de otras
-apps se marcan como **"De otra app"** y sus botones quedan deshabilitados.
+una recompensa puede editarla o borrarla**.
 
 ## 7. Canjes
 

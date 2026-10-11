@@ -28,6 +28,7 @@ import {
   getRuleRecord,
   listClips,
   listHistory,
+  listRewardsUsingClip,
   listRules,
   openMemoryDatabase,
   renameClip,
@@ -63,7 +64,9 @@ import { RuleEngine, validateRuleInput, type EngineResult } from "../rules/index
 import type { Clip, MediaOptions } from "../media/index.ts";
 import { createPlatformIntegrations, type PlatformIntegration } from "../platforms/index.ts";
 import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index.ts";
+import { suggestedTitle } from "../rewards/index.ts";
 import { registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
+import { registerRewardApiRoutes } from "./rewards-routes.ts";
 import { attachWebSocket } from "./ws.ts";
 
 export type { MediaPassthroughOptions } from "./jobs.ts";
@@ -694,7 +697,11 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       return { ok: true, job };
     });
 
-    api.get("/api/clips", async () => ({ clips: listClips(db) }));
+    api.get("/api/clips", async () => ({
+      // `suggestedTitle` es un nombre propuesto a partir del título del clip, para
+      // el formulario de recompensas (rediseño, Etapa 4A).
+      clips: listClips(db).map((clip) => ({ ...clip, suggestedTitle: suggestedTitle(clip.title) })),
+    }));
 
     api.post<{ Params: { id: string }; Body: { title: string } }>(
       "/api/clips/:id/rename",
@@ -712,6 +719,27 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     api.delete<{ Params: { id: string } }>("/api/clips/:id", async (request, reply) => {
       const clip = getClip(db, request.params.id);
       if (!clip) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+
+      // Guarda provisional (rediseño, Etapa 4A): no se borra un clip que alguna
+      // recompensa use (incluidas las desactivadas). La ventana de detalle de la
+      // Etapa 3A reutilizará esta misma lista para ofrecer borrar las recompensas.
+      const using = listRewardsUsingClip(db, clip.id);
+      if (using.length > 0) {
+        const names = using.map((reward) => reward.title).join(", ");
+        return reply.code(409).send({
+          ok: false,
+          reason: "CLIP_IN_USE",
+          message:
+            using.length === 1
+              ? `No se puede borrar el clip: lo usa la recompensa ${names}.`
+              : `No se puede borrar el clip: lo usan las recompensas ${names}.`,
+          rewards: using.map((reward) => ({
+            id: reward.id,
+            title: reward.title,
+            enabled: reward.desiredEnabled,
+          })),
+        });
+      }
 
       const filePath = resolve(mediaDir, clip.file);
       if (filePath.startsWith(mediaDir + sep)) {
@@ -931,6 +959,14 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       coordinator,
       db,
       port,
+      refreshRules: () => engine.setRules(listRules(db).map(toRule)),
+      debug,
+    });
+
+    // --- Rutas de recompensas (rediseño, Etapa 4A) ---------------------------
+    registerRewardApiRoutes(api, {
+      integrations,
+      db,
       refreshRules: () => engine.setRules(listRules(db).map(toRule)),
       debug,
     });

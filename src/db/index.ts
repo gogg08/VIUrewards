@@ -41,6 +41,17 @@ export {
 } from "./rules.ts";
 
 export {
+  deleteReward,
+  findRewardByRemoteId,
+  getReward,
+  listRewardsForPlatform,
+  listRewardsUsingClip,
+  setRewardError,
+  upsertReward,
+  type RewardRecord,
+} from "./rewards.ts";
+
+export {
   addHistory,
   listHistory,
   pruneHistory,

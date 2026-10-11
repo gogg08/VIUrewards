@@ -689,6 +689,32 @@ dashboard, sección **Plataformas → Diagnóstico**, sin depender del prototipo
 
 **Observaciones:** _(intervalo mínimo que toleró, 429 y `Retry-After`, etc.)_
 
+#### 11.4.2 Verificaciones pendientes de la Etapa 4A (recompensas)
+
+Datos que **no** se pudieron confirmar con la documentación; quedan como
+**[TODO(verificar)]** hasta probarlos contra un canal real.
+
+| # | Qué verificar | Por qué importa | Estado |
+|---|---|---|---|
+| 1 | Qué hace Kick con los **canjes pendientes** de una recompensa que se **deshabilita** | Define si hace falta rechazarlos a mano (la app los rechaza **antes** de deshabilitar y vuelve a revisar) | **[TODO(verificar)]** |
+| 2 | Qué pasa al **cambiar el costo** de una recompensa que tiene canjes pendientes | Si Kick re-valida los puntos o los deja pendientes | **[TODO(verificar)]** |
+| 3 | Efecto de **`should_redemptions_skip_request_queue`** | La app **no** lo envía (deja el valor por defecto); confirmar que no cambia la cola de pedidos | **[TODO(verificar)]** |
+| 4 | Si **`reject` reembolsa los puntos** al espectador | La UI nunca promete "reembolsar", solo "rechazar" | **[TODO(verificar)]** |
+| 5 | ¿`GET .../redemptions` filtra por **`reward_id` y `status` a la vez**? | La app usa ese filtro para contar los pendientes de una recompensa | **[verificado en docs]** (§8) — confirmar en la práctica |
+| 6 | ¿`PATCH .../rewards/{id}` acepta **`is_enabled`**? | Es lo que usa el interruptor de activa/desactivada | **[verificado en docs]** (§8) — confirmar en la práctica |
+| 7 | Solo la app que creó la recompensa puede editarla/borrarla | Por eso las recompensas de otras apps se marcan "De otra app" | **[verificado en docs]** (§8) |
+
+**Notas de arquitectura (Etapa 4A):**
+
+- Las recompensas y los canjes se manejan **por REST, sin túnel ni webhooks**,
+  desde la app local. El `client_secret` es de **solo escritura** (nunca sale al
+  frontend ni a los logs).
+- En esta etapa el público **no envía links**: eso se quitó del producto. El
+  `user_input` de un canje igual se trata como input **no confiable** (§12.1) y,
+  si algún día se usa, se valida como URL con whitelist antes de pasarlo a yt-dlp.
+- La recompensa local tiene un **id propio y estable**; el id remoto de la
+  plataforma es un dato reemplazable (por eso "Recrear" funciona).
+
 ---
 
 ## 12. Notas de seguridad del prototipo

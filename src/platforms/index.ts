@@ -11,7 +11,14 @@ import type { SqliteDatabase } from "../db/index.ts";
 import { createKickIntegration, type KickIntegrationOptions } from "./kick/index.ts";
 import type { PlatformIntegration } from "./integration.ts";
 
-export type { PlatformIntegration, PlatformAccount, RewardView, RewardInput, PollingDiagnostics } from "./integration.ts";
+export type {
+  PlatformIntegration,
+  PlatformAccount,
+  RewardView,
+  RewardInput,
+  PollingDiagnostics,
+  RedemptionRejectFailure,
+} from "./integration.ts";
 
 export interface PlatformRegistryOptions {
   db: SqliteDatabase;

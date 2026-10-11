@@ -8,7 +8,7 @@
  * La base de la API es inyectable para poder probar contra un servidor falso.
  */
 
-import { KICK_API_BASE_URL, MAX_RESOLVE_BATCH } from "./config.ts";
+import { KICK_API_BASE_URL, MAX_REDEMPTION_PAGES, MAX_RESOLVE_BATCH } from "./config.ts";
 import type {
   ApiEnvelope,
   ChannelReward,
@@ -192,6 +192,34 @@ export class KickApi {
       "redemptions.list",
     );
     return (await response.json()) as RedemptionsPage;
+  }
+
+  /**
+   * Ids de canjes pendientes de una recompensa, paginando por cursor.
+   *
+   * Verificado en docs.kick.com (§8): `GET /public/v1/channels/rewards/redemptions`
+   * acepta los filtros `reward_id` y `status`.
+   */
+  async listPendingRedemptionIds(rewardId: string): Promise<string[]> {
+    const ids: string[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_REDEMPTION_PAGES; page += 1) {
+      const query = new URLSearchParams({ status: "pending", reward_id: rewardId });
+      if (cursor) query.set("cursor", cursor);
+      const response = await this.ensureOk(
+        await this.request(`/public/v1/channels/rewards/redemptions?${query.toString()}`),
+        "redemptions.list",
+      );
+      const json = (await response.json()) as RedemptionsPage;
+      for (const group of json.data ?? []) {
+        for (const redemption of group.redemptions ?? []) {
+          if (redemption.status === "pending") ids.push(redemption.id);
+        }
+      }
+      cursor = json.pagination?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return ids;
   }
 
   /** Acepta canjes en lotes de 25. Devuelve solo los que fallaron. */

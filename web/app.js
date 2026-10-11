@@ -798,11 +798,12 @@ function dashboardApp() {
       this.rewards = data.rewards ?? [];
     },
 
-    // Busca la regla asociada a una recompensa (trigger reward_redeemed por id).
+    // Busca la regla interna asociada a una recompensa (trigger reward_redeemed).
     findRewardRule(reward) {
+      const remoteId = reward.remoteId ?? reward.id;
       return (
         this.rules.find(
-          (rule) => rule.trigger.type === "reward_redeemed" && rule.trigger.rewardId === reward.id,
+          (rule) => rule.trigger.type === "reward_redeemed" && rule.trigger.rewardId === remoteId,
         ) ?? null
       );
     },
@@ -821,8 +822,6 @@ function dashboardApp() {
         description: "",
         color: "#00e701",
         enabled: true,
-        userInputRequired: false,
-        skipRequestQueue: false,
         clipId: "",
         volume: 1,
         maxDurationSec: 30,
@@ -830,22 +829,21 @@ function dashboardApp() {
       };
     },
 
-    // Editar solo cambia los campos de la recompensa; la regla se define al crear.
+    // Editar cambia los campos de la recompensa; el clip y las opciones de
+    // reproducción se definen al crear (rediseño completo en la Etapa 4B).
     editReward(reward) {
       this.rewardMessage = "";
       this.rewardForm = {
-        id: reward.id,
+        id: reward.localId ?? reward.id,
         title: reward.title,
         cost: reward.cost,
         description: reward.description ?? "",
         color: reward.color ?? "#00e701",
         enabled: reward.enabled,
-        userInputRequired: reward.userInputRequired,
-        skipRequestQueue: reward.skipRequestQueue,
-        clipId: "",
-        volume: 1,
-        maxDurationSec: 30,
-        cooldownSec: 0,
+        clipId: reward.clipId ?? "",
+        volume: reward.volume ?? 1,
+        maxDurationSec: reward.maxDurationSec ?? 30,
+        cooldownSec: reward.cooldownSec ?? 0,
       };
     },
 
@@ -875,9 +873,6 @@ function dashboardApp() {
         cost,
         description: String(form.description || "").trim(),
         color: String(form.color || "").trim(),
-        enabled: form.enabled === true,
-        userInputRequired: form.userInputRequired === true,
-        skipRequestQueue: form.skipRequestQueue === true,
       };
 
       let method;
@@ -891,11 +886,11 @@ function dashboardApp() {
           this.rewardMessage = "Elegí un clip de la biblioteca.";
           return;
         }
-        const rule = { mode: "play_clip", clipId: String(form.clipId) };
-        rule.volume = numberOrNull(form.volume) ?? 1;
-        if (numberOrNull(form.maxDurationSec) !== null) rule.maxDurationSec = Number(form.maxDurationSec);
-        rule.cooldownSec = Number(form.cooldownSec) || 0;
-        body.rule = rule;
+        body.clipId = String(form.clipId);
+        body.volume = numberOrNull(form.volume) ?? 1;
+        if (numberOrNull(form.maxDurationSec) !== null) body.maxDurationSec = Number(form.maxDurationSec);
+        body.cooldownSec = Number(form.cooldownSec) || 0;
+        body.enabled = form.enabled === true;
         method = "POST";
         path = "/api/platforms/" + encodeURIComponent(platform.id) + "/rewards";
       }
@@ -910,7 +905,6 @@ function dashboardApp() {
         this.rewardMessage = data.message || "No se pudo guardar la recompensa.";
         return;
       }
-      if (data.ruleWarning) this.rewardMessage = data.ruleWarning;
       this.rewardForm = null;
       await this.loadRewards(platform);
       await this.loadRules();

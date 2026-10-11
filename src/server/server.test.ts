@@ -313,6 +313,34 @@ describe("biblioteca y overlay (API)", () => {
     const clips = await server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie } });
     expect(clips.json().clips).toHaveLength(0);
   });
+
+  it("no borra un clip que una recompensa usa, ni siquiera desactivada", async () => {
+    const { server, mediaDir, cookie } = await withServer();
+    writeFileSync(join(mediaDir, "in-use.mp4"), "mp4", "utf8");
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES ('in-use','https://x/y','En uso',1,4,'in-use.mp4','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    // Recompensa desactivada: igual tiene que bloquear el borrado.
+    server.db
+      .prepare(
+        `INSERT INTO rewards (id, platform, title, clip_id, desired_enabled, managed, synced, created_at, updated_at)
+         VALUES ('rw-1','kick','Fiesta','in-use',0,1,1,'2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+
+    const response = await server.app.inject({ method: "DELETE", url: "/api/clips/in-use", headers: { cookie } });
+    expect(response.statusCode).toBe(409);
+    const body = response.json();
+    expect(body.reason).toBe("CLIP_IN_USE");
+    expect(body.message).toContain("Fiesta");
+
+    // El clip sigue existiendo (fila y archivo).
+    const clips = await server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie } });
+    expect(clips.json().clips.map((clip: { id: string }) => clip.id)).toContain("in-use");
+  });
 });
 
 describe("configuración, recorte y contraseña (parte B)", () => {

@@ -149,13 +149,9 @@
                           <span>Color</span>
                           <input type="text" maxlength="32" x-model="rewardForm.color" placeholder="#00e701" />
                         </label>
-                        <label class="field">
+                        <label class="field" x-show="!rewardForm.id">
                           <span>Habilitada</span>
                           <input type="checkbox" x-model="rewardForm.enabled" />
-                        </label>
-                        <label class="field">
-                          <span>Pide texto al espectador</span>
-                          <input type="checkbox" x-model="rewardForm.userInputRequired" />
                         </label>
                         <label class="field" x-show="!rewardForm.id">
                           <span>Clip</span>

@@ -5,6 +5,7 @@
  * falten según `PRAGMA user_version`, cada una dentro de una transacción.
  */
 
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -13,7 +14,66 @@ import Database from "better-sqlite3";
 export type SqliteDatabase = Database.Database;
 
 /** Cantidad de migraciones aplicadas; equivale al `user_version` esperado. */
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 7;
+
+interface LegacyRuleRow {
+  id: string;
+  name: string;
+  enabled: number;
+  trigger_json: string;
+  conditions_json: string;
+  action_json: string;
+}
+
+function safeJson(raw: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(raw) as unknown;
+    return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Deriva un título aceptable a partir del nombre de una regla heredada. */
+function legacyRewardTitle(ruleName: string): string {
+  const withoutPrefix = ruleName.replace(/^recompensa:\s*/i, "").trim();
+  const base = withoutPrefix.length > 0 ? withoutPrefix : "Alerta";
+  return [...base].slice(0, 50).join("");
+}
+
+interface MigratedRuleReward {
+  rule: LegacyRuleRow;
+  triggerRewardId: string;
+  action: Record<string, unknown>;
+  conditions: Record<string, unknown>;
+}
+
+/** Reglas `reward_redeemed` con su `rewardId`, para importar recompensas ya gestionadas. */
+function legacyRulesByRewardId(db: SqliteDatabase): Map<string, MigratedRuleReward> {
+  const rows = db
+    .prepare<LegacyRuleRow>(
+      "SELECT id, name, enabled, trigger_json, conditions_json, action_json FROM rules",
+    )
+    .all();
+  const map = new Map<string, MigratedRuleReward>();
+  for (const rule of rows) {
+    const trigger = safeJson(rule.trigger_json);
+    const rewardId = trigger?.rewardId;
+    if (trigger?.type !== "reward_redeemed" || typeof rewardId !== "string" || rewardId.length === 0) continue;
+    if (map.has(rewardId)) continue;
+    map.set(rewardId, {
+      rule,
+      triggerRewardId: rewardId,
+      action: safeJson(rule.action_json) ?? {},
+      conditions: safeJson(rule.conditions_json) ?? {},
+    });
+  }
+  return map;
+}
+
+function numberOr<T>(value: unknown, fallback: T): number | T {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
 
 const MIGRATIONS: ReadonlyArray<(db: SqliteDatabase) => void> = [
   (db) => {
@@ -145,6 +205,98 @@ const MIGRATIONS: ReadonlyArray<(db: SqliteDatabase) => void> = [
     db.exec(
       `DELETE FROM settings WHERE key IN ('moderation.maxPending', 'moderation.maxPendingPerUser');`,
     );
+  },
+  // Rediseño (Etapa 4A): modelo local de recompensas, con su regla interna 1:1.
+  // Es genérico (columna `platform`): no menciona ninguna plataforma concreta.
+  // Importa las recompensas ya gestionadas que tienen una regla `reward_redeemed`
+  // por `rewardId`: la fila local se arma con los datos de esa regla. Los campos
+  // que la regla no guarda (título exacto, costo, color y descripción) se dejan
+  // con valores provisorios y se completan desde la plataforma en el primer listado.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS rewards (
+        id                TEXT PRIMARY KEY,
+        platform          TEXT NOT NULL,
+        remote_reward_id  TEXT,
+        title             TEXT NOT NULL,
+        cost              INTEGER NOT NULL DEFAULT 1,
+        color             TEXT NOT NULL DEFAULT '#00e701',
+        description       TEXT NOT NULL DEFAULT '',
+        clip_id           TEXT,
+        volume            REAL NOT NULL DEFAULT 1,
+        max_duration_sec  INTEGER,
+        cooldown_sec      INTEGER NOT NULL DEFAULT 0,
+        user_cooldown_sec INTEGER NOT NULL DEFAULT 0,
+        position_json     TEXT,
+        enter_animation   TEXT,
+        exit_animation    TEXT,
+        desired_enabled   INTEGER NOT NULL DEFAULT 1,
+        managed           INTEGER NOT NULL DEFAULT 1,
+        rule_id           TEXT,
+        last_error        TEXT,
+        created_at        TEXT NOT NULL,
+        updated_at        TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_rewards_platform ON rewards(platform);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_rewards_remote
+        ON rewards(platform, remote_reward_id) WHERE remote_reward_id IS NOT NULL;
+    `);
+
+    const managed = db
+      .prepare<{ platform: string; reward_id: string }>(
+        "SELECT platform, reward_id FROM platform_managed_rewards",
+      )
+      .all();
+    if (managed.length === 0) return;
+
+    const rulesByRewardId = legacyRulesByRewardId(db);
+    const insert = db.prepare(`
+      INSERT OR IGNORE INTO rewards
+        (id, platform, remote_reward_id, title, cost, color, description, clip_id, volume,
+         max_duration_sec, cooldown_sec, user_cooldown_sec, position_json, enter_animation,
+         exit_animation, desired_enabled, managed, rule_id, last_error, created_at, updated_at)
+      VALUES
+        (@id, @platform, @remoteRewardId, @title, @cost, @color, @description, @clipId, @volume,
+         @maxDurationSec, @cooldownSec, @userCooldownSec, @positionJson, @enterAnimation,
+         @exitAnimation, @desiredEnabled, 1, @ruleId, NULL, @now, @now)
+    `);
+
+    for (const row of managed) {
+      const migrated = rulesByRewardId.get(row.reward_id);
+      if (!migrated) continue;
+      const { rule, action, conditions } = migrated;
+      const position = action.position;
+      insert.run({
+        id: randomUUID(),
+        platform: row.platform,
+        remoteRewardId: row.reward_id,
+        title: legacyRewardTitle(rule.name),
+        cost: 1,
+        color: "#00e701",
+        description: "",
+        clipId: typeof action.clipId === "string" ? action.clipId : null,
+        volume: numberOr(action.volume, 1),
+        maxDurationSec: typeof action.maxDurationSec === "number" ? action.maxDurationSec : null,
+        cooldownSec: numberOr(conditions.cooldownSec, 0),
+        userCooldownSec: numberOr(conditions.userCooldownSec, 0),
+        positionJson:
+          typeof position === "object" && position !== null ? JSON.stringify(position) : null,
+        enterAnimation: typeof action.enterAnimation === "string" ? action.enterAnimation : null,
+        exitAnimation: typeof action.exitAnimation === "string" ? action.exitAnimation : null,
+        desiredEnabled: rule.enabled === 1 ? 1 : 0,
+        ruleId: rule.id,
+        now: new Date().toISOString(),
+      });
+    }
+  },
+  // Rediseño (Etapa 4A, ajuste): marca si la fila ya se sincronizó con la plataforma.
+  // Las recompensas importadas por la migración v6 quedan en 0 (datos provisorios:
+  // costo/color/descripción) hasta que la plataforma responde; las que crea esta app
+  // nacen en 1. Una fila sin sincronizar no se puede editar, para no mandar datos
+  // provisorios a la API. Es genérico: la columna se llama `synced`, sin plataforma.
+  (db) => {
+    db.exec(`ALTER TABLE rewards ADD COLUMN synced INTEGER NOT NULL DEFAULT 0;`);
   },
 ];
 

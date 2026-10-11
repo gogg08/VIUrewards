@@ -17,6 +17,7 @@ import type {
   PlatformOperationResult,
   PlatformTestResult,
   PollingDiagnostics,
+  RedemptionRejectFailure,
   RewardInput,
   RewardView,
 } from "../integration.ts";
@@ -287,6 +288,38 @@ export class KickIntegration implements PlatformIntegration {
       return { ok: true, value: { id: rewardId } };
     } catch (error) {
       const { reason, message } = fromApiError(error, "rewards.delete");
+      return failure(reason, message);
+    }
+  }
+
+  async listPendingRedemptions(rewardId: string): Promise<PlatformOperationResult<string[]>> {
+    if (!this.oauth.isLinked()) return failure("NO_CREDENTIALS", "La cuenta no está vinculada.");
+    try {
+      return { ok: true, value: await this.api.listPendingRedemptionIds(rewardId) };
+    } catch (error) {
+      if (error instanceof KickApiError && error.status === 401) this.oauth.setStatus("requires_relink");
+      const { reason, message } = fromApiError(error, "redemptions.list");
+      return failure(reason, message);
+    }
+  }
+
+  async rejectRedemptions(ids: string[]): Promise<PlatformOperationResult<RedemptionRejectFailure[]>> {
+    if (!this.oauth.isLinked()) return failure("NO_CREDENTIALS", "La cuenta no está vinculada.");
+    try {
+      const failures = await this.api.rejectRedemptions(ids);
+      return {
+        ok: true,
+        value: failures.map((item) => ({
+          id: item.id,
+          reason: item.reason,
+          // NOT_PENDING / NOT_FOUND significan que el canje ya no está pendiente:
+          // se cuentan como resueltos (decisión de la especificación).
+          benign: item.reason === "NOT_PENDING" || item.reason === "NOT_FOUND",
+        })),
+      };
+    } catch (error) {
+      if (error instanceof KickApiError && error.status === 401) this.oauth.setStatus("requires_relink");
+      const { reason, message } = fromApiError(error, "redemptions.reject");
       return failure(reason, message);
     }
   }

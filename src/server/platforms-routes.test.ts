@@ -154,6 +154,12 @@ function fakeIntegration() {
       rewards.delete(id);
       return { ok: true, value: { id } };
     },
+    async listPendingRedemptions() {
+      return { ok: true, value: [] as string[] };
+    },
+    async rejectRedemptions() {
+      return { ok: true, value: [] };
+    },
     async start() {},
     async stop() {},
   };
@@ -278,61 +284,10 @@ describe("/api/platforms/* : flujo de vínculo y credenciales", () => {
   });
 });
 
-describe("/api/platforms/* : recompensas y regla asociada", () => {
-  it("crea una recompensa sin regla", async () => {
-    const { server, cookie } = await withServer();
-    const response = await server.app.inject({
-      method: "POST",
-      url: "/api/platforms/fake/rewards",
-      headers: { cookie, origin: ORIGIN },
-      payload: { title: "Alerta", cost: 100 },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ ok: true, rule: null });
-  });
-
-  it("crea una recompensa con una regla de clip fijo en el mismo formulario", async () => {
-    const { server, cookie } = await withServer();
-    const response = await server.app.inject({
-      method: "POST",
-      url: "/api/platforms/fake/rewards",
-      headers: { cookie, origin: ORIGIN },
-      payload: { title: "Alerta", cost: 50, rule: { mode: "play_clip", clipId: "clip-1" } },
-    });
-    expect(response.statusCode).toBe(200);
-    const body = response.json() as { rule: { trigger: { rewardId: string } } | null };
-    expect(body.rule?.trigger.rewardId).toBe("rw-1");
-  });
-
-  it("avisa si a la regla le falta el clip, sin romper", async () => {
-    const { server, cookie } = await withServer();
-    const response = await server.app.inject({
-      method: "POST",
-      url: "/api/platforms/fake/rewards",
-      headers: { cookie, origin: ORIGIN },
-      payload: { title: "Alerta", cost: 50, rule: { mode: "play_clip" } },
-    });
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ ok: true, rule: null });
-    expect((response.json() as { ruleWarning?: string }).ruleWarning).toBeTruthy();
-  });
-
-  it("borra una recompensa y limpia sus reglas (sin tocar clips)", async () => {
-    const { server, cookie } = await withServer();
-    const created = await server.app.inject({
-      method: "POST",
-      url: "/api/platforms/fake/rewards",
-      headers: { cookie, origin: ORIGIN },
-      payload: { title: "Alerta", cost: 50, rule: { mode: "play_clip", clipId: "clip-1" } },
-    });
-    expect(created.statusCode).toBe(200);
-
-    const removed = await server.app.inject({
-      method: "DELETE",
-      url: "/api/platforms/fake/rewards/rw-1",
-      headers: { cookie, origin: ORIGIN },
-    });
-    expect(removed.statusCode).toBe(200);
-    expect(removed.json()).toMatchObject({ ok: true, id: "rw-1", rulesRemoved: 1 });
+describe("/api/platforms/* : recompensas", () => {
+  it("las operaciones viven en rewards-routes (ver ese archivo)", () => {
+    // Las operaciones de recompensas (vista unificada, crear, editar, activar,
+    // desactivar, borrar) se prueban en `rewards-routes.test.ts` con el modelo local.
+    expect(true).toBe(true);
   });
 });

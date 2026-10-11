@@ -109,7 +109,7 @@ Todo el texto de la interfaz está en español. Los nombres de los clips se
 insertan con bindings de texto (Alpine `x-text`), que escapan HTML; nunca con
 `x-html`.
 
-### Sección nueva (Fase 4B, integración real con Kick)
+### Sección nueva (Fase 4B + Etapa 4A del rediseño: integración real con Kick)
 
 - **Plataformas**: vínculo de la cuenta por OAuth con PKCE, con estado visible
   (no vinculado / conectado / requiere volver a vincular). Carga del **Client ID**
@@ -117,10 +117,14 @@ insertan con bindings de texto (Alpine `x-text`), que escapan HTML; nunca con
   loguea). Vincular abre la página de Kick; el callback valida solo con
   `state` + PKCE y redirige al dashboard. Desvincular borra los tokens pero
   conserva las credenciales.
-- **Recompensas del canal**: listar, crear, editar y borrar recompensas con la API
-  oficial. Al crear se le asocia una **regla de clip fijo** (`PlayClip`) en el mismo
-  formulario. Solo se editan o borran las recompensas creadas por esta app (se
-  marcan "De otra app").
+- **Recompensas del canal**: listar, crear, editar activar/desactivar, borrar,
+  **Recrear** y **Quitar de la app**, con la API oficial. La **vista unificada**
+  calcula el estado de cada recompensa: **Habilitada**, **Deshabilitada**, **Falta
+  en Kick**, **De otra app**, **Sin conexión** y "No se pudo aplicar". Cada
+  recompensa tiene una **regla interna 1:1** (`PlayClip`) que se crea y se mantiene
+  sola; el creador nunca la ve. Al **desactivar** o **borrar** una recompensa con
+  canjes pendientes, se **rechazan primero** (con confirmación: "Se rechazarán N
+  canjes pendientes").
 - **Canjes pendientes antiguos**: los que superan la antigüedad configurada, con
   botones **Rechazar todos** y **Procesar ahora**.
 - **Diagnóstico**: intervalo de polling, último chequeo/resultado/error, latencias
@@ -174,10 +178,12 @@ Fase 4A: `GET/POST /api/rules`, `DELETE /api/rules/:id`,
 `POST /api/simulate`, `POST /api/manual`. Todo input se valida con esquemas de
 Fastify.
 
-Fase 4B: `GET /api/platforms`, `POST/DELETE /api/platforms/:id/credentials`,
+Fase 4B + Etapa 4A: `GET /api/platforms`, `POST/DELETE /api/platforms/:id/credentials`,
 `POST /api/platforms/:id/link|unlink|test`, `GET /api/platforms/:id/diagnostics`,
-`GET/POST /api/platforms/:id/rewards`, `PATCH`/`DELETE
-/api/platforms/:id/rewards/:rewardId`, `GET /api/platforms/:id/redemptions`,
+`GET /api/platforms/:id/rewards` (vista unificada), `POST /api/platforms/:id/rewards`,
+`PATCH|DELETE /api/platforms/:id/rewards/:localId`,
+`POST /api/platforms/:id/rewards/:localId/enable|disable|recreate|detach`,
+`GET /api/platforms/:id/rewards/:localId/pending`, `GET /api/platforms/:id/redemptions`,
 `POST /api/platforms/:id/redemptions/reject-all|process-now`. La ruta
 `GET /callback` es **pública** (no usa cookie): valida solo `state` + PKCE y
 redirige al dashboard.

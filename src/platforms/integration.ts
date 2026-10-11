@@ -57,6 +57,14 @@ export interface RewardInput {
   skipRequestQueue?: boolean;
 }
 
+/** Fallo al rechazar un canje, ya traducido a una forma genérica. */
+export interface RedemptionRejectFailure {
+  id: string;
+  reason: string;
+  /** `true` si el canje ya estaba resuelto (no es un error real). */
+  benign: boolean;
+}
+
 export interface CredentialsInput {
   clientId: string;
   /** Si se omite, se conserva el secreto ya guardado. */
@@ -127,6 +135,14 @@ export interface PlatformIntegration {
   createReward(input: RewardInput): Promise<PlatformOperationResult<RewardView>>;
   updateReward(rewardId: string, input: Partial<RewardInput>): Promise<PlatformOperationResult<RewardView>>;
   deleteReward(rewardId: string): Promise<PlatformOperationResult<{ id: string }>>;
+
+  /**
+   * Ids de canjes pendientes de una recompensa (con paginación). Se usa para
+   * contar los pendientes antes de deshabilitar o borrar una recompensa.
+   */
+  listPendingRedemptions(rewardId: string): Promise<PlatformOperationResult<string[]>>;
+  /** Rechaza canjes en lotes. Devuelve solo los que fallaron (con `benign`). */
+  rejectRedemptions(ids: string[]): Promise<PlatformOperationResult<RedemptionRejectFailure[]>>;
 
   start(): Promise<void>;
   stop(): Promise<void>;
