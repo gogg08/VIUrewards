@@ -113,7 +113,7 @@ Campos:
 - Al editar, nombre, costo, color y descripción se envían a Kick; el clip y las opciones de reproducción son solo de la app.
 - La regla interna se crea y se mantiene sola; el creador no la ve.
 
-**Estado:** documentado en la Etapa 2B; la ventana se implementa en la Etapa 4.
+**Estado:** implementado en la Etapa 4B (ventana flotante que crece al elegir un clip, interruptores accesibles y confirmación de canjes pendientes).
 
 ### 7.2 Detalle del clip
 

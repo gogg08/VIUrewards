@@ -98,9 +98,27 @@ function dashboardApp() {
     platformForm: { clientId: "", clientSecret: "" },
     platformMessage: "",
     platformNotice: "",
+    // --- Recompensas (rediseño, Etapa 4B) ------------------------------------
     rewards: [],
+    // Vista unificada: estado del vínculo y de la consulta a la plataforma.
+    rewardsConnected: false,
+    rewardsOffline: false,
+    rewardsPlatformState: "unlinked",
+    rewardsMessage: "",
+    // Formulario de crear/editar recompensa (modal). `null` = cerrado.
     rewardForm: null,
+    // Una vez elegido un clip la ventana crece y no se vuelve a achicar.
+    rewardExpanded: false,
+    // El título se completa solo con el del clip hasta que el creador lo edite.
+    rewardTitleTouched: false,
+    rewardAdvancedOpen: false,
     rewardMessage: "",
+    // Fotografía del formulario al abrirlo: para avisar cambios sin guardar.
+    rewardSnapshot: "",
+    // Confirmación base antes de borrar.
+    rewardDelete: null,
+    // Flujo de canjes pendientes al desactivar o borrar (nunca silencioso).
+    rewardPending: null,
     oldRedemptions: [],
     redemptionMessage: "",
     diagnostics: null,
@@ -150,9 +168,35 @@ function dashboardApp() {
 
     // --- Estado de la interfaz -----------------------------------------------
 
-    // El panel de Recompensas solo es interactivo con Kick vinculado y conectado.
-    get isKickConnected() {
-      return this.activePlatform !== null && this.activePlatform.state === "connected";
+    // --- Recompensas (Etapa 4B) ---------------------------------------------
+
+    // Sin vínculo (no vinculado o requiere volver a vincular): panel en gris.
+    get rewardsLocked() {
+      return this.rewardsPlatformState === "unlinked" || this.rewardsPlatformState === "requires_relink";
+    },
+
+    // La ventana de recompensa ya creció (clip elegido). No se vuelve a achicar.
+    get rewardFormExpanded() {
+      return this.rewardExpanded;
+    },
+
+    // Título de la ventana flotante de recompensa.
+    get rewardModalTitle() {
+      return this.rewardForm && this.rewardForm.id ? "Editar recompensa" : "Nueva recompensa";
+    },
+
+    // El formulario cambió respecto de cómo se abrió (para el aviso sin guardar).
+    get rewardFormDirty() {
+      if (!this.rewardForm) return false;
+      return JSON.stringify(this.rewardForm) !== this.rewardSnapshot;
+    },
+
+    // Texto de la acción de la ventana de canjes pendientes.
+    get rewardPendingActionLabel() {
+      const pending = this.rewardPending;
+      if (!pending) return "";
+      const verb = pending.kind === "delete" ? "Borrar" : "Deshabilitar";
+      return pending.failed && pending.failed.length > 0 ? verb + " igual" : "Continuar";
     },
 
     get overlayStatusLabel() {
@@ -268,8 +312,21 @@ function dashboardApp() {
       return this.dirtyTabs[tab] === true;
     },
 
-    // Esc cierra lo que esté abierto arriba de todo (desplegable, luego Ajustes).
+    // Esc cierra lo que esté abierto arriba de todo (ventanas de recompensa,
+    // desplegable y luego Ajustes).
     onEscape() {
+      if (this.rewardPending) {
+        this.cancelRewardPending();
+        return;
+      }
+      if (this.rewardDelete) {
+        this.cancelRewardDelete();
+        return;
+      }
+      if (this.rewardForm) {
+        this.closeReward();
+        return;
+      }
       if (this.downloadsOpen) {
         this.downloadsOpen = false;
         return;
@@ -577,8 +634,9 @@ function dashboardApp() {
 
     // --- Reglas internas (no visibles) -----------------------------------------
 
-    // Las reglas se crean solas al crear una recompensa (vínculo 1:1). El dashboard
-    // solo las lee para mostrar qué clip reproduce cada recompensa.
+    // Carga las reglas y las capacidades de las fuentes conectadas (para el
+    // selector de eventos del simulador). Las reglas se crean solas al crear una
+    // recompensa (vínculo 1:1) y el creador no las ve.
     async loadRules() {
       const response = await api("/api/rules");
       if (!response.ok) return;
@@ -785,36 +843,144 @@ function dashboardApp() {
     // --- Recompensas del canal ------------------------------------------------
 
     async loadRewards(platform) {
-      if (!platform || platform.state !== "connected") {
+      if (!platform) {
         this.rewards = [];
+        this.rewardsConnected = false;
+        this.rewardsOffline = false;
+        this.rewardsPlatformState = "unlinked";
+        this.rewardsMessage = "";
         return;
       }
       const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/rewards");
       if (!response.ok) {
         this.rewards = [];
+        this.rewardsConnected = false;
+        this.rewardsOffline = true;
+        this.rewardsPlatformState = platform.state;
+        this.rewardsMessage = "No se pudieron cargar las recompensas.";
         return;
       }
       const data = await response.json();
       this.rewards = data.rewards ?? [];
+      this.rewardsConnected = data.connected === true;
+      this.rewardsOffline = data.offline === true;
+      this.rewardsPlatformState = data.platformState ?? platform.state;
+      this.rewardsMessage = data.message ?? "";
     },
 
-    // Busca la regla interna asociada a una recompensa (trigger reward_redeemed).
-    findRewardRule(reward) {
-      const remoteId = reward.remoteId ?? reward.id;
+    // Ruta de una recompensa local dentro de la API de la plataforma.
+    rewardPath(platform, reward) {
       return (
-        this.rules.find(
-          (rule) => rule.trigger.type === "reward_redeemed" && rule.trigger.rewardId === remoteId,
-        ) ?? null
+        "/api/platforms/" +
+        encodeURIComponent(platform.id) +
+        "/rewards/" +
+        encodeURIComponent(reward.localId)
       );
     },
 
-    rewardRuleLabel(reward) {
-      const rule = this.findRewardRule(reward);
-      return rule ? this.actionLabel(rule) : "Sin regla";
+    clipById(id) {
+      return this.clips.find((clip) => clip.id === id) ?? null;
+    },
+
+    // Opción del desplegable de clip: nombre y duración.
+    rewardClipOption(clip) {
+      return clip.title + " · " + this.formatDuration(clip.durationSec);
+    },
+
+    // Nombre y duración del clip de una recompensa (para la tarjeta colapsada).
+    rewardClipLabel(reward) {
+      const clip = reward.clipId ? this.clipById(reward.clipId) : null;
+      if (clip) return clip.title + " · " + this.formatDuration(clip.durationSec);
+      return reward.clipTitle ? reward.clipTitle : "Clip no disponible";
+    },
+
+    // ¿El clip de la recompensa sigue existiendo en la biblioteca?
+    rewardClipExists() {
+      const form = this.rewardForm;
+      return !!(form && form.clipId && this.clipById(form.clipId));
+    },
+
+    rewardStateLabel(reward) {
+      switch (reward.state) {
+        case "enabled":
+          return "Habilitada";
+        case "disabled":
+          return "Deshabilitada";
+        case "missing":
+          return "Falta en Kick";
+        case "foreign":
+          return "De otra app";
+        case "offline":
+          return "Sin conexión";
+        case "apply_failed":
+          return "No se pudo aplicar";
+        default:
+          return String(reward.state);
+      }
+    },
+
+    rewardStateBadgeClass(reward) {
+      switch (reward.state) {
+        case "enabled":
+          return "ok";
+        case "missing":
+          return "warn";
+        case "apply_failed":
+          return "error";
+        default:
+          return "off";
+      }
+    },
+
+    // El interruptor no se puede usar si la recompensa no está sincronizada, la
+    // administra otra app, falta en Kick o no se pudo consultar la plataforma.
+    rewardToggleBlocked(reward) {
+      return (
+        !reward.managed ||
+        !reward.synced ||
+        reward.state === "foreign" ||
+        reward.state === "missing" ||
+        reward.state === "offline"
+      );
+    },
+
+    // Explicación del bloqueo del interruptor (tooltip).
+    rewardToggleHint(reward) {
+      if (!reward.synced) return "Datos sin sincronizar";
+      if (reward.state === "foreign") return "La creó otra app: Kick no permite editarla desde acá";
+      if (reward.state === "missing") return "Falta en Kick. Recreala o quitala de la app.";
+      if (reward.state === "offline") return "Sin conexión con Kick";
+      return "No se puede cambiar el estado";
+    },
+
+    // Solo se puede editar una recompensa propia, sincronizada y presente en Kick.
+    rewardEditable(reward) {
+      if (!reward.managed || !reward.synced || !reward.localId) return false;
+      return reward.state === "enabled" || reward.state === "disabled" || reward.state === "apply_failed";
+    },
+
+    animationLabel(name) {
+      switch (name) {
+        case "fade":
+          return "Desvanecer";
+        case "slide-up":
+          return "Deslizar hacia arriba";
+        case "slide-down":
+          return "Deslizar hacia abajo";
+        case "zoom":
+          return "Zoom";
+        default:
+          return "Sin animación";
+      }
     },
 
     newReward() {
       this.rewardMessage = "";
+      this.rewardPending = null;
+      this.rewardDelete = null;
+      this.rewardExpanded = false;
+      this.rewardTitleTouched = false;
+      this.rewardAdvancedOpen = false;
       this.rewardForm = {
         id: null,
         title: "",
@@ -823,33 +989,95 @@ function dashboardApp() {
         color: "#00e701",
         enabled: true,
         clipId: "",
-        volume: 1,
-        maxDurationSec: 30,
+        volumePercent: 100,
+        maxDurationSec: null,
         cooldownSec: 0,
+        userCooldownSec: 0,
+        positionX: 50,
+        positionY: 50,
+        enterAnimation: "none",
+        exitAnimation: "none",
       };
+      this.rewardSnapshot = JSON.stringify(this.rewardForm);
     },
 
-    // Editar cambia los campos de la recompensa; el clip y las opciones de
-    // reproducción se definen al crear (rediseño completo en la Etapa 4B).
+    // El clip y las opciones de reproducción son solo locales; el nombre, el costo,
+    // el color y la descripción también se envían a la plataforma.
     editReward(reward) {
+      if (!this.rewardEditable(reward)) return;
       this.rewardMessage = "";
+      this.rewardPending = null;
+      this.rewardDelete = null;
+      this.rewardExpanded = true;
+      this.rewardTitleTouched = true;
+      this.rewardAdvancedOpen = false;
       this.rewardForm = {
-        id: reward.localId ?? reward.id,
+        id: reward.localId,
         title: reward.title,
         cost: reward.cost,
         description: reward.description ?? "",
         color: reward.color ?? "#00e701",
         enabled: reward.enabled,
         clipId: reward.clipId ?? "",
-        volume: reward.volume ?? 1,
-        maxDurationSec: reward.maxDurationSec ?? 30,
+        volumePercent: Math.round((reward.volume ?? 1) * 100),
+        maxDurationSec: reward.maxDurationSec ?? null,
         cooldownSec: reward.cooldownSec ?? 0,
+        userCooldownSec: reward.userCooldownSec ?? 0,
+        positionX: reward.position ? Math.round(reward.position.x * 100) : 50,
+        positionY: reward.position ? Math.round(reward.position.y * 100) : 50,
+        enterAnimation: reward.enterAnimation ?? "none",
+        exitAnimation: reward.exitAnimation ?? "none",
       };
+      this.rewardSnapshot = JSON.stringify(this.rewardForm);
     },
 
-    cancelReward() {
+    // Cierra la ventana (avisa si hay cambios sin guardar).
+    closeReward() {
+      if (this.rewardFormDirty && !window.confirm("Hay cambios sin guardar en la recompensa. ¿Cerrar igual?")) {
+        return;
+      }
       this.rewardForm = null;
       this.rewardMessage = "";
+      this.rewardPending = null;
+    },
+
+    closeRewardBackdrop(event) {
+      if (event.target === event.currentTarget) this.closeReward();
+    },
+
+    toggleRewardAdvanced() {
+      this.rewardAdvancedOpen = !this.rewardAdvancedOpen;
+    },
+
+    toggleRewardEnabled() {
+      if (!this.rewardForm) return;
+      this.rewardForm.enabled = !this.rewardForm.enabled;
+    },
+
+    // Al elegir un clip, la ventana crece y el nombre se completa solo (mientras el
+    // creador no lo haya editado a mano).
+    onRewardClipChange() {
+      if (!this.rewardForm) return;
+      const clip = this.clipById(this.rewardForm.clipId);
+      if (!clip) return;
+      this.rewardExpanded = true;
+      if (!this.rewardTitleTouched) {
+        this.rewardForm.title = clip.suggestedTitle || clip.title;
+      }
+    },
+
+    markRewardTitleTouched() {
+      this.rewardTitleTouched = true;
+    },
+
+    rewardFormPosition() {
+      const form = this.rewardForm;
+      if (!form) return null;
+      const x = numberOrNull(form.positionX);
+      const y = numberOrNull(form.positionY);
+      if (x === null || y === null) return null;
+      const clamp = (value) => Math.min(1, Math.max(0, value / 100));
+      return { x: clamp(x), y: clamp(y) };
     },
 
     async saveReward(platform) {
@@ -857,9 +1085,17 @@ function dashboardApp() {
       if (!form || !platform) return;
       this.rewardMessage = "";
 
+      if (!form.clipId || !this.clipById(form.clipId)) {
+        this.rewardMessage = "Elegí un clip de la biblioteca.";
+        return;
+      }
       const title = String(form.title || "").trim();
       if (!title) {
-        this.rewardMessage = "Escribí un título para la recompensa.";
+        this.rewardMessage = "Escribí un nombre para la alerta.";
+        return;
+      }
+      if (title.length > 50) {
+        this.rewardMessage = "El nombre no puede superar los 50 caracteres.";
         return;
       }
       const cost = Math.round(Number(form.cost));
@@ -867,12 +1103,25 @@ function dashboardApp() {
         this.rewardMessage = "El costo debe ser un número mayor o igual a 1.";
         return;
       }
+      const color = String(form.color || "").trim();
+      if (!/^#[0-9a-fA-F]{6}$/.test(color)) {
+        this.rewardMessage = "El color debe tener el formato #RRGGBB.";
+        return;
+      }
 
       const body = {
         title,
         cost,
         description: String(form.description || "").trim(),
-        color: String(form.color || "").trim(),
+        color,
+        clipId: String(form.clipId),
+        volume: Math.min(1, Math.max(0, (numberOrNull(form.volumePercent) ?? 100) / 100)),
+        maxDurationSec: numberOrNull(form.maxDurationSec),
+        cooldownSec: Math.round(Number(form.cooldownSec) || 0),
+        userCooldownSec: Math.round(Number(form.userCooldownSec) || 0),
+        position: this.rewardFormPosition(),
+        enterAnimation: form.enterAnimation || "none",
+        exitAnimation: form.exitAnimation || "none",
       };
 
       let method;
@@ -881,15 +1130,6 @@ function dashboardApp() {
         method = "PATCH";
         path = "/api/platforms/" + encodeURIComponent(platform.id) + "/rewards/" + encodeURIComponent(form.id);
       } else {
-        // La recompensa reproduce un clip fijo: se arma su regla interna.
-        if (!form.clipId) {
-          this.rewardMessage = "Elegí un clip de la biblioteca.";
-          return;
-        }
-        body.clipId = String(form.clipId);
-        body.volume = numberOrNull(form.volume) ?? 1;
-        if (numberOrNull(form.maxDurationSec) !== null) body.maxDurationSec = Number(form.maxDurationSec);
-        body.cooldownSec = Number(form.cooldownSec) || 0;
         body.enabled = form.enabled === true;
         method = "POST";
         path = "/api/platforms/" + encodeURIComponent(platform.id) + "/rewards";
@@ -901,28 +1141,168 @@ function dashboardApp() {
         body: JSON.stringify(body),
       });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
+      if (!response.ok || !data.ok) {
         this.rewardMessage = data.message || "No se pudo guardar la recompensa.";
         return;
       }
       this.rewardForm = null;
+      this.rewardPending = null;
       await this.loadRewards(platform);
-      await this.loadRules();
     },
 
-    async deleteReward(platform, reward) {
-      if (!window.confirm('¿Borrar la recompensa "' + reward.title + '"?')) return;
-      const response = await api(
-        "/api/platforms/" + encodeURIComponent(platform.id) + "/rewards/" + encodeURIComponent(reward.id),
-        { method: "DELETE" },
-      );
+    // "Probar alerta": reproduce con la configuración actual, sin guardar.
+    async testReward(platform) {
+      const form = this.rewardForm;
+      if (!form || !form.clipId || !this.clipById(form.clipId)) {
+        this.rewardMessage = "Elegí un clip para probar la alerta.";
+        return;
+      }
+      this.rewardMessage = "";
+      const response = await api("/api/clips/" + encodeURIComponent(form.clipId) + "/play", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          volume: Math.min(1, Math.max(0, (numberOrNull(form.volumePercent) ?? 100) / 100)),
+          maxDurationSec: numberOrNull(form.maxDurationSec) ?? undefined,
+          position: this.rewardFormPosition(),
+          enterAnimation: form.enterAnimation || "none",
+          exitAnimation: form.exitAnimation || "none",
+        }),
+      });
       const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        this.rewardMessage = data.message || "No se pudo borrar la recompensa.";
+      if (!response.ok || !data.ok) {
+        this.rewardMessage = data.message || "No se pudo probar la alerta.";
+        return;
+      }
+      this.rewardMessage = "Alerta enviada al overlay.";
+    },
+
+    // Alterna activa/desactiva desde la tarjeta (refleja `is_enabled`).
+    async toggleReward(platform, reward) {
+      if (this.rewardToggleBlocked(reward)) return;
+      if (reward.enabled) await this.disableReward(platform, reward);
+      else await this.enableReward(platform, reward);
+    },
+
+    async enableReward(platform, reward) {
+      if (!reward.localId) return;
+      this.rewardMessage = "";
+      const response = await api(this.rewardPath(platform, reward) + "/enable", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        this.rewardMessage = data.message || "No se pudo activar la recompensa.";
         return;
       }
       await this.loadRewards(platform);
-      await this.loadRules();
+    },
+
+    async disableReward(platform, reward) {
+      await this.rewardPendingOperation(platform, reward, "disable", false);
+    },
+
+    // Borrar pide una confirmación base primero (el clip no se borra).
+    deleteReward(reward) {
+      if (!reward.localId) return;
+      this.rewardMessage = "";
+      this.rewardPending = null;
+      this.rewardDelete = { reward };
+    },
+
+    cancelRewardDelete() {
+      this.rewardDelete = null;
+    },
+
+    async confirmRewardDelete(platform) {
+      const pendingDelete = this.rewardDelete;
+      if (!pendingDelete) return;
+      this.rewardDelete = null;
+      await this.rewardPendingOperation(platform, pendingDelete.reward, "delete", false);
+    },
+
+    // Ejecuta desactivar o borrar con el flujo de canjes pendientes. Con
+    // `force` se aplica igual aunque queden rechazos fallidos.
+    async rewardPendingOperation(platform, reward, kind, force) {
+      if (!reward.localId || !platform) return;
+      this.rewardMessage = "";
+      const path = this.rewardPath(platform, reward);
+      const url = kind === "delete" ? path : path + "/disable";
+      const method = kind === "delete" ? "DELETE" : "POST";
+      const response = await api(url, {
+        method,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ confirm: true, force: force === true }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && data.ok) {
+        this.rewardPending = null;
+        await this.loadRewards(platform);
+        return;
+      }
+      if (data.needsConfirm) {
+        this.rewardPending = {
+          kind,
+          reward,
+          pending: data.pending ?? 0,
+          failed: null,
+          message: data.message ?? "",
+        };
+        return;
+      }
+      if (Array.isArray(data.failed) && data.failed.length > 0) {
+        this.rewardPending = {
+          kind,
+          reward,
+          pending: 0,
+          failed: data.failed,
+          message: data.message ?? "No se pudieron rechazar algunos canjes y no se aplicó el cambio.",
+        };
+        return;
+      }
+      this.rewardMessage = data.message || "No se pudo completar la operación.";
+    },
+
+    // El primer paso ya pidió confirmación (needsConfirm) o reintenta con force.
+    // Se vuelve a llamar: si había pendientes, ahora se rechazan y se aplica.
+    async confirmRewardPending(platform) {
+      const pending = this.rewardPending;
+      if (!pending) return;
+      const force = Array.isArray(pending.failed) && pending.failed.length > 0;
+      await this.rewardPendingOperation(platform, pending.reward, pending.kind, force);
+    },
+
+    cancelRewardPending() {
+      this.rewardPending = null;
+    },
+
+    // "Falta en Kick": recrear con otro id (conserva la regla local).
+    async recreateReward(platform, reward) {
+      if (!reward.localId) return;
+      this.rewardMessage = "";
+      const response = await api(this.rewardPath(platform, reward) + "/recreate", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        this.rewardMessage = data.message || "No se pudo recrear la recompensa.";
+        return;
+      }
+      await this.loadRewards(platform);
+    },
+
+    // "Falta en Kick": quitar de la app (borra la fila local y su regla).
+    async detachReward(platform, reward) {
+      if (!reward.localId) return;
+      if (!window.confirm("¿Quitar \"" + reward.title + "\" de la app? Se borra su configuración local.")) return;
+      this.rewardMessage = "";
+      const response = await api(this.rewardPath(platform, reward) + "/detach", { method: "POST" });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        this.rewardMessage = data.message || "No se pudo quitar la recompensa.";
+        return;
+      }
+      await this.loadRewards(platform);
+    },
+
+    openKickSettings() {
+      this.openSettings("kick");
     },
 
     // --- Canjes pendientes antiguos -------------------------------------------
@@ -974,48 +1354,6 @@ function dashboardApp() {
     async logout() {
       await api("/api/auth/logout", { method: "POST" });
       window.location.href = "/login";
-    },
-
-    // --- Etiquetas para la UI --------------------------------------------------
-
-    triggerLabel(rule) {
-      const trigger = rule.trigger;
-      switch (trigger.type) {
-        case "chat_command":
-          return "Comando !" + String(trigger.command || "").replace(/^!/, "");
-        case "reward_redeemed":
-          return "Canje de recompensa" + (trigger.rewardId ? " (" + trigger.rewardId + ")" : "");
-        case "sub":
-          return "Suscripción";
-        case "gift":
-          return "Gift sub";
-        case "follow":
-          return "Follow";
-        case "manual":
-          return "Manual";
-        default:
-          return String(trigger.type);
-      }
-    },
-
-    conditionsLabel(rule) {
-      const conditions = rule.conditions;
-      const permission =
-        conditions.permission === "subs"
-          ? "solo subs"
-          : conditions.permission === "mods"
-            ? "solo mods"
-            : "todos";
-      const parts = [permission];
-      if (conditions.cooldownSec > 0) parts.push("cooldown " + conditions.cooldownSec + "s");
-      if (conditions.userCooldownSec > 0) parts.push("por usuario " + conditions.userCooldownSec + "s");
-      return parts.join(" · ");
-    },
-
-    actionLabel(rule) {
-      const action = rule.action;
-      const clip = this.clips.find((item) => item.id === action.clipId);
-      return "Reproducir: " + (clip ? clip.title : action.clipId);
     },
 
     // --- Historial (filas de dos líneas) ---------------------------------------

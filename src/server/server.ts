@@ -18,7 +18,7 @@ import { fileURLToPath } from "node:url";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
-import { AlertQueue, QueueInputError, validateTrim } from "../queue/index.ts";
+import { AlertQueue, QueueInputError, validateTrim, type AnimationName } from "../queue/index.ts";
 import {
   addHistory,
   deleteClip as deleteClipRow,
@@ -64,7 +64,7 @@ import { RuleEngine, validateRuleInput, type EngineResult } from "../rules/index
 import type { Clip, MediaOptions } from "../media/index.ts";
 import { createPlatformIntegrations, type PlatformIntegration } from "../platforms/index.ts";
 import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index.ts";
-import { suggestedTitle } from "../rewards/index.ts";
+import { ANIMATION_NAMES, suggestedTitle } from "../rewards/index.ts";
 import { registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
 import { registerRewardApiRoutes } from "./rewards-routes.ts";
 import { attachWebSocket } from "./ws.ts";
@@ -145,6 +145,9 @@ interface PlayBody {
   maxDurationSec?: number;
   trimStart?: number | null;
   trimEnd?: number | null;
+  position?: { x: number; y: number } | null;
+  enterAnimation?: AnimationName | null;
+  exitAnimation?: AnimationName | null;
 }
 
 const enqueueSchema = {
@@ -169,6 +172,18 @@ const playSchema = {
     maxDurationSec: { type: "number", minimum: 1 },
     trimStart: { type: ["number", "null"], minimum: 0 },
     trimEnd: { type: ["number", "null"], minimum: 0 },
+    // "Probar alerta" reproduce con la configuración actual sin guardar.
+    position: {
+      type: ["object", "null"],
+      additionalProperties: false,
+      required: ["x", "y"],
+      properties: {
+        x: { type: "number", minimum: 0, maximum: 1 },
+        y: { type: "number", minimum: 0, maximum: 1 },
+      },
+    },
+    enterAnimation: { type: ["string", "null"], enum: [...ANIMATION_NAMES, null] },
+    exitAnimation: { type: ["string", "null"], enum: [...ANIMATION_NAMES, null] },
   },
 } as const;
 
@@ -777,6 +792,9 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           maxDurationSec: request.body?.maxDurationSec ?? settings.defaultMaxDurationSec,
           trimStart: trim.trimStart,
           trimEnd: trim.trimEnd,
+          position: request.body?.position ?? undefined,
+          enterAnimation: request.body?.enterAnimation ?? undefined,
+          exitAnimation: request.body?.exitAnimation ?? undefined,
           label: clip.title,
         });
         return { ok: true, item, state: queue.getState() };

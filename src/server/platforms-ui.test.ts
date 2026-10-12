@@ -67,9 +67,14 @@ describe("UI del dashboard (plataformas)", () => {
     expect(app).toContain("maskedOverlayUrl");
   });
 
-  it("asocia una regla de clip fijo a la recompensa (sin URL del espectador)", () => {
-    expect(html).toContain("Cooldown de la regla");
+  it("la interfaz de recompensas no expone la palabra 'regla'", () => {
+    // El creador nunca ve la regla interna 1:1 de cada recompensa.
+    expect(html).not.toMatch(/regla/i);
     expect(html).not.toContain("URL del espectador");
+    // La ventana de crear/editar recompensa y su interruptor accesible.
+    expect(html).toContain("Nueva recompensa");
+    expect(html).toMatch(/role="switch"/);
+    expect(html).toContain("Opciones avanzadas");
   });
 
   it("no expone tokens de OAuth en los assets del frontend", () => {

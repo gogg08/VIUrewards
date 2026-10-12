@@ -109,117 +109,116 @@
                 <button
                   class="small"
                   @click="loadRewards(activePlatform)"
-                  :disabled="!isKickConnected"
+                  :disabled="rewardsLocked"
                   title="Contrastar las recompensas con Kick"
                 >
                   Recargar
                 </button>
               </div>
-              <button class="primary block" x-show="isKickConnected && !rewardForm" @click="newReward()">
-                Nueva recompensa
-              </button>
+              <button class="primary block" x-show="!rewardsLocked" @click="newReward()">Nueva recompensa</button>
             </div>
 
             <div class="box-body">
-              <p class="empty" x-show="!isKickConnected">
-                Vinculá tu cuenta de Kick en Ajustes para administrar tus recompensas.
-              </p>
+              <!-- Sin vínculo: panel en gris, nada interactivo. -->
+              <template x-if="rewardsLocked">
+                <div class="rewards-locked">
+                  <p class="empty">Vinculá tu cuenta de Kick para administrar tus recompensas.</p>
+                  <button class="primary" @click="openKickSettings()">Ir a Ajustes → Kick</button>
+                </div>
+              </template>
 
-              <template x-if="isKickConnected">
+              <template x-if="!rewardsLocked">
                 <div class="stack">
-                  <p class="warn" x-show="!rewardForm && clips.length === 0">Primero agregá un clip a la biblioteca.</p>
-
-                  <!-- Formulario de recompensa (se rediseña en la Etapa 4) -->
-                  <template x-if="rewardForm">
-                    <div class="rule-form">
-                      <div class="settings-grid">
-                        <label class="field">
-                          <span>Título (máx. 50)</span>
-                          <input type="text" maxlength="50" x-model="rewardForm.title" />
-                        </label>
-                        <label class="field">
-                          <span>Costo (puntos)</span>
-                          <input type="number" min="1" max="1000000" x-model.number="rewardForm.cost" />
-                        </label>
-                        <label class="field">
-                          <span>Descripción (máx. 200)</span>
-                          <input type="text" maxlength="200" x-model="rewardForm.description" />
-                        </label>
-                        <label class="field">
-                          <span>Color</span>
-                          <input type="text" maxlength="32" x-model="rewardForm.color" placeholder="#00e701" />
-                        </label>
-                        <label class="field" x-show="!rewardForm.id">
-                          <span>Habilitada</span>
-                          <input type="checkbox" x-model="rewardForm.enabled" />
-                        </label>
-                        <label class="field" x-show="!rewardForm.id">
-                          <span>Clip</span>
-                          <select x-model="rewardForm.clipId">
-                            <option value="">Elegí un clip</option>
-                            <template x-for="clip in clips" :key="clip.id">
-                              <option :value="clip.id" x-text="clip.title"></option>
-                            </template>
-                          </select>
-                        </label>
-                        <label class="field" x-show="!rewardForm.id">
-                          <span>Volumen (0 a 1)</span>
-                          <input type="number" min="0" max="1" step="0.05" x-model.number="rewardForm.volume" />
-                        </label>
-                        <label class="field" x-show="!rewardForm.id">
-                          <span>Duración máxima (s)</span>
-                          <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
-                        </label>
-                        <label class="field" x-show="!rewardForm.id">
-                          <span>Cooldown de la regla (s)</span>
-                          <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
-                        </label>
-                      </div>
-                      <div class="row">
-                        <button class="primary" @click="saveReward(activePlatform)">Guardar recompensa</button>
-                        <button @click="cancelReward()">Cancelar</button>
-                        <span class="error" x-show="rewardMessage" x-text="rewardMessage"></span>
-                      </div>
-                    </div>
-                  </template>
-
-                  <p class="empty" x-show="rewards.length === 0 && !rewardForm">
-                    Todavía no creaste ninguna recompensa.
+                  <p class="warn" x-show="rewardsOffline">
+                    No se pudo consultar Kick. Se muestran las recompensas guardadas, sin conexión.
                   </p>
+                  <p class="warn" x-show="!rewardsOffline && clips.length === 0">
+                    Primero agregá un clip a la biblioteca.
+                  </p>
+                  <p class="error" x-show="rewardMessage" x-text="rewardMessage"></p>
 
-                  <!-- Lista de recompensas (provisional hasta la Etapa 4) -->
+                  <p class="empty" x-show="rewards.length === 0">Todavía no creaste ninguna recompensa.</p>
+
                   <div class="reward-list" x-show="rewards.length > 0">
                     <template x-for="reward in rewards" :key="reward.id">
                       <div class="reward-card">
                         <div class="reward-card-top">
                           <span class="reward-name" x-text="reward.title"></span>
                           <span
-                            class="badge"
-                            :class="reward.enabled ? 'ok' : 'off'"
-                            x-text="reward.enabled ? 'Habilitada' : 'Deshabilitada'"
+                            class="reward-swatch"
+                            :style="'background-color: ' + reward.color"
+                            aria-hidden="true"
                           ></span>
                         </div>
-                        <div class="reward-card-bottom">
+
+                        <div class="reward-card-line">
                           <span class="muted" x-text="reward.cost + ' pts'"></span>
+                          <span class="muted" x-text="rewardClipLabel(reward)"></span>
+                        </div>
+
+                        <div class="reward-card-bottom">
+                          <span class="badge" :class="rewardStateBadgeClass(reward)" x-text="rewardStateLabel(reward)"></span>
                           <span
-                            class="badge warn"
-                            x-show="!reward.managed"
-                            title="Solo se pueden editar las recompensas creadas por esta app"
+                            class="badge off"
+                            x-show="!reward.synced && reward.state !== 'offline'"
+                            title="Los datos todavía no se sincronizaron con Kick"
                           >
-                            De otra app
+                            Sin sincronizar
                           </span>
                           <span class="reward-card-actions">
-                            <button class="small" @click="editReward(reward)" :disabled="!reward.managed">Editar</button>
+                            <!-- Falta en Kick: recrear o quitar de la app. -->
+                            <template x-if="reward.state === 'missing'">
+                              <button class="small" @click="recreateReward(activePlatform, reward)">Recrear</button>
+                            </template>
+                            <template x-if="reward.state === 'missing'">
+                              <button class="small" @click="detachReward(activePlatform, reward)">Quitar de la app</button>
+                            </template>
+
+                            <button
+                              class="small"
+                              x-show="reward.state !== 'missing'"
+                              @click="editReward(reward)"
+                              :disabled="!rewardEditable(reward)"
+                              :title="rewardEditable(reward) ? 'Editar' : rewardToggleHint(reward)"
+                            >
+                              Editar
+                            </button>
                             <button
                               class="small danger"
-                              @click="deleteReward(activePlatform, reward)"
-                              :disabled="!reward.managed"
-                              title="Solo se pueden editar las recompensas creadas por esta app"
+                              x-show="reward.state !== 'missing'"
+                              @click="deleteReward(reward)"
+                              :disabled="!rewardEditable(reward)"
+                              :title="rewardEditable(reward) ? 'Borrar' : rewardToggleHint(reward)"
                             >
                               Borrar
                             </button>
+
+                            <button
+                              type="button"
+                              role="switch"
+                              class="switch"
+                              :class="{ on: reward.enabled }"
+                              :aria-checked="reward.enabled ? 'true' : 'false'"
+                              :aria-label="'Activar o desactivar ' + reward.title"
+                              :disabled="rewardToggleBlocked(reward)"
+                              :title="rewardToggleBlocked(reward) ? rewardToggleHint(reward) : 'Activar o desactivar'"
+                              @click="toggleReward(activePlatform, reward)"
+                            >
+                              <span class="switch-knob"></span>
+                            </button>
                           </span>
                         </div>
+
+                        <!-- Datos sin sincronizar (fila importada, todavía sin respuesta de Kick). -->
+                        <p class="hint" x-show="!reward.synced && reward.state !== 'offline'">
+                          Datos sin sincronizar con Kick.
+                        </p>
+                        <!-- Mensaje de la última operación fallida. -->
+                        <p class="error" x-show="reward.state === 'apply_failed' && reward.error" x-text="reward.error"></p>
+                        <!-- Explicación de las recompensas de otra app. -->
+                        <p class="hint" x-show="reward.state === 'foreign'">
+                          La creó otra aplicación; Kick no permite editarla desde acá.
+                        </p>
                       </div>
                     </template>
                   </div>
@@ -776,7 +775,7 @@
                 <hr class="divider" />
 
                 <h3>Simular evento</h3>
-                <p class="muted">Para probar las reglas sin ninguna plataforma conectada.</p>
+                <p class="muted">Para probar los eventos sin ninguna plataforma conectada.</p>
                 <div class="settings-grid">
                   <label class="field">
                     <span>Tipo de evento</span>
@@ -822,6 +821,197 @@
                 </div>
               </section>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= Ventana de recompensa (crear/editar) ================= -->
+      <div class="modal" x-show="rewardForm" x-cloak @click="closeRewardBackdrop($event)">
+        <div
+          class="modal-window reward-modal"
+          :class="{ expanded: rewardFormExpanded }"
+          role="dialog"
+          aria-modal="true"
+          :aria-label="rewardModalTitle"
+        >
+          <div class="modal-head">
+            <h2 x-text="rewardModalTitle"></h2>
+            <button class="ghost" @click="closeReward()" aria-label="Cerrar">✕</button>
+          </div>
+
+          <div class="modal-body">
+            <!-- Siempre visible: la ventana arranca chica, con solo el desplegable. -->
+            <label class="field">
+              <span>Clip</span>
+              <select x-model="rewardForm.clipId" @change="onRewardClipChange()" :disabled="clips.length === 0">
+                <option value="">Elegí un clip</option>
+                <template x-for="clip in clips" :key="clip.id">
+                  <option :value="clip.id" x-text="rewardClipOption(clip)"></option>
+                </template>
+              </select>
+            </label>
+
+            <p class="empty" x-show="clips.length === 0">Todavía no hay clips: agregá uno primero.</p>
+            <p class="warn" x-show="clips.length > 0 && rewardForm.clipId && !rewardClipExists()">
+              El clip de esta recompensa ya no está disponible. Elegí otro para poder guardar.
+            </p>
+
+            <!-- El resto de los campos aparece cuando hay un clip elegido. -->
+            <template x-if="rewardFormExpanded">
+              <div class="stack reward-fields" x-transition.opacity>
+                <label class="field">
+                  <span>Nombre de la alerta (<span x-text="(rewardForm.title || '').length"></span>/50)</span>
+                  <input type="text" maxlength="50" x-model="rewardForm.title" @input="markRewardTitleTouched()" />
+                </label>
+
+                <label class="field">
+                  <span>Costo (puntos)</span>
+                  <input type="number" min="1" max="1000000" x-model.number="rewardForm.cost" />
+                </label>
+
+                <label class="field">
+                  <span>Descripción (<span x-text="(rewardForm.description || '').length"></span>/200)</span>
+                  <input type="text" maxlength="200" x-model="rewardForm.description" />
+                </label>
+
+                <div class="field">
+                  <span>Color</span>
+                  <div class="field-row">
+                    <input type="text" maxlength="7" x-model="rewardForm.color" placeholder="#00e701" />
+                    <input type="color" class="color-picker" x-model="rewardForm.color" aria-label="Elegir color" />
+                  </div>
+                </div>
+
+                <div class="field-row" x-show="!rewardForm.id">
+                  <button
+                    type="button"
+                    role="switch"
+                    class="switch"
+                    :class="{ on: rewardForm.enabled }"
+                    :aria-checked="rewardForm.enabled ? 'true' : 'false'"
+                    aria-label="Activar al guardar"
+                    @click="toggleRewardEnabled()"
+                  >
+                    <span class="switch-knob"></span>
+                  </button>
+                  <span>Activar al guardar</span>
+                </div>
+
+                <button type="button" class="ghost small" @click="toggleRewardAdvanced()">
+                  <span x-text="rewardAdvancedOpen ? 'Ocultar opciones avanzadas' : 'Opciones avanzadas'"></span>
+                </button>
+
+                <template x-if="rewardAdvancedOpen">
+                  <div class="settings-grid">
+                    <label class="field">
+                      <span>Volumen (<span x-text="rewardForm.volumePercent"></span> %)</span>
+                      <input type="range" min="0" max="100" x-model.number="rewardForm.volumePercent" />
+                    </label>
+                    <label class="field narrow">
+                      <span>Duración máxima (s; vacío = sin límite)</span>
+                      <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
+                    </label>
+                    <label class="field narrow">
+                      <span>Cooldown global (s)</span>
+                      <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
+                    </label>
+                    <label class="field narrow">
+                      <span>Cooldown por usuario (s)</span>
+                      <input type="number" min="0" max="86400" x-model.number="rewardForm.userCooldownSec" />
+                    </label>
+                    <label class="field narrow">
+                      <span>Posición X (%)</span>
+                      <input type="number" min="0" max="100" x-model.number="rewardForm.positionX" />
+                    </label>
+                    <label class="field narrow">
+                      <span>Posición Y (%)</span>
+                      <input type="number" min="0" max="100" x-model.number="rewardForm.positionY" />
+                    </label>
+                    <label class="field">
+                      <span>Animación de entrada</span>
+                      <select x-model="rewardForm.enterAnimation">
+                        <option value="none">Sin animación</option>
+                        <option value="fade">Desvanecer</option>
+                        <option value="slide-up">Deslizar hacia arriba</option>
+                        <option value="slide-down">Deslizar hacia abajo</option>
+                        <option value="zoom">Zoom</option>
+                      </select>
+                    </label>
+                    <label class="field">
+                      <span>Animación de salida</span>
+                      <select x-model="rewardForm.exitAnimation">
+                        <option value="none">Sin animación</option>
+                        <option value="fade">Desvanecer</option>
+                        <option value="slide-up">Deslizar hacia arriba</option>
+                        <option value="slide-down">Deslizar hacia abajo</option>
+                        <option value="zoom">Zoom</option>
+                      </select>
+                    </label>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <p class="error" x-show="rewardMessage" x-text="rewardMessage"></p>
+          </div>
+
+          <div class="modal-foot">
+            <button class="ghost" @click="testReward(activePlatform)" :disabled="!rewardFormExpanded || !rewardClipExists()">
+              Probar alerta
+            </button>
+            <span class="modal-foot-right">
+              <button @click="closeReward()">Cancelar</button>
+              <button class="primary" @click="saveReward(activePlatform)" :disabled="!rewardFormExpanded || !rewardClipExists()">
+                Guardar
+              </button>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= Confirmar borrado de recompensa ================= -->
+      <div class="modal" x-show="rewardDelete" x-cloak @click="cancelRewardDelete()">
+        <div class="modal-window modal-small" role="dialog" aria-modal="true" aria-label="Borrar recompensa" @click.stop>
+          <div class="modal-head">
+            <h2>Borrar recompensa</h2>
+          </div>
+          <div class="modal-body">
+            <p>
+              ¿Borrar la recompensa <strong x-text="rewardDelete ? rewardDelete.reward.title : ''"></strong>? El clip no
+              se borra.
+            </p>
+          </div>
+          <div class="modal-foot">
+            <button @click="cancelRewardDelete()">Cancelar</button>
+            <button class="danger" @click="confirmRewardDelete(activePlatform)">Borrar</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= Canjes pendientes al desactivar o borrar ================= -->
+      <div class="modal" x-show="rewardPending" x-cloak @click="cancelRewardPending()">
+        <div class="modal-window modal-small" role="dialog" aria-modal="true" aria-label="Canjes pendientes" @click.stop>
+          <div class="modal-head">
+            <h2>Canjes pendientes</h2>
+          </div>
+          <div class="modal-body">
+            <p x-show="rewardPending && rewardPending.pending > 0">
+              Se rechazarán <strong x-text="rewardPending ? rewardPending.pending : 0"></strong> canjes pendientes.
+            </p>
+            <template x-if="rewardPending && rewardPending.failed && rewardPending.failed.length > 0">
+              <div>
+                <p class="error">No se pudieron rechazar algunos canjes y no se aplicó el cambio:</p>
+                <ul class="pending-failed">
+                  <template x-for="item in rewardPending.failed" :key="item.id">
+                    <li x-text="item.id + ' (' + item.reason + ')'"></li>
+                  </template>
+                </ul>
+              </div>
+            </template>
+          </div>
+          <div class="modal-foot">
+            <button @click="cancelRewardPending()">Cancelar</button>
+            <button class="danger" @click="confirmRewardPending(activePlatform)" x-text="rewardPendingActionLabel"></button>
           </div>
         </div>
       </div>
