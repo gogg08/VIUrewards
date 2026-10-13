@@ -84,7 +84,9 @@ function makeSource(fake: ReturnType<typeof fakeKick>, db = openMemoryDatabase()
   });
   const source = new KickEventSource({ api, db, stats, random: extra.random ?? (() => 0), intervalMs: () => 1000 });
   const events: NormalizedEvent[] = [];
-  source.onEvent((event) => events.push(event));
+  source.onEvent((event) => {
+    events.push(event);
+  });
   return { source, db, stats, events, api };
 }
 

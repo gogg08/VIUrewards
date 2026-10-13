@@ -1,5 +1,6 @@
 /**
- * Tabla `rewards`: modelo local de recompensas del canal (rediseño, Etapa 4A).
+ * Tabla `rewards`: modelo local de recompensas del canal (rediseño, Etapa 4A;
+ * rework de cooldown/superposición en la Parte B).
  *
  * Cada recompensa tiene un **id local propio y estable** (columna `id`) y, si está
  * vinculada, el id remoto de la plataforma (`remote_reward_id`, reemplazable). El
@@ -7,10 +8,21 @@
  * reproducción viven solo acá. El título, costo, color y descripción son un
  * espejo de lo que dice la plataforma, para poder mostrarlos sin conexión.
  *
+ * Cooldown: solo GLOBAL, persistido en `last_fired_at` (ms desde epoch), así
+ * sobrevive a reinicios. `repetition` es "queue" (esperar turno) u "overlap".
+ *
  * Es genérico: no menciona ninguna plataforma (AGENTS.md: aislamiento).
  */
 
 import type { SqliteDatabase } from "./database.ts";
+
+/** Modo de repetición de una recompensa. */
+export type RewardRepetition = "queue" | "overlap";
+
+/** ¿El valor es un modo de repetición válido? */
+export function isRewardRepetition(value: unknown): value is RewardRepetition {
+  return value === "queue" || value === "overlap";
+}
 
 export interface RewardRecord {
   /** Id local, estable durante toda la vida de la recompensa. */
@@ -27,8 +39,12 @@ export interface RewardRecord {
   volume: number;
   /** Duración máxima en segundos; `null` = sin límite propio. */
   maxDurationSec: number | null;
+  /** Cooldown global de la recompensa, en segundos (0 = sin cooldown). */
   cooldownSec: number;
-  userCooldownSec: number;
+  /** "queue" (esperar turno) u "overlap" (superponer audios). */
+  repetition: RewardRepetition;
+  /** Momento (ms) en que la alerta se disparó por última vez; `null` si nunca. */
+  lastFiredAt: number | null;
   /** Posición en el overlay (fracciones 0..1) o `null` (centro por defecto). */
   position: { x: number; y: number } | null;
   enterAnimation: string | null;
@@ -63,7 +79,8 @@ interface RewardRow {
   volume: number;
   max_duration_sec: number | null;
   cooldown_sec: number;
-  user_cooldown_sec: number;
+  repetition: string;
+  last_fired_at: number | null;
   position_json: string | null;
   enter_animation: string | null;
   exit_animation: string | null;
@@ -89,6 +106,10 @@ function parsePosition(raw: string | null): { x: number; y: number } | null {
   }
 }
 
+function parseRepetition(raw: string | null): RewardRepetition {
+  return raw === "overlap" ? "overlap" : "queue";
+}
+
 function toRecord(row: RewardRow): RewardRecord {
   return {
     id: row.id,
@@ -102,7 +123,8 @@ function toRecord(row: RewardRow): RewardRecord {
     volume: row.volume,
     maxDurationSec: row.max_duration_sec,
     cooldownSec: row.cooldown_sec,
-    userCooldownSec: row.user_cooldown_sec,
+    repetition: parseRepetition(row.repetition),
+    lastFiredAt: row.last_fired_at,
     position: parsePosition(row.position_json),
     enterAnimation: row.enter_animation,
     exitAnimation: row.exit_animation,
@@ -129,7 +151,8 @@ function serialize(reward: RewardRecord): Record<string, unknown> {
     volume: reward.volume,
     maxDurationSec: reward.maxDurationSec,
     cooldownSec: reward.cooldownSec,
-    userCooldownSec: reward.userCooldownSec,
+    repetition: reward.repetition,
+    lastFiredAt: reward.lastFiredAt,
     positionJson: reward.position ? JSON.stringify({ x: reward.position.x, y: reward.position.y }) : null,
     enterAnimation: reward.enterAnimation,
     exitAnimation: reward.exitAnimation,
@@ -145,11 +168,11 @@ function serialize(reward: RewardRecord): Record<string, unknown> {
 
 const UPSERT_SQL = `INSERT INTO rewards
   (id, platform, remote_reward_id, title, cost, color, description, clip_id, volume,
-   max_duration_sec, cooldown_sec, user_cooldown_sec, position_json, enter_animation,
+   max_duration_sec, cooldown_sec, repetition, last_fired_at, position_json, enter_animation,
    exit_animation, desired_enabled, managed, synced, rule_id, last_error, created_at, updated_at)
  VALUES
   (@id, @platform, @remoteRewardId, @title, @cost, @color, @description, @clipId, @volume,
-   @maxDurationSec, @cooldownSec, @userCooldownSec, @positionJson, @enterAnimation,
+   @maxDurationSec, @cooldownSec, @repetition, @lastFiredAt, @positionJson, @enterAnimation,
    @exitAnimation, @desiredEnabled, @managed, @synced, @ruleId, @lastError, @createdAt, @updatedAt)
  ON CONFLICT(id) DO UPDATE SET
    remote_reward_id  = excluded.remote_reward_id,
@@ -161,7 +184,7 @@ const UPSERT_SQL = `INSERT INTO rewards
    volume            = excluded.volume,
    max_duration_sec  = excluded.max_duration_sec,
    cooldown_sec      = excluded.cooldown_sec,
-   user_cooldown_sec = excluded.user_cooldown_sec,
+   repetition        = excluded.repetition,
    position_json     = excluded.position_json,
    enter_animation   = excluded.enter_animation,
    exit_animation    = excluded.exit_animation,
@@ -213,10 +236,23 @@ export function setRewardError(db: SqliteDatabase, id: string, error: string | n
   );
 }
 
+/**
+ * Registra el último disparo de una recompensa (ms). Es la operación que hace
+ * atómico el cooldown: se llama en el mismo tick que la decisión, sin `await`.
+ */
+export function setRewardLastFired(db: SqliteDatabase, id: string, at: number): void {
+  db.prepare("UPDATE rewards SET last_fired_at = ? WHERE id = ?").run(at, id);
+}
+
 /** Recompensas que usan un clip dado (incluidas las desactivadas). */
 export function listRewardsUsingClip(db: SqliteDatabase, clipId: string): RewardRecord[] {
   const rows = db
     .prepare<RewardRow>("SELECT * FROM rewards WHERE clip_id = ? ORDER BY created_at ASC, id ASC")
     .all(clipId);
   return rows.map(toRecord);
+}
+
+/** Recompensas en modo `overlap` que usan un clip dado (para validar "solo audio"). */
+export function listOverlapRewardsUsingClip(db: SqliteDatabase, clipId: string): RewardRecord[] {
+  return listRewardsUsingClip(db, clipId).filter((reward) => reward.repetition === "overlap");
 }

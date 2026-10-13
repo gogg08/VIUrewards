@@ -2,7 +2,7 @@
 
 Este documento es la fuente de verdad de la UX del dashboard. Resume las decisiones tomadas con el creador del proyecto y reemplaza a cualquier diseño anterior. Si el código y este documento difieren, se pregunta antes de decidir.
 
-El proyecto pasa a llamarse **VIUrewards** (antes `czero-rewards`). El logo es un archivo `.webp` animado con fondo transparente que lo provee el creador más adelante; hasta entonces se usa el texto "VIUrewards" como marcador.
+El proyecto pasa a llamarse **VIUrewards** (antes `czero-rewards`). El logo es un `.webp` animado con fondo translúcido propio, con un `.png` estático equivalente al primer y último cuadro; se muestra en el encabezado y en el login con **tres modos configurables** (ver §3).
 
 ## 1. Principios
 
@@ -33,7 +33,12 @@ Ventana angosta (menos de 1024 px, por ejemplo un dock de OBS): se muestra **una
 
 ## 3. Encabezado
 
-- **Izquierda:** logo VIUrewards, y a su derecha los indicadores de estado:
+- **Izquierda:** el **logo VIUrewards**, y a su derecha los indicadores de estado:
+  - El **logo** tiene **tres modos** configurables en Ajustes → Apariencia (se guardan en este navegador, no en la base, y se aplican al instante):
+    - **Automático** (por defecto): animado los primeros 60 s y después fijo; con `prefers-reduced-motion: reduce` arranca directo en fijo.
+    - **Dinámico**: siempre el `.webp` animado.
+    - **Estático**: siempre el `.png`.
+  - El `.png` es idéntico al primer y último cuadro del `.webp`, así que el cambio no parpadea. Un solo `<img>` con altura fija por la variable CSS `--logo-height` (32–40 px; 28 px en ventana angosta) y ancho automático. Si la imagen no carga, se muestra el texto "VIUrewards".
   - **Overlay:** conectado / sin conexión.
   - **Kick:** no vinculado / conectado / requiere volver a vincular / reconectando.
   - Cada indicador es clicable y abre Ajustes en su pestaña (Overlay y OBS, o Kick). Un indicador en problema cambia de color.
@@ -83,8 +88,8 @@ Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Bib
 
 **Una sola caja** con scroll vertical interno (nunca horizontal). Arriba, dentro de la caja, el selector **Cola | Historial**; debajo, el contenido de la pestaña, que scrollea dentro de la caja.
 
-- **Cola:** botones Saltar, Pausar, Reanudar y Vaciar en una sola fila (sin wrap). Muestra el clip en reproducción y los que esperan. Saltar es la forma de destrabar el clip en curso; Vaciar solo limpia la espera. El panel **no** muestra el aviso de overlay desconectado: eso lo informa el indicador del encabezado (con tooltip "Revisá la fuente en OBS").
-- **Historial:** **filas de dos líneas**, sin truncar. Línea 1: el título de la recompensa (guardado como texto en el evento, para leerse aunque la recompensa ya no exista; si el evento no lo trae, el tipo en español) y el resultado como etiqueta. Línea 2: usuario · hora · motivo si lo hay, en texto secundario. Hora en formato 24 h corto (por ejemplo 18:59).
+- **Cola:** botones Saltar, Pausar, Reanudar y Vaciar en una sola fila (sin wrap). Muestra el clip en reproducción y los que esperan. Saltar es la forma de destrabar el clip en curso; Vaciar solo limpia la espera. El panel **no** muestra el aviso de overlay desconectado: eso lo informa el indicador del encabezado (con tooltip "Revisá la fuente en OBS"). Debajo, un botón **Cortar audios** corta todas las voces superpuestas de los overlays conectados (modo `overlap`); no toca la cola.
+- **Historial:** **filas de dos líneas**, sin truncar. Línea 1: el título de la recompensa (guardado como texto en el evento, para leerse aunque la recompensa ya no exista; si el evento no lo trae, el tipo en español) y el resultado como etiqueta (`Disparó`, `Disparó · superpuesto`, `Omitido`, etc.). Línea 2: usuario · hora · motivo si lo hay (`cooldown, faltan N s`, `sin overlay conectado`, `el clip no es de solo audio`), en texto secundario. Hora en formato 24 h corto (por ejemplo 18:59).
 
 ## 7. Ventanas flotantes
 
@@ -101,7 +106,11 @@ Campos:
 4. **Descripción:** opcional, hasta 200 caracteres.
 5. **Color:** campo hex y selector de color nativo a la derecha, sincronizados y validados (`#RRGGBB`).
 
-**Opciones avanzadas (colapsadas):** volumen como slider con porcentaje (0 a 100 %; se guarda 0 a 1), duración máxima y cooldown, uno al lado del otro en campos angostos, más posición y animación de entrada y salida.
+**Opciones avanzadas (colapsadas):** un selector segmentado **Repetición** con dos opciones:
+- **Esperar turno (`queue`):** se muestra **Duración máxima** y **Cooldown global (s; 0 = sin cooldown)** uno al lado del otro en campos angostos, más posición y animación de entrada y salida. El cooldown es **solo global** (el cooldown por usuario se eliminó); cuenta desde que la alerta se dispara y sobrevive a reinicios.
+- **Superponer (`overlap`):** solo disponible para clips de **solo audio** (con otro clip la opción queda deshabilitada con la explicación "Solo para clips de solo audio"; si el creador cambia a un clip que no lo es estando en superpuesto, vuelve a "Esperar turno" y se le avisa). No hay cooldown: se muestra **Duración máxima** y una línea explicativa ("Los audios suenan a la vez, sin esperar. El máximo simultáneo se cambia en Ajustes → Alertas"). Con superpuesto (o con un clip de solo audio) se **ocultan** Posición y Animaciones (no hay imagen).
+
+Volumen siempre como slider con porcentaje (0 a 100 %; se guarda 0 a 1).
 
 **Interruptores:** "Activar al guardar" es un interruptor (switch), no un checkbox. La tarjeta colapsada de la lista lleva un interruptor de activa/desactiva (`is_enabled`) con los estados de la sección 4.
 
@@ -109,6 +118,7 @@ Campos:
 
 **Notas:**
 - Se elimina "Pide texto al espectador": va siempre apagado (se envía explícitamente falso a Kick).
+- La tarjeta colapsada muestra el modo de repetición como texto secundario: "cooldown N s" o "superpuesto".
 - La opción de Kick para saltar la cola de solicitudes no se muestra (pendiente de verificar).
 - Al editar, nombre, costo, color y descripción se envían a Kick; el clip y las opciones de reproducción son solo de la app.
 - La regla interna se crea y se mantiene sola; el creador no la ve.
@@ -134,10 +144,10 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar
 
 1. **Kick:** estado; Client ID (visible) y Client Secret (solo escritura, nunca se devuelve); vincular, desvincular y borrar credenciales; **redirect URI calculada desde el puerto actual con botón de copiar**; errores de vínculo explicados en español (por ejemplo, "invalid authorization request" casi siempre es una redirect URI que no coincide exactamente: `http://localhost:<puerto>/callback`, sin barra final, `http` y no `https`, `localhost` y no `127.0.0.1`); "Probar conexión".
 2. **Overlay y OBS:** URL con la clave enmascarada, Mostrar y Copiar, aviso de no mostrarla en stream; estado de conexión; regenerar clave (con confirmación y aviso de actualizar OBS); medidas recomendadas (1920×1080); alerta de prueba.
-3. **Alertas:** volumen global, duración máxima por defecto; qué hacer con un canje omitido (dejar pendiente por defecto, o rechazar, con la advertencia de que el reembolso no está verificado); canjes pendientes antiguos al iniciar (ignorar, rechazar o procesar), con lista y "Rechazar todos" / "Procesar ahora".
+3. **Alertas:** volumen global, duración máxima por defecto, **audios simultáneos máximos** (1–20, por defecto 8; si se supera, se corta el audio más antiguo); qué hacer con un canje omitido (dejar pendiente por defecto, o rechazar, con la advertencia de que el reembolso no está verificado); canjes pendientes antiguos al iniciar (ignorar, rechazar o procesar), con lista y "Rechazar todos" / "Procesar ahora".
 4. **Biblioteca y descargas:** límites de duración y tamaño (descargas y archivos locales); dominios permitidos (rechaza IPs, `localhost`, nombres sin punto y caracteres inválidos); yt-dlp (versión y botón "Actualizar", solo por acción explícita); espacio ocupado y limpieza de caché (ver sección 9).
 5. **Seguridad:** cambiar contraseña (pide la actual y cierra las demás sesiones).
-6. **Apariencia:** vacía por ahora, reservada para los temas.
+6. **Apariencia:** modo del logo (**Automático / Dinámico / Estático**), se guarda en este navegador (`localStorage`, no en la base) y se aplica al instante, sin botón Guardar. Reservada para los temas futuros.
 7. **Avanzado:** puerto (con advertencia: requiere reiniciar y actualizar la redirect URI en Kick y la URL en OBS), intervalo de polling de Kick, margen del watchdog, diagnóstico de Kick (latencia, 429, headers), visor de logs (sin secretos) y simulador de eventos.
 
 ## 8. Botón Descargas
@@ -175,7 +185,7 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar
 - Tema oscuro por defecto, verde como color de acción principal (el verde se reserva para la acción principal de cada pantalla).
 - **Todos los colores, espaciados, radios y tipografías son variables CSS.** Ningún componente tiene colores escritos directamente. Así los temas futuros (**OLED**, **noche**, **día**) son solo juegos de valores. No se implementan ahora.
 - Botones primario, secundario, peligro y fantasma; tarjetas; formularios; estados vacíos; mensajes de error y de éxito; ventana flotante; desplegable.
-- El logo debe verse bien sobre fondo claro y oscuro (o tener una versión para cada uno).
+- El logo trae su propio fondo translúcido y **no se adapta al tema** (es el mismo en cualquier tema futuro). Se muestra con altura fija por la variable CSS `--logo-height` (32–40 px; 28 px en ventana angosta) y ancho automático.
 
 ## 12. Decisiones eliminadas
 

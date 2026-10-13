@@ -17,6 +17,8 @@ export const REWARD_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 export const ANIMATION_NAMES = ["none", "fade", "slide-up", "slide-down", "zoom"] as const;
 export type AnimationName = (typeof ANIMATION_NAMES)[number];
 
+import { isRewardRepetition, type RewardRepetition } from "../db/rewards.ts";
+
 export interface NormalizedRewardInput {
   title?: string;
   cost?: number;
@@ -27,7 +29,7 @@ export interface NormalizedRewardInput {
   volume?: number;
   maxDurationSec?: number | null;
   cooldownSec?: number;
-  userCooldownSec?: number;
+  repetition?: RewardRepetition;
   position?: { x: number; y: number } | null;
   enterAnimation?: AnimationName | null;
   exitAnimation?: AnimationName | null;
@@ -117,13 +119,20 @@ export function normalizeRewardInput(input: unknown): RewardValidation {
     } else out.maxDurationSec = input.maxDurationSec;
   }
 
-  for (const key of ["cooldownSec", "userCooldownSec"] as const) {
+  for (const key of ["cooldownSec"] as const) {
     const value = input[key];
     if (value === undefined) continue;
     if (!isIntegerInRange(value, 0, 86_400)) {
-      return fail("Los cooldowns deben ser enteros entre 0 y 86400 segundos.");
+      return fail("El cooldown debe ser un entero entre 0 y 86400 segundos.");
     }
     out[key] = value;
+  }
+
+  if (input.repetition !== undefined) {
+    if (!isRewardRepetition(input.repetition)) {
+      return fail("El modo de repetición no es válido.");
+    }
+    out.repetition = input.repetition;
   }
 
   if (input.position !== undefined) {

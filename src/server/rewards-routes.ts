@@ -33,7 +33,7 @@ const playbackProperties = {
   volume: { type: "number", minimum: 0, maximum: 1 },
   maxDurationSec: { type: ["number", "null"], minimum: 1 },
   cooldownSec: { type: "integer", minimum: 0, maximum: 86400 },
-  userCooldownSec: { type: "integer", minimum: 0, maximum: 86400 },
+  repetition: { type: "string", enum: ["queue", "overlap"] },
   position: {
     type: ["object", "null"],
     additionalProperties: false,

@@ -83,6 +83,27 @@ describe("assets del dashboard", () => {
       expect(ref.startsWith("http"), `no debe haber recursos externos: ${ref}`).toBe(false);
     }
   });
+
+  it("el logo está en los dos formatos y se carga en dashboard y login", () => {
+    expect(existsSync(join(webDir, "assets/VIUrewards.png"))).toBe(true);
+    expect(existsSync(join(webDir, "assets/VIUrewards.webp"))).toBe(true);
+    for (const page of PAGES) {
+      const html = read(page.file);
+      expect(html, `${page.file} no usa el logo`).toContain("logoBadge()");
+      expect(html, `${page.file} no apunta al PNG del logo`).toContain("/web/assets/VIUrewards.png");
+      expect(html, `${page.file} no tiene el alt del logo`).toContain('alt="VIUrewards"');
+    }
+  });
+
+  it("logo.js se carga antes del script del componente en cada página", () => {
+    for (const page of PAGES) {
+      const scripts = scriptSources(read(page.file));
+      const logo = scripts.find((script) => script.src === "/web/logo.js");
+      const component = scripts.find((script) => script.src === page.componentScript);
+      expect(logo, `${page.file} no carga /web/logo.js`).toBeDefined();
+      expect(logo!.index).toBeLessThan(component!.index);
+    }
+  });
 });
 
 describe("overlay (Browser Source)", () => {

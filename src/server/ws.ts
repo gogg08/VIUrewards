@@ -20,10 +20,14 @@ import { WebSocket, WebSocketServer } from "ws";
 
 import { effectiveDurationSec, type AlertQueue, type QueueItem, type QueueState } from "../queue/index.ts";
 import { safeEqual } from "./auth.ts";
-import { clipUrl, parseOverlayMessage, type ServerMessage } from "./protocol.ts";
+import { clipUrl, parseOverlayMessage, type AudioPlayback, type ServerMessage } from "./protocol.ts";
 
 export interface WebSocketHub {
   broadcast(message: ServerMessage): void;
+  /** Envía un audio superpuesto y devuelve a cuántos overlays llegó (0 = ninguno). */
+  broadcastAudio(audio: AudioPlayback): number;
+  /** Corta todas las voces superpuestas de todos los overlays. */
+  stopAudio(): void;
   /** Cantidad de overlays conectados ahora mismo. */
   clientCount(): number;
   close(): Promise<void>;
@@ -253,6 +257,10 @@ export function attachWebSocket(
 
   return {
     broadcast,
+    broadcastAudio: (audio) => sendToAll({ type: "playAudio", audio }),
+    stopAudio: () => {
+      broadcast({ type: "stopAudio" });
+    },
     clientCount: () => clients.size,
     close: () =>
       new Promise<void>((resolve) => {

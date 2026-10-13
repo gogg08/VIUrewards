@@ -120,6 +120,43 @@ describe("hub WebSocket - reproducción", () => {
     expect(hub.clientCount()).toBe(0);
   });
 
+  it("broadcastAudio manda playAudio a los overlays y devuelve el número de destinatarios", async () => {
+    const { hub, port } = await withHub();
+    const { ws, messages } = await connectAndCollect(port);
+
+    const sent = hub.broadcastAudio({
+      id: "a1",
+      url: "/media/x.mp4?key=k",
+      volume: 0.5,
+      trimStart: 0,
+      trimEnd: null,
+      maxDurationSec: 5,
+      maxVoices: 8,
+    });
+    expect(sent).toBe(1);
+    await waitFor(() => messages.some((m) => m.type === "playAudio"));
+    const message = messages.find((m) => m.type === "playAudio") as { audio: { id: string } };
+    expect(message.audio.id).toBe("a1");
+
+    hub.stopAudio();
+    await waitFor(() => messages.some((m) => m.type === "stopAudio"));
+    ws.close();
+  });
+
+  it("broadcastAudio devuelve 0 cuando no hay overlays conectados", async () => {
+    const { hub } = await withHub();
+    const sent = hub.broadcastAudio({
+      id: "a1",
+      url: "/media/x.mp4?key=k",
+      volume: 1,
+      trimStart: 0,
+      trimEnd: null,
+      maxDurationSec: 5,
+      maxVoices: 8,
+    });
+    expect(sent).toBe(0);
+  });
+
   it("el watchdog da por terminado un clip que nunca avisa el fin", async () => {
     const { queue, port } = await withHub({ resolveWatchdogMarginMs: () => 50 });
     const { ws, messages } = await connectAndCollect(port);

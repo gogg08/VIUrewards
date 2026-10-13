@@ -195,7 +195,8 @@ export class RewardService {
       volume: fields.volume ?? 1,
       maxDurationSec: fields.maxDurationSec ?? null,
       cooldownSec: fields.cooldownSec ?? 0,
-      userCooldownSec: fields.userCooldownSec ?? 0,
+      repetition: fields.repetition ?? "queue",
+      lastFiredAt: null,
       position: fields.position ?? null,
       enterAnimation: fields.enterAnimation ?? null,
       exitAnimation: fields.exitAnimation ?? null,
@@ -273,7 +274,7 @@ export class RewardService {
     if (fields.volume !== undefined) merged.volume = fields.volume;
     if (fields.maxDurationSec !== undefined) merged.maxDurationSec = fields.maxDurationSec;
     if (fields.cooldownSec !== undefined) merged.cooldownSec = fields.cooldownSec;
-    if (fields.userCooldownSec !== undefined) merged.userCooldownSec = fields.userCooldownSec;
+    if (fields.repetition !== undefined) merged.repetition = fields.repetition;
     if (fields.position !== undefined) merged.position = fields.position;
     if (fields.enterAnimation !== undefined) merged.enterAnimation = fields.enterAnimation;
     if (fields.exitAnimation !== undefined) merged.exitAnimation = fields.exitAnimation;
@@ -521,6 +522,11 @@ export class RewardService {
     const action: PlayClipActionConfig = { kind: "play_clip", clipId: local.clipId ?? "", volume: local.volume };
     if (local.maxDurationSec !== null) action.maxDurationSec = local.maxDurationSec;
     if (local.position) action.position = local.position;
+    // El recorte es del clip (no destructivo): se refleja en la acción para que la
+    // alerta lo respete igual que "Probar alerta".
+    const clip = local.clipId ? getClip(this.db, local.clipId) : null;
+    if (clip?.trimStart !== null && clip?.trimStart !== undefined) action.trimStart = clip.trimStart;
+    if (clip?.trimEnd !== null && clip?.trimEnd !== undefined) action.trimEnd = clip.trimEnd;
     const enter = animationOrNull(local.enterAnimation);
     if (enter) action.enterAnimation = enter;
     const exit = animationOrNull(local.exitAnimation);
@@ -531,7 +537,7 @@ export class RewardService {
       name: `Recompensa: ${local.title}`.slice(0, 100),
       enabled: local.desiredEnabled,
       trigger: { type: "reward_redeemed", rewardId: remoteRewardId ?? "" },
-      conditions: { permission: "everyone", cooldownSec: local.cooldownSec, userCooldownSec: local.userCooldownSec },
+      conditions: { permission: "everyone" },
       action,
       createdAt,
       updatedAt,
@@ -567,7 +573,7 @@ export class RewardService {
       volume: local.volume,
       maxDurationSec: local.maxDurationSec,
       cooldownSec: local.cooldownSec,
-      userCooldownSec: local.userCooldownSec,
+      repetition: local.repetition,
       position: local.position,
       enterAnimation: local.enterAnimation,
       exitAnimation: local.exitAnimation,
@@ -594,7 +600,7 @@ export class RewardService {
       volume: 1,
       maxDurationSec: null,
       cooldownSec: 0,
-      userCooldownSec: 0,
+      repetition: "queue",
       position: null,
       enterAnimation: null,
       exitAnimation: null,

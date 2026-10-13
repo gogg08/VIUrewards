@@ -715,6 +715,19 @@ Datos que **no** se pudieron confirmar con la documentación; quedan como
 - La recompensa local tiene un **id propio y estable**; el id remoto de la
   plataforma es un dato reemplazable (por eso "Recrear" funciona).
 
+#### 11.4.3 Verificaciones del rework de cooldown y superposición (Parte B)
+
+- **Cooldown nativo de Kick:** revisada la documentación pública, la API de
+  recompensas **no** expone un campo de cooldown (ni al crear ni al editar). Por eso
+  el cooldown se aplica **localmente**: global por recompensa, persistido en
+  `rewards.last_fired_at`, con un único reloj local (no se usa `redeemed_at`).
+
+| # | Qué verificar | Por qué importa | Estado |
+|---|---|---|---|
+| 1 | Que el create/update de recompensas **no** acepte ningún campo de cooldown | Es la premisa de aplicar el cooldown localmente | **[TODO(verificar)]** contra un canal real |
+| 2 | Qué hace Kick con un canje pendiente de una recompensa en modo `overlap` que la app nunca encola | La app lo **acepta** cuando el `playAudio` llegó a un overlay; sin overlay queda **omitido** | **[TODO(verificar)]** |
+| 3 | Si `reject` reembolsa los puntos (aplica también al omitir) | Ver §11.4.2 #4 | **[TODO(verificar)]** |
+
 ---
 
 ## 12. Notas de seguridad del prototipo

@@ -61,6 +61,8 @@
   --topbar-height: 3.25rem;
   --col-left-width: 320px;
   --col-right-width: 360px;
+  /* Altura del logo (32–40 px); se achica en ventana angosta. */
+  --logo-height: 36px;
 }
 
 /* --- Base ---------------------------------------------------------------- */
@@ -334,6 +336,40 @@ input[type="checkbox"] {
   font-size: var(--text-xl);
 }
 
+/* --- Lista de opciones (Apariencia) -------------------------------------- */
+
+.option-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+
+.option input {
+  margin-top: 0.2em;
+  accent-color: var(--color-accent);
+}
+
+.option-text {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.option-text .hint {
+  margin-top: 0;
+}
+
 /* ==========================================================================
    Layout principal
    ========================================================================== */
@@ -368,13 +404,22 @@ input[type="checkbox"] {
 }
 
 .brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.brand-logo {
+  height: var(--logo-height);
+  width: auto;
+  max-width: 100%;
+  display: block;
+}
+
+.brand-text {
   font-weight: var(--weight-bold);
   font-size: var(--text-lg);
   white-space: nowrap;
-}
-
-.brand span {
-  color: var(--color-accent);
 }
 
 /* Indicador de estado clicable (Overlay / Kick). */
@@ -706,14 +751,15 @@ input[type="checkbox"] {
 }
 
 .switch:disabled {
+  opacity: 0.45;
   cursor: not-allowed;
 }
 
 /* Selector de color nativo junto al campo hex. */
 .color-picker {
   flex: 0 0 auto;
-  width: 3rem;
-  height: 2.35rem;
+  width: 2.4rem;
+  height: 2.4rem;
   padding: var(--space-1);
 }
 
@@ -1155,6 +1201,11 @@ table.grid td.actions button {
     flex-wrap: wrap;
     border-right: 0;
     border-bottom: 1px solid var(--color-border);
+  }
+
+  /* En ventana angosta el logo se achica antes de empujar los indicadores. */
+  :root {
+    --logo-height: 28px;
   }
 }
 

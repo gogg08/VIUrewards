@@ -6,6 +6,10 @@
  * cada plataforma se consume a través de `PlatformIntegration`.
  */
 
+import type { RewardRepetition } from "../db/rewards.ts";
+
+export type { RewardRepetition };
+
 /** Estado visible de una recompensa en el dashboard. */
 export type RewardState =
   | "enabled" // Habilitada
@@ -36,7 +40,8 @@ export interface RewardListItem {
   volume: number;
   maxDurationSec: number | null;
   cooldownSec: number;
-  userCooldownSec: number;
+  /** Modo de repetición: "queue" (esperar turno) u "overlap" (superponer audios). */
+  repetition: RewardRepetition;
   position: { x: number; y: number } | null;
   enterAnimation: string | null;
   exitAnimation: string | null;
@@ -67,7 +72,7 @@ export interface RewardPlaybackInput {
   volume?: number;
   maxDurationSec?: number | null;
   cooldownSec?: number;
-  userCooldownSec?: number;
+  repetition?: RewardRepetition;
   position?: { x: number; y: number } | null;
   enterAnimation?: string | null;
   exitAnimation?: string | null;

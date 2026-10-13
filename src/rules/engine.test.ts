@@ -1,17 +1,20 @@
 /**
- * Tests del motor de reglas (Fase 4A): coincidencia de triggers, permisos,
- * cooldowns (global y por usuario), idempotencia por event.id, aislamiento de
- * errores entre reglas y ejecución de la acción play_clip.
+ * Tests del motor de reglas (Fase 4A; Parte B). Coincidencia de triggers,
+ * permisos, idempotencia por event.id, aislamiento de errores entre reglas y
+ * ejecución de la acción play_clip.
+ *
+ * El cooldown YA NO vive en el motor: es un dato de la recompensa, aplicado por
+ * el despachador (ver `src/server/reward-dispatch.test.ts`) y decidido por la
+ * función pura `decide` (ver `cooldown.test.ts`).
  */
 
 import { describe, expect, it } from "vitest";
 
 import { createEvent, type NormalizedEvent } from "../events/index.ts";
 import { AlertQueue } from "../queue/index.ts";
-import { CooldownTracker } from "./cooldown.ts";
 import { RuleEngine } from "./engine.ts";
 import { hasPermission, matchesTrigger, normalizeCommand } from "./matching.ts";
-import type { Rule, RuleActionConfig } from "./types.ts";
+import type { ActionResolver, Rule } from "./types.ts";
 
 function chatEvent(command: string, args: string[] = [], roles: string[] = []): NormalizedEvent {
   return createEvent({
@@ -39,7 +42,7 @@ function playRule(overrides: Partial<Rule> = {}): Rule {
     name: "Alerta",
     enabled: true,
     trigger: { type: "chat_command", command: "alerta" },
-    conditions: { permission: "everyone", cooldownSec: 0, userCooldownSec: 0 },
+    conditions: { permission: "everyone" },
     action: { kind: "play_clip", clipId: "clip-1" },
     ...overrides,
   };
@@ -48,18 +51,12 @@ function playRule(overrides: Partial<Rule> = {}): Rule {
 interface EngineHarness {
   engine: RuleEngine;
   queue: AlertQueue;
-  clock: { value: number };
 }
 
-function makeEngine(resolveAction?: (config: RuleActionConfig) => { kind: string; execute: () => void }): EngineHarness {
+function makeEngine(resolveAction?: ActionResolver): EngineHarness {
   const queue = new AlertQueue();
-  const clock = { value: 1_000 };
-  const engine = new RuleEngine({
-    queue,
-    now: () => clock.value,
-    resolveAction,
-  });
-  return { engine, queue, clock };
+  const engine = new RuleEngine({ queue, resolveAction });
+  return { engine, queue };
 }
 
 describe("matching", () => {
@@ -94,28 +91,6 @@ describe("permisos", () => {
   });
 });
 
-describe("CooldownTracker", () => {
-  it("bloquea el cooldown global y lo libera con el reloj", () => {
-    const clock = { value: 0 };
-    const tracker = new CooldownTracker(() => clock.value);
-    const conditions = { permission: "everyone" as const, cooldownSec: 10, userCooldownSec: 0 };
-    expect(tracker.check("r", "u", conditions).allowed).toBe(true);
-    tracker.mark("r", "u", conditions);
-    expect(tracker.check("r", "u", conditions)).toMatchObject({ allowed: false, remainingSec: 10 });
-    clock.value = 10_000;
-    expect(tracker.check("r", "u", conditions).allowed).toBe(true);
-  });
-
-  it("el cooldown por usuario no afecta a otro usuario", () => {
-    const clock = { value: 0 };
-    const tracker = new CooldownTracker(() => clock.value);
-    const conditions = { permission: "everyone" as const, cooldownSec: 0, userCooldownSec: 10 };
-    tracker.mark("r", "u1", conditions);
-    expect(tracker.check("r", "u1", conditions).allowed).toBe(false);
-    expect(tracker.check("r", "u2", conditions).allowed).toBe(true);
-  });
-});
-
 describe("RuleEngine", () => {
   it("dispara la regla y encola el clip", async () => {
     const h = makeEngine();
@@ -127,19 +102,21 @@ describe("RuleEngine", () => {
 
   it("no dispara si el permiso no alcanza", async () => {
     const h = makeEngine();
-    h.engine.setRules([playRule({ conditions: { permission: "mods", cooldownSec: 0, userCooldownSec: 0 } })]);
+    h.engine.setRules([playRule({ conditions: { permission: "mods" } })]);
     const result = await h.engine.handle(chatEvent("alerta"));
     expect(result).toMatchObject({ outcome: "skipped", reason: "sin permiso" });
     expect(h.queue.getState().current).toBeNull();
   });
 
-  it("respeta el cooldown global", async () => {
-    const h = makeEngine();
-    h.engine.setRules([playRule({ conditions: { permission: "everyone", cooldownSec: 30, userCooldownSec: 0 } })]);
-    await h.engine.handle(chatEvent("alerta"));
-    const again = await h.engine.handle(chatEvent("alerta"));
-    expect(again.outcome).toBe("skipped");
-    expect(again.reason).toContain("cooldown");
+  it("trata como omitida una acción que devuelve fired: false", async () => {
+    const h = makeEngine(() => ({
+      kind: "play_clip",
+      execute: () => ({ fired: false, reason: "sin overlay conectado" }),
+    }));
+    h.engine.setRules([playRule()]);
+    const result = await h.engine.handle(chatEvent("alerta"));
+    expect(result).toMatchObject({ outcome: "skipped", reason: "sin overlay conectado" });
+    expect(h.queue.getState().current).toBeNull();
   });
 
   it("es idempotente por event.id", async () => {
@@ -148,7 +125,6 @@ describe("RuleEngine", () => {
     const event = chatEvent("alerta");
     expect((await h.engine.handle(event)).outcome).toBe("fired");
     expect((await h.engine.handle(event)).outcome).toBe("duplicate");
-    // Solo un ítem en la cola.
     expect(h.queue.getState().current?.clipId).toBe("clip-1");
     expect(h.queue.getState().size).toBe(0);
   });
@@ -163,7 +139,7 @@ describe("RuleEngine", () => {
           },
         };
       }
-      return { kind: "play_clip", execute: () => h.queue.enqueue({ clipId: "clip-2" }) };
+      return { kind: "play_clip", execute: () => { h.queue.enqueue({ clipId: "clip-2" }); } };
     });
     h.engine.setRules([
       playRule({ id: "r1", action: { kind: "play_clip", clipId: "boom" } }),

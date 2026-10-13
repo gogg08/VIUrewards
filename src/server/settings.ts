@@ -16,6 +16,7 @@ import { DEFAULT_ALLOWED_DOMAINS } from "../media/validate-url.ts";
 export const SETTING_GLOBAL_VOLUME = "playback.globalVolume";
 export const SETTING_DEFAULT_MAX_DURATION = "playback.defaultMaxDurationSec";
 export const SETTING_WATCHDOG_MARGIN = "playback.watchdogMarginSec";
+export const SETTING_MAX_AUDIO_VOICES = "playback.maxAudioVoices";
 export const SETTING_MEDIA_MAX_DURATION = "media.maxDurationSec";
 export const SETTING_MEDIA_MAX_BYTES = "media.maxBytes";
 export const SETTING_ALLOWED_DOMAINS = "media.allowedDomains";
@@ -44,6 +45,8 @@ export interface AppSettings {
   defaultMaxDurationSec: number;
   /** Margen del watchdog sobre la duración efectiva de un clip, en segundos. */
   watchdogMarginSec: number;
+  /** Máximo de audios superpuestos simultáneos (1 a 20) que toca el overlay. */
+  maxAudioVoices: number;
   /** Duración máxima del video a descargar, en segundos. */
   maxVideoDurationSec: number;
   /** Tamaño máximo del archivo a descargar, en bytes. */
@@ -69,6 +72,7 @@ export interface SettingsPatch {
   globalVolume?: number;
   defaultMaxDurationSec?: number;
   watchdogMarginSec?: number;
+  maxAudioVoices?: number;
   maxVideoDurationSec?: number;
   maxVideoBytes?: number;
   allowedDomains?: string[];
@@ -85,6 +89,7 @@ export const SETTINGS_LIMITS = {
   globalVolume: { min: 0, max: 100 },
   defaultMaxDurationSec: { min: 1, max: 600 },
   watchdogMarginSec: { min: 1, max: 120 },
+  maxAudioVoices: { min: 1, max: 20 },
   maxVideoDurationSec: { min: 1, max: 3600 },
   maxVideoBytes: { min: 1 * 1024 * 1024, max: 2 * 1024 * 1024 * 1024 },
   port: { min: 1024, max: 65535 },
@@ -99,6 +104,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   globalVolume: 100,
   defaultMaxDurationSec: 30,
   watchdogMarginSec: 10,
+  maxAudioVoices: 8,
   maxVideoDurationSec: DEFAULT_MEDIA_LIMITS.maxDurationSec,
   maxVideoBytes: DEFAULT_MEDIA_LIMITS.maxBytes,
   allowedDomains: [...DEFAULT_ALLOWED_DOMAINS],
@@ -120,6 +126,7 @@ const NUMERIC_KEYS = [
   "globalVolume",
   "defaultMaxDurationSec",
   "watchdogMarginSec",
+  "maxAudioVoices",
   "maxVideoDurationSec",
   "maxVideoBytes",
   "port",
@@ -321,6 +328,12 @@ export function readSettings(db: SqliteDatabase): AppSettings {
       DEFAULT_SETTINGS.watchdogMarginSec,
       SETTINGS_LIMITS.watchdogMarginSec,
     ),
+    maxAudioVoices: readNumber(
+      db,
+      SETTING_MAX_AUDIO_VOICES,
+      DEFAULT_SETTINGS.maxAudioVoices,
+      SETTINGS_LIMITS.maxAudioVoices,
+    ),
     maxVideoDurationSec: readNumber(
       db,
       SETTING_MEDIA_MAX_DURATION,
@@ -366,6 +379,9 @@ export function writeSettings(db: SqliteDatabase, patch: SettingsPatch): void {
   }
   if (patch.watchdogMarginSec !== undefined) {
     setSetting(db, SETTING_WATCHDOG_MARGIN, String(patch.watchdogMarginSec));
+  }
+  if (patch.maxAudioVoices !== undefined) {
+    setSetting(db, SETTING_MAX_AUDIO_VOICES, String(patch.maxAudioVoices));
   }
   if (patch.maxVideoDurationSec !== undefined) {
     setSetting(db, SETTING_MEDIA_MAX_DURATION, String(patch.maxVideoDurationSec));

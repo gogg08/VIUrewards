@@ -40,6 +40,8 @@
       <div id="anchor">
         <video id="clip" playsinline></video>
       </div>
+      <!-- Pool de audios superpuestos (modo overlap): son <video> ocultos, ver nota. -->
+      <div id="voices"></div>
     </div>
 
     <script>
@@ -51,6 +53,7 @@
        */
       const anchor = document.getElementById("anchor");
       const video = document.getElementById("clip");
+      const voicesHost = document.getElementById("voices");
 
       // Clave del overlay: viaja en la URL de esta página (?key=...) y se reenvía
       // al WebSocket y a los clips, porque el Browser Source de OBS no comparte
@@ -315,6 +318,105 @@
         hide(exitAnimation);
       }
 
+      /* ----------------------------------------------------------------------
+       * Voces superpuestas (modo overlap). El pool es INDEPENDIENTE del
+       * reproductor de video: no entra en la cola y no lo afectan Saltar,
+       * Pausar, Reanudar ni Vaciar. Se usa <video> oculto (no <audio>) porque el
+       * medio es un mp4 con audio y video: así el navegador siempre decodifica el
+       * audio del contenedor, sin depender del soporte de mp4 en <audio>.
+       * Cada voz se libera al terminar, al llegar al recorte, a la duración
+       * máxima, por error o al cortarse (si se supera el máximo de voces).
+       */
+      const voices = []; // { id, el, timer, loadTimer, released }
+
+      function releaseVoice(voice) {
+        if (!voice || voice.released) return;
+        voice.released = true;
+        if (voice.timer !== null) clearTimeout(voice.timer);
+        if (voice.loadTimer !== null) clearTimeout(voice.loadTimer);
+        try {
+          voice.el.pause();
+        } catch {
+          /* el elemento ya se fue */
+        }
+        voice.el.removeAttribute("src");
+        try {
+          voice.el.load();
+        } catch {
+          /* no-op */
+        }
+        voice.el.remove();
+        const index = voices.indexOf(voice);
+        if (index >= 0) voices.splice(index, 1);
+      }
+
+      function releaseAllVoices() {
+        for (const voice of [...voices]) releaseVoice(voice);
+      }
+
+      function playAudio(audio) {
+        if (!audio || !audio.url) return;
+        const maxVoices = Math.max(1, Math.floor(Number(audio.maxVoices) || 1));
+        // Si ya hay el máximo de voces, se corta la más antigua (la primera).
+        while (voices.length >= maxVoices) releaseVoice(voices[0]);
+
+        const el = document.createElement("video");
+        el.setAttribute("playsinline", "");
+        el.preload = "auto";
+        el.style.display = "none";
+        el.volume = Math.min(1, Math.max(0, Number(audio.volume) || 0));
+        el.src = audio.url;
+
+        const voice = { id: audio.id, el: el, timer: null, loadTimer: null, released: false };
+        voices.push(voice);
+        voicesHost.appendChild(el);
+
+        const start = Math.max(0, Number(audio.trimStart) || 0);
+        const naturalEnd = typeof audio.trimEnd === "number" ? audio.trimEnd : Infinity;
+        const capSec = Math.min(naturalEnd, start + Math.max(0.1, Number(audio.maxDurationSec) || 0.1));
+
+        const begin = () => {
+          if (voice.released) return;
+          clearLoadTimerFor(voice);
+          try {
+            el.currentTime = start;
+          } catch {
+            /* todavía no listo para el seek */
+          }
+          const attempt = el.play();
+          if (attempt && typeof attempt.then === "function") {
+            attempt.catch((error) => {
+              send({ type: "error", itemId: audio.id, message: "audio: " + String(error) });
+              releaseVoice(voice);
+            });
+          }
+          // Corta al llegar al recorte o a la duración máxima.
+          voice.timer = setTimeout(() => releaseVoice(voice), Math.max(100, (capSec - start) * 1000));
+        };
+
+        function clearLoadTimerFor(target) {
+          if (target.loadTimer !== null) clearTimeout(target.loadTimer);
+          target.loadTimer = null;
+        }
+
+        el.addEventListener("ended", () => releaseVoice(voice));
+        el.addEventListener("error", () => {
+          send({ type: "error", itemId: audio.id, message: "audio: no se pudo cargar" });
+          releaseVoice(voice);
+        });
+
+        if (el.readyState >= 1) {
+          begin();
+        } else {
+          el.addEventListener("loadedmetadata", begin, { once: true });
+          voice.loadTimer = setTimeout(() => {
+            if (voice.released) return;
+            send({ type: "error", itemId: audio.id, message: "audio: timeout de carga" });
+            releaseVoice(voice);
+          }, LOAD_TIMEOUT_MS);
+        }
+      }
+
       function pause() {
         if (mode === "playing") remainingMs = Math.max(0, endDeadline - performance.now());
         clearEndTimer();
@@ -372,6 +474,12 @@
           case "resume":
             resume();
             break;
+          case "playAudio":
+            playAudio(message.audio);
+            break;
+          case "stopAudio":
+            releaseAllVoices();
+            break;
         }
       }
 
@@ -392,6 +500,7 @@
         // el estado actual y el overlay se pone al día.
         ws.addEventListener("close", () => {
           stop();
+          releaseAllVoices();
           if (reconnectTimer !== null) clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(connect, reconnectDelay);
           reconnectDelay = Math.min(MAX_RECONNECT_MS, reconnectDelay * 2);

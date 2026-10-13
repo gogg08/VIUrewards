@@ -14,12 +14,26 @@
       `x-data="authApp()"` la función ya tiene que existir. Con `defer` los scripts
       se ejecutan en orden de aparición. Ver docs/dashboard.md.
     -->
+    <script defer src="/web/logo.js"></script>
     <script defer src="/web/login.js"></script>
     <script defer src="/web/alpine.min.js"></script>
   </head>
   <body>
     <div class="auth-wrap" x-data="authApp()">
       <div class="card">
+        <!-- Logo con modos configurables (Automático/Dinámico/Estático). -->
+        <div class="brand" x-data="logoBadge()">
+          <img
+            class="brand-logo"
+            src="/web/assets/VIUrewards.png"
+            :src="logoSrc"
+            alt="VIUrewards"
+            @error="logoFailed = true"
+            x-show="!logoFailed"
+          />
+          <span class="brand-text" x-show="logoFailed" x-cloak>VIUrewards</span>
+        </div>
+
         <!-- Textos por defecto en el HTML: si Alpine falla, la pantalla no queda vacía. -->
         <h1 x-text="title">VIUrewards</h1>
         <p class="hint" x-text="hint">Cargando…</p>

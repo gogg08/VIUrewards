@@ -14,9 +14,11 @@ import {
   deleteReward,
   findRewardByRemoteId,
   getReward,
+  listOverlapRewardsUsingClip,
   listRewardsForPlatform,
   listRewardsUsingClip,
   setRewardError,
+  setRewardLastFired,
   upsertReward,
   type RewardRecord,
 } from "./rewards.ts";
@@ -34,7 +36,8 @@ function baseReward(overrides: Partial<RewardRecord> = {}): RewardRecord {
     volume: 1,
     maxDurationSec: null,
     cooldownSec: 0,
-    userCooldownSec: 0,
+    repetition: "queue",
+    lastFiredAt: null,
     position: null,
     enterAnimation: null,
     exitAnimation: null,
@@ -52,6 +55,17 @@ function baseReward(overrides: Partial<RewardRecord> = {}): RewardRecord {
 function v5Database(): Database.Database {
   const db = new Database(":memory:");
   db.exec(`
+    CREATE TABLE clips (
+      id           TEXT PRIMARY KEY,
+      source_url   TEXT NOT NULL,
+      title        TEXT NOT NULL,
+      duration_sec INTEGER NOT NULL DEFAULT 0,
+      size_bytes   INTEGER NOT NULL DEFAULT 0,
+      file         TEXT NOT NULL,
+      created_at   TEXT NOT NULL,
+      trim_start   REAL,
+      trim_end     REAL
+    );
     CREATE TABLE platform_managed_rewards (
       platform   TEXT NOT NULL,
       reward_id  TEXT NOT NULL,
@@ -87,7 +101,7 @@ function insertRule(
     options.name ?? "Recompensa: Alerta",
     options.enabled ?? 1,
     JSON.stringify({ type: "reward_redeemed", rewardId }),
-    JSON.stringify({ permission: "everyone", cooldownSec: options.cooldownSec ?? 12, userCooldownSec: 3 }),
+    JSON.stringify({ permission: "everyone", cooldownSec: options.cooldownSec ?? 12 }),
     JSON.stringify({ kind: "play_clip", clipId: options.clipId ?? "clip-9", volume: 0.5 }),
   );
 }
@@ -109,7 +123,7 @@ describe("migración v6: importar recompensas gestionadas", () => {
       clipId: "clip-9",
       volume: 0.5,
       cooldownSec: 12,
-      userCooldownSec: 3,
+      repetition: "queue",
       desiredEnabled: true,
       managed: true,
       synced: false,
@@ -164,5 +178,28 @@ describe("tabla rewards: acceso básico", () => {
     upsertReward(db, baseReward({ id: "b", clipId: "clip-2", remoteRewardId: "rw-2" }));
     const using = listRewardsUsingClip(db, "clip-1");
     expect(using.map((reward) => reward.id)).toEqual(["a"]);
+  });
+
+  it("guarda el modo de repetición y el último disparo, sin pisarlo al reinsertar", () => {
+    const db = openMemoryDatabase();
+    upsertReward(db, baseReward({ id: "r1", repetition: "overlap", cooldownSec: 30 }));
+    expect(getReward(db, "r1")).toMatchObject({ repetition: "overlap", cooldownSec: 30, lastFiredAt: null });
+
+    setRewardLastFired(db, "r1", 12_345);
+    expect(getReward(db, "r1")?.lastFiredAt).toBe(12_345);
+
+    // Editar (reinsertar) la fila no debe perder el último disparo.
+    upsertReward(db, baseReward({ id: "r1", repetition: "overlap", cooldownSec: 60 }));
+    expect(getReward(db, "r1")?.cooldownSec).toBe(60);
+    expect(getReward(db, "r1")?.lastFiredAt).toBe(12_345);
+  });
+
+  it("lista las recompensas superpuestas que usan un clip", () => {
+    const db = openMemoryDatabase();
+    upsertReward(db, baseReward({ id: "q", clipId: "clip-1", repetition: "queue" }));
+    upsertReward(db, baseReward({ id: "o", clipId: "clip-1", repetition: "overlap", remoteRewardId: "rw-o" }));
+    upsertReward(db, baseReward({ id: "z", clipId: "clip-1", repetition: "overlap", remoteRewardId: "rw-z" }));
+    expect(listOverlapRewardsUsingClip(db, "clip-1").map((reward) => reward.id)).toEqual(["o", "z"]);
+    expect(listOverlapRewardsUsingClip(db, "otro")).toEqual([]);
   });
 });

@@ -44,6 +44,7 @@ function sampleClip(overrides: Partial<ClipRecord> = {}): ClipRecord {
     createdAt: "2026-01-01T00:00:00.000Z",
     trimStart: null,
     trimEnd: null,
+    audioOnly: false,
     ...overrides,
   };
 }
@@ -65,6 +66,23 @@ describe("migraciones", () => {
       .map((row) => (row as { name: string }).name);
     expect(columns).toContain("trim_start");
     expect(columns).toContain("trim_end");
+  });
+
+  it("la migración de la Parte B agrega repetition/last_fired_at y quita user_cooldown_sec", () => {
+    const db = openMemoryDatabase();
+    const rewardColumns = db
+      .prepare("PRAGMA table_info(rewards)")
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(rewardColumns).toContain("repetition");
+    expect(rewardColumns).toContain("last_fired_at");
+    expect(rewardColumns).not.toContain("user_cooldown_sec");
+
+    const clipColumns = db
+      .prepare("PRAGMA table_info(clips)")
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(clipColumns).toContain("audio_only");
   });
 });
 
@@ -121,6 +139,16 @@ describe("clips", () => {
     expect(setClipTrim(db, "abc", null, null)).toBe(true);
     expect(getClip(db, "abc")?.trimStart).toBeNull();
     expect(setClipTrim(db, "inexistente", 0, 1)).toBe(false);
+  });
+
+  it("guarda la marca de solo audio y no la pisa al reinsertar (caché)", () => {
+    const db = openMemoryDatabase();
+    upsertClip(db, sampleClip({ audioOnly: true }));
+    expect(getClip(db, "abc")?.audioOnly).toBe(true);
+
+    // Reprocesar la misma URL (audioOnly en falso por defecto) no debe quitarla.
+    upsertClip(db, sampleClip({ sizeBytes: 999 }));
+    expect(getClip(db, "abc")?.audioOnly).toBe(true);
   });
 });
 

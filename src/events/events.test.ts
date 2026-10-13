@@ -76,7 +76,9 @@ describe("ManualEventSource", () => {
   it("emite eventos manuales a los suscriptores", () => {
     const source = new ManualEventSource();
     const received: NormalizedEvent[] = [];
-    const off = source.onEvent((event) => received.push(event));
+    const off = source.onEvent((event) => {
+      received.push(event);
+    });
     const event = source.trigger({ user: { id: "u1", name: "Ana" } });
 
     expect(event.type).toBe("manual");
@@ -100,7 +102,9 @@ describe("SimulatedEventSource", () => {
     expect(source.capabilities.resolve).toBe(true);
 
     const received: NormalizedEvent[] = [];
-    source.onEvent((event) => received.push(event));
+    source.onEvent((event) => {
+      received.push(event);
+    });
 
     const event = source.trigger({ type: "reward_redeemed", payload: { rewardId: "r1", rewardTitle: "T", userInput: "" } });
     expect(received).toHaveLength(1);

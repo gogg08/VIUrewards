@@ -237,6 +237,7 @@ function setup(clip = true): { db: SqliteDatabase; fake: FakeControls; service: 
       createdAt: new Date().toISOString(),
       trimStart: null,
       trimEnd: null,
+      audioOnly: false,
     });
   }
   const fake = fakeIntegration();
@@ -264,7 +265,8 @@ function provisionalReward(): RewardRecord {
     volume: 1,
     maxDurationSec: null,
     cooldownSec: 0,
-    userCooldownSec: 0,
+    repetition: "queue",
+    lastFiredAt: null,
     position: null,
     enterAnimation: null,
     exitAnimation: null,
@@ -421,8 +423,8 @@ describe("RewardService: crear", () => {
     // el índice único y dispara la compensación.
     db.prepare(
       `INSERT INTO rewards (id, platform, remote_reward_id, title, cost, color, description,
-        volume, cooldown_sec, user_cooldown_sec, desired_enabled, managed, created_at, updated_at)
-       VALUES ('pre', 'fake', 'rw-1', 'Pre', 1, '#00e701', '', 1, 0, 0, 1, 1, 'now', 'now')`,
+        volume, cooldown_sec, repetition, desired_enabled, managed, created_at, updated_at)
+       VALUES ('pre', 'fake', 'rw-1', 'Pre', 1, '#00e701', '', 1, 0, 'queue', 1, 1, 'now', 'now')`,
     ).run();
 
     const result = await service.create({ title: "Alerta", cost: 100, clipId: "clip-1" });

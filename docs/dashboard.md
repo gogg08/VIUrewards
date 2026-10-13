@@ -32,7 +32,7 @@ hidden`). El desborde siempre ocurre dentro de una caja, nunca en la página ni 
 una columna. En ventana angosta (<1024 px) se muestra **una columna por vez** con
 una **barra de pestañas fija** arriba (Recompensas, Clips, Cola).
 
-- **Encabezado:** logo VIUrewards; indicadores de **Overlay** (conectado / sin
+- **Encabezado:** logo VIUrewards con **tres modos** (Automático por defecto, Dinámico y Estático; se eligen en Ajustes → Apariencia, se guardan en `localStorage` y se aplican al instante); indicadores de **Overlay** (conectado / sin
   conexión) y **Kick** (no vinculado / conectado / requiere volver a vincular),
   ambos clicables y abren **Ajustes** en su pestaña. El indicador de Overlay, sin
   conexión, muestra el tooltip "Revisá la fuente en OBS". A la derecha, **Descargas**
@@ -242,8 +242,8 @@ clave del overlay.
 - **Assets de `/web` públicos**: el HTML, Alpine (archivo local, sin CDN), CSS y JS
   del dashboard se sirven sin sesión; **los datos** salen siempre por `/api`, que
   sí está protegida. La ruta `/` (dashboard) redirige a `/login` sin sesión.
-- **Orden de scripts**: los scripts que definen el componente (`app.js`,
-  `login.js`) van **antes** de `alpine.min.js`. Alpine arranca en un microtask
+- **Orden de scripts**: los scripts que definen los componentes y el logo
+  (`logo.js`, `app.js`, `login.js`) van **antes** de `alpine.min.js`. Alpine arranca en un microtask
   apenas se ejecuta, así que la expresión `x-data="..."` ya tiene que poder
   resolverse. Alpine llama solo al método `init()` (no hace falta `x-init`), y los
   nombres de propiedades del componente evitan chocar con globales del navegador
@@ -282,7 +282,13 @@ por pestaña, una columna por vez en ventana angosta) es **solo CSS/HTML/JS de
 presentación**: el no-scroll horizontal, el punto de Descargas, el tooltip del
 indicador de Overlay y la barra de pestañas angosta **no** se pueden verificar sin
 navegador. Los tests existentes siguen cubriendo el orden de scripts, la existencia
-de assets, los handlers `@click` y la ausencia de tokens.
+de assets, los handlers `@click`/`@change` y la ausencia de tokens.
+
+El **logo** (Parte C): el modo Automático (animado los primeros 60 s y después
+fijo), el arranque en fijo con `prefers-reduced-motion`, el cambio sin parpadeo y
+la caída al texto "VIUrewards" si la imagen no carga **no** se pueden verificar sin
+navegador. El ciclo del WebP animado (69 cuadros, 5.040 s) se midió del archivo;
+los tests solo comprueban que la constante y las rutas existen.
 
 ## Pendiente
 

@@ -22,13 +22,14 @@ export interface RuleTrigger {
 
 export type Permission = "everyone" | "subs" | "mods";
 
+/**
+ * Condiciones de una regla. El cooldown NO vive acá: desde el rework (Parte B)
+ * es un atributo de la recompensa (global, persistido), aplicado por el
+ * despachador de recompensas del servidor. Se eliminó el cooldown por usuario.
+ */
 export interface RuleConditions {
   /** Quién puede dispararla. */
   permission: Permission;
-  /** Cooldown global de la regla, en segundos. */
-  cooldownSec: number;
-  /** Cooldown por usuario, en segundos. */
-  userCooldownSec: number;
 }
 
 export interface PlayClipActionConfig {
@@ -64,12 +65,22 @@ export interface RuleActionContext {
 }
 
 /**
+ * Resultado de una acción. `fired: false` significa que la acción no disparó y
+ * el motor debe tratarla como "skipped" con ese motivo (p. ej. un audio
+ * superpuesto sin overlay conectado). Devolver `void` equivale a "disparó".
+ */
+export interface RuleActionOutcome {
+  fired: boolean;
+  reason?: string;
+}
+
+/**
  * Interfaz de acción del motor. `PlayClip` (de la cola) la satisface
  * estructuralmente; el motor no depende de esa acción concreta.
  */
 export interface RuleAction {
   readonly kind: string;
-  execute(context: RuleActionContext): void | Promise<void>;
+  execute(context: RuleActionContext): void | RuleActionOutcome | Promise<void | RuleActionOutcome>;
 }
 
 /** Construye una acción a partir de su configuración. */

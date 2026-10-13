@@ -44,11 +44,7 @@ function toRecord(row: RuleRow): RuleRecord {
     name: row.name,
     enabled: row.enabled === 1,
     trigger: parse<RuleTrigger>(row.trigger_json, { type: "manual" }),
-    conditions: parse<RuleConditions>(row.conditions_json, {
-      permission: "everyone",
-      cooldownSec: 0,
-      userCooldownSec: 0,
-    }),
+    conditions: parse<RuleConditions>(row.conditions_json, { permission: "everyone" }),
     action: parse<RuleActionConfig>(row.action_json, { kind: "play_clip", clipId: "" }),
     createdAt: row.created_at,
     updatedAt: row.updated_at,

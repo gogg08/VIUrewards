@@ -25,6 +25,7 @@ export {
   listClips,
   reconcileClips,
   renameClip,
+  setClipAudioOnly,
   setClipTrim,
   upsertClip,
   type ClipRecord,
@@ -44,11 +45,14 @@ export {
   deleteReward,
   findRewardByRemoteId,
   getReward,
+  listOverlapRewardsUsingClip,
   listRewardsForPlatform,
   listRewardsUsingClip,
   setRewardError,
+  setRewardLastFired,
   upsertReward,
   type RewardRecord,
+  type RewardRepetition,
 } from "./rewards.ts";
 
 export {

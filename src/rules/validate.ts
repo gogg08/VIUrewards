@@ -75,26 +75,13 @@ function validateTrigger(raw: unknown): RuleTrigger | string {
 }
 
 function validateConditions(raw: unknown): RuleConditions | string {
-  const conditions: RuleConditions = { permission: "everyone", cooldownSec: 0, userCooldownSec: 0 };
+  const conditions: RuleConditions = { permission: "everyone" };
   if (raw === undefined || raw === null) return conditions;
   if (!isPlainObject(raw)) return "Las condiciones no son válidas.";
 
   if (raw.permission !== undefined) {
     if (!PERMISSIONS.includes(raw.permission as Permission)) return "El permiso no es válido.";
     conditions.permission = raw.permission as Permission;
-  }
-
-  for (const [key, field] of [
-    ["cooldownSec", "cooldownSec"],
-    ["userCooldownSec", "userCooldownSec"],
-  ] as const) {
-    const value = raw[key];
-    if (value === undefined || value === null) continue;
-    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
-      return `El cooldown (${field}) debe ser un entero mayor o igual a 0.`;
-    }
-    if (value > MAX_COOLDOWN_SEC) return `El cooldown (${field}) es demasiado grande.`;
-    conditions[key] = value;
   }
 
   return conditions;

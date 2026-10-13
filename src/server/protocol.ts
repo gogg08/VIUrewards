@@ -7,12 +7,30 @@
 
 import type { QueueItem, QueueState } from "../queue/index.ts";
 
+/** Un audio superpuesto (modo overlap): se reproduce sin entrar en la cola. */
+export interface AudioPlayback {
+  /** Id de la reproducción (el id del canje/evento). */
+  id: string;
+  /** URL del medio servido por /media, con la clave del overlay. */
+  url: string;
+  /** Volumen final (volumen de la recompensa por el global). */
+  volume: number;
+  trimStart: number;
+  trimEnd: number | null;
+  /** Duración máxima en segundos. */
+  maxDurationSec: number;
+  /** Máximo de voces simultáneas vigente. */
+  maxVoices: number;
+}
+
 export type ServerMessage =
   | { type: "state"; state: QueueState }
   | { type: "play"; item: QueueItem; url: string }
   | { type: "stop" }
   | { type: "pause" }
-  | { type: "resume" };
+  | { type: "resume" }
+  | { type: "playAudio"; audio: AudioPlayback }
+  | { type: "stopAudio" };
 
 export type OverlayMessage =
   | { type: "ready" }
@@ -22,6 +40,11 @@ export type OverlayMessage =
 /** URL de reproducción de un clip servido por /media. */
 export function clipUrl(clipId: string): string {
   return `/media/${encodeURIComponent(clipId)}.mp4`;
+}
+
+/** URL de reproducción con la clave del overlay (para el Browser Source de OBS). */
+export function clipUrlWithKey(clipId: string, key: string): string {
+  return `${clipUrl(clipId)}?key=${encodeURIComponent(key)}`;
 }
 
 /** Parsea un mensaje del overlay. Devuelve `null` si no es un JSON válido. */

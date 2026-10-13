@@ -11,6 +11,7 @@
       Orden importante: app.js (define dashboardApp) va ANTES de alpine.min.js,
       que arranca en un microtask apenas se ejecuta. Ver docs/dashboard.md.
     -->
+    <script defer src="/web/logo.js"></script>
     <script defer src="/web/app.js"></script>
     <script defer src="/web/alpine.min.js"></script>
   </head>
@@ -19,7 +20,18 @@
       <!-- ================= Encabezado ================= -->
       <header class="topbar">
         <div class="topbar-left">
-          <div class="brand">VIU<span>rewards</span></div>
+          <!-- Logo con modos configurables (Automático/Dinámico/Estático). -->
+          <div class="brand" x-data="logoBadge()">
+            <img
+              class="brand-logo"
+              src="/web/assets/VIUrewards.png"
+              :src="logoSrc"
+              alt="VIUrewards"
+              @error="logoFailed = true"
+              x-show="!logoFailed"
+            />
+            <span class="brand-text" x-show="logoFailed" x-cloak>VIUrewards</span>
+          </div>
 
           <button
             class="status-pill"
@@ -153,7 +165,10 @@
 
                         <div class="reward-card-line">
                           <span class="muted" x-text="reward.cost + ' pts'"></span>
-                          <span class="muted" x-text="rewardClipLabel(reward)"></span>
+                          <span class="muted" x-show="rewardModeLabel(reward)" x-text="rewardModeLabel(reward)"></span>
+                          <!-- Solo si la recompensa apunta a un clip local: las de otra
+                               app no muestran nada del clip. -->
+                          <span class="muted" x-show="reward.clipId" x-text="rewardClipLabel(reward)"></span>
                         </div>
 
                         <div class="reward-card-bottom">
@@ -170,7 +185,9 @@
                             <template x-if="reward.state === 'missing'">
                               <button class="small" @click="recreateReward(activePlatform, reward)">Recrear</button>
                             </template>
-                            <template x-if="reward.state === 'missing'">
+                            <!-- Con Kick sin conexión también se puede quitar de la app:
+                                 el borrado es local y no necesita la API. -->
+                            <template x-if="reward.state === 'missing' || reward.state === 'offline'">
                               <button class="small" @click="detachReward(activePlatform, reward)">Quitar de la app</button>
                             </template>
 
@@ -244,10 +261,14 @@
                 />
                 <button class="primary" type="submit" :disabled="downloading || !url">Descargar</button>
               </form>
-              <div class="progress" x-show="job" :class="{ error: job && job.status === 'error' }">
-                <span x-text="jobLabel"></span>
-                <span x-show="job && job.status === 'ready'"> — ya está en la biblioteca.</span>
-              </div>
+              <!-- x-if (no x-show): el subárbol sólo existe cuando hay job, así no se
+                   leen propiedades de `job` mientras es null. -->
+              <template x-if="job">
+                <div class="progress" :class="{ error: job.status === 'error' }">
+                  <span x-text="jobLabel"></span>
+                  <span x-show="job.status === 'ready'"> — ya está en la biblioteca.</span>
+                </div>
+              </template>
               <p class="error" x-show="message" x-text="message"></p>
             </div>
           </div>
@@ -302,6 +323,21 @@
                         </div>
                       </div>
 
+                      <div class="field-row">
+                        <button
+                          type="button"
+                          role="switch"
+                          class="switch"
+                          :class="{ on: clip.audioOnly }"
+                          :aria-checked="clip.audioOnly ? 'true' : 'false'"
+                          :aria-label="'Solo audio: ' + clip.title"
+                          @click="toggleClipAudioOnly(clip)"
+                        >
+                          <span class="switch-knob"></span>
+                        </button>
+                        <span>Solo audio</span>
+                      </div>
+
                       <div class="row">
                         <template x-if="editingId !== clip.id">
                           <button @click="startRename(clip)">Renombrar</button>
@@ -344,6 +380,10 @@
                   <button class="small danger" @click="clearQueue()" :disabled="queue.pending.length === 0">Vaciar</button>
                 </div>
 
+                <div class="row">
+                  <button class="ghost small" @click="stopAudios()">Cortar audios</button>
+                </div>
+
                 <p class="empty" x-show="!queue.current">No hay nada reproduciéndose.</p>
 
                 <div class="queue-current" x-show="queue.current">
@@ -371,11 +411,11 @@
                     <div class="history-item">
                       <div class="history-line-1">
                         <span class="history-title" x-text="historyTitle(entry)"></span>
-                        <span class="badge" :class="outcomeBadgeClass(entry.outcome)" x-text="outcomeLabel(entry.outcome)"></span>
+                        <span class="badge" :class="outcomeBadgeClass(entry.outcome)" x-text="outcomeLabel(entry)"></span>
                       </div>
                       <div class="history-line-2">
                         <span x-text="entry.userName"></span> · <span x-text="formatTime(entry.createdAt)"></span>
-                        <template x-if="entry.reason">
+                        <template x-if="entry.reason && entry.outcome !== 'fired'">
                           <span> · <span x-text="entry.reason"></span></span>
                         </template>
                       </div>
@@ -544,6 +584,11 @@
                     />
                   </label>
                   <label class="field">
+                    <span>Audios simultáneos máximos</span>
+                    <input type="number" min="1" max="20" x-model.number="settings.maxAudioVoices" @input="markDirty()" />
+                    <span class="muted">Si se supera, se corta el audio más antiguo.</span>
+                  </label>
+                  <label class="field">
                     <span>Al omitir un canje</span>
                     <select x-model="settings.redemptionsOnSkip" @change="markDirty()">
                       <option value="leave_pending">Dejarlo pendiente</option>
@@ -674,7 +719,48 @@
               <!-- ---- Apariencia ---- -->
               <section x-show="settingsTab === 'appearance'" class="stack">
                 <h3>Apariencia</h3>
-                <p class="empty">Acá van a ir los temas. Todavía no hay opciones.</p>
+                <div class="option-list">
+                  <label class="option">
+                    <input
+                      type="radio"
+                      name="logoMode"
+                      value="auto"
+                      :checked="logoMode === 'auto'"
+                      @change="setLogoMode('auto')"
+                    />
+                    <span class="option-text">
+                      <strong>Automático</strong>
+                      <span class="hint">El logo animado los primeros 60 segundos; después, el fijo. Opción por defecto.</span>
+                    </span>
+                  </label>
+                  <label class="option">
+                    <input
+                      type="radio"
+                      name="logoMode"
+                      value="dynamic"
+                      :checked="logoMode === 'dynamic'"
+                      @change="setLogoMode('dynamic')"
+                    />
+                    <span class="option-text">
+                      <strong>Dinámico</strong>
+                      <span class="hint">El logo animado todo el tiempo.</span>
+                    </span>
+                  </label>
+                  <label class="option">
+                    <input
+                      type="radio"
+                      name="logoMode"
+                      value="static"
+                      :checked="logoMode === 'static'"
+                      @change="setLogoMode('static')"
+                    />
+                    <span class="option-text">
+                      <strong>Estático</strong>
+                      <span class="hint">Siempre el logo fijo, sin animación.</span>
+                    </span>
+                  </label>
+                </div>
+                <p class="hint">Se guarda en este navegador y se aplica al instante, sin guardar.</p>
               </section>
 
               <!-- ---- Avanzado ---- -->
@@ -826,7 +912,10 @@
       </div>
 
       <!-- ================= Ventana de recompensa (crear/editar) ================= -->
-      <div class="modal" x-show="rewardForm" x-cloak @click="closeRewardBackdrop($event)">
+      <!-- x-if (no x-show): el contenido sólo existe con el formulario abierto, así
+           ninguna expresión lee propiedades de `rewardForm` cuando es null. -->
+      <template x-if="rewardForm">
+      <div class="modal" x-cloak @click="closeRewardBackdrop($event)">
         <div
           class="modal-window reward-modal"
           :class="{ expanded: rewardFormExpanded }"
@@ -845,6 +934,11 @@
               <span>Clip</span>
               <select x-model="rewardForm.clipId" @change="onRewardClipChange()" :disabled="clips.length === 0">
                 <option value="">Elegí un clip</option>
+                <!-- Si el clip de una recompensa existente ya no está, el desplegable
+                     lo muestra para que se vea por qué no se puede guardar. -->
+                <template x-if="rewardForm.clipId && !rewardClipExists()">
+                  <option :value="rewardForm.clipId">Clip no disponible</option>
+                </template>
                 <template x-for="clip in clips" :key="clip.id">
                   <option :value="clip.id" x-text="rewardClipOption(clip)"></option>
                 </template>
@@ -903,50 +997,96 @@
 
                 <template x-if="rewardAdvancedOpen">
                   <div class="settings-grid">
+                    <div class="field">
+                      <span>Repetición</span>
+                      <div class="segmented">
+                        <button
+                          type="button"
+                          :class="{ active: rewardForm.repetition !== 'overlap' }"
+                          @click="setRewardRepetition('queue')"
+                        >
+                          Esperar turno
+                        </button>
+                        <button
+                          type="button"
+                          :class="{ active: rewardForm.repetition === 'overlap' }"
+                          :disabled="!rewardOverlapAllowed"
+                          :title="rewardOverlapAllowed ? 'Superponer los audios' : 'Solo para clips de solo audio'"
+                          @click="setRewardRepetition('overlap')"
+                        >
+                          Superponer
+                        </button>
+                      </div>
+                    </div>
+
                     <label class="field">
                       <span>Volumen (<span x-text="rewardForm.volumePercent"></span> %)</span>
                       <input type="range" min="0" max="100" x-model.number="rewardForm.volumePercent" />
                     </label>
-                    <label class="field narrow">
-                      <span>Duración máxima (s; vacío = sin límite)</span>
-                      <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
-                    </label>
-                    <label class="field narrow">
-                      <span>Cooldown global (s)</span>
-                      <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
-                    </label>
-                    <label class="field narrow">
-                      <span>Cooldown por usuario (s)</span>
-                      <input type="number" min="0" max="86400" x-model.number="rewardForm.userCooldownSec" />
-                    </label>
-                    <label class="field narrow">
-                      <span>Posición X (%)</span>
-                      <input type="number" min="0" max="100" x-model.number="rewardForm.positionX" />
-                    </label>
-                    <label class="field narrow">
-                      <span>Posición Y (%)</span>
-                      <input type="number" min="0" max="100" x-model.number="rewardForm.positionY" />
-                    </label>
-                    <label class="field">
-                      <span>Animación de entrada</span>
-                      <select x-model="rewardForm.enterAnimation">
-                        <option value="none">Sin animación</option>
-                        <option value="fade">Desvanecer</option>
-                        <option value="slide-up">Deslizar hacia arriba</option>
-                        <option value="slide-down">Deslizar hacia abajo</option>
-                        <option value="zoom">Zoom</option>
-                      </select>
-                    </label>
-                    <label class="field">
-                      <span>Animación de salida</span>
-                      <select x-model="rewardForm.exitAnimation">
-                        <option value="none">Sin animación</option>
-                        <option value="fade">Desvanecer</option>
-                        <option value="slide-up">Deslizar hacia arriba</option>
-                        <option value="slide-down">Deslizar hacia abajo</option>
-                        <option value="zoom">Zoom</option>
-                      </select>
-                    </label>
+
+                    <template x-if="rewardForm.repetition !== 'overlap'">
+                      <div class="field-row">
+                        <label class="field narrow">
+                          <span>Duración máxima (s)</span>
+                          <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
+                        </label>
+                        <label class="field narrow">
+                          <span>Cooldown global (s; 0 = sin cooldown)</span>
+                          <input type="number" min="0" max="86400" x-model.number="rewardForm.cooldownSec" />
+                        </label>
+                      </div>
+                    </template>
+
+                    <template x-if="rewardForm.repetition === 'overlap'">
+                      <div class="stack">
+                        <label class="field narrow">
+                          <span>Duración máxima (s)</span>
+                          <input type="number" min="1" x-model.number="rewardForm.maxDurationSec" />
+                        </label>
+                        <p class="muted">
+                          Los audios suenan a la vez, sin esperar. El máximo simultáneo se cambia en
+                          Ajustes → Alertas.
+                        </p>
+                      </div>
+                    </template>
+
+                    <template x-if="!rewardNoVisual">
+                      <div class="field-row">
+                        <label class="field narrow">
+                          <span>Posición X (%)</span>
+                          <input type="number" min="0" max="100" x-model.number="rewardForm.positionX" />
+                        </label>
+                        <label class="field narrow">
+                          <span>Posición Y (%)</span>
+                          <input type="number" min="0" max="100" x-model.number="rewardForm.positionY" />
+                        </label>
+                      </div>
+                    </template>
+
+                    <template x-if="!rewardNoVisual">
+                      <div class="field-row">
+                        <label class="field">
+                          <span>Animación de entrada</span>
+                          <select x-model="rewardForm.enterAnimation">
+                            <option value="none">Sin animación</option>
+                            <option value="fade">Desvanecer</option>
+                            <option value="slide-up">Deslizar hacia arriba</option>
+                            <option value="slide-down">Deslizar hacia abajo</option>
+                            <option value="zoom">Zoom</option>
+                          </select>
+                        </label>
+                        <label class="field">
+                          <span>Animación de salida</span>
+                          <select x-model="rewardForm.exitAnimation">
+                            <option value="none">Sin animación</option>
+                            <option value="fade">Desvanecer</option>
+                            <option value="slide-up">Deslizar hacia arriba</option>
+                            <option value="slide-down">Deslizar hacia abajo</option>
+                            <option value="zoom">Zoom</option>
+                          </select>
+                        </label>
+                      </div>
+                    </template>
                   </div>
                 </template>
               </div>
@@ -968,16 +1108,18 @@
           </div>
         </div>
       </div>
+      </template>
 
       <!-- ================= Confirmar borrado de recompensa ================= -->
-      <div class="modal" x-show="rewardDelete" x-cloak @click="cancelRewardDelete()">
+      <template x-if="rewardDelete">
+      <div class="modal" x-cloak @click="cancelRewardDelete()">
         <div class="modal-window modal-small" role="dialog" aria-modal="true" aria-label="Borrar recompensa" @click.stop>
           <div class="modal-head">
             <h2>Borrar recompensa</h2>
           </div>
           <div class="modal-body">
             <p>
-              ¿Borrar la recompensa <strong x-text="rewardDelete ? rewardDelete.reward.title : ''"></strong>? El clip no
+              ¿Borrar la recompensa <strong x-text="rewardDelete.reward.title"></strong>? El clip no
               se borra.
             </p>
           </div>
@@ -987,18 +1129,20 @@
           </div>
         </div>
       </div>
+      </template>
 
       <!-- ================= Canjes pendientes al desactivar o borrar ================= -->
-      <div class="modal" x-show="rewardPending" x-cloak @click="cancelRewardPending()">
+      <template x-if="rewardPending">
+      <div class="modal" x-cloak @click="cancelRewardPending()">
         <div class="modal-window modal-small" role="dialog" aria-modal="true" aria-label="Canjes pendientes" @click.stop>
           <div class="modal-head">
             <h2>Canjes pendientes</h2>
           </div>
           <div class="modal-body">
-            <p x-show="rewardPending && rewardPending.pending > 0">
-              Se rechazarán <strong x-text="rewardPending ? rewardPending.pending : 0"></strong> canjes pendientes.
+            <p x-show="rewardPending.pending > 0">
+              Se rechazarán <strong x-text="rewardPending.pending"></strong> canjes pendientes.
             </p>
-            <template x-if="rewardPending && rewardPending.failed && rewardPending.failed.length > 0">
+            <template x-if="rewardPending.failed && rewardPending.failed.length > 0">
               <div>
                 <p class="error">No se pudieron rechazar algunos canjes y no se aplicó el cambio:</p>
                 <ul class="pending-failed">
@@ -1015,6 +1159,7 @@
           </div>
         </div>
       </div>
+      </template>
     </div>
   </body>
 </html>

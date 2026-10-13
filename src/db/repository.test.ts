@@ -24,7 +24,7 @@ function sampleRule(overrides: Partial<RuleRecord> = {}): RuleRecord {
     name: "Alerta",
     enabled: true,
     trigger: { type: "chat_command", command: "alerta" },
-    conditions: { permission: "everyone", cooldownSec: 0, userCooldownSec: 0 },
+    conditions: { permission: "everyone" },
     action: { kind: "play_clip", clipId: "clip-1" },
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",

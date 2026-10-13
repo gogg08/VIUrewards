@@ -20,6 +20,7 @@ export type {
   RewardOperationError,
   RewardOperationResult,
   RewardPendingResult,
+  RewardRepetition,
   RewardState,
   RewardUpdateInput,
   RewardsSnapshot,

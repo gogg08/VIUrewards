@@ -137,7 +137,7 @@ export interface EventSourceCapabilities {
   resolve: boolean;
 }
 
-export type EventHandler = (event: NormalizedEvent) => void;
+export type EventHandler = (event: NormalizedEvent) => void | Promise<void>;
 
 export type ResolveOutcome = "accept" | "reject";
 

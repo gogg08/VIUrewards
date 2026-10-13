@@ -39,13 +39,15 @@ Una regla es trigger + condiciones + acción:
 
 - **Trigger**: tipo de evento y, según el tipo, `command` (comando de chat, con o
   sin `!`), `rewardId` (canje) o `minAmount` (subs/gifts/follows).
-- **Condiciones**: `permission` (`everyone` | `subs` | `mods`), `cooldownSec`
-  (global) y `userCooldownSec` (por usuario). Los cooldowns usan un **reloj
-  inyectable**, así que se testean sin esperar.
+- **Condiciones**: `permission` (`everyone` | `subs` | `mods`). El **cooldown ya no
+  vive en la regla**: es un atributo de la recompensa y lo aplica el despachador
+  del servidor (ver más abajo).
 - **Acción**: una implementación de la interfaz `RuleAction` (`kind` + `execute`).
   El motor **no depende** de ninguna acción concreta. La única acción es
   `PlayClip`: encola un clip fijo con sus parámetros (volumen, duración máxima,
-  posición, animaciones y el recorte ya existente).
+  posición, animaciones y el recorte ya existente). Una acción puede devolver
+  `{ fired: false, reason }` para omitir el evento con un motivo (p. ej. "sin
+  overlay conectado").
 
 ### Idempotencia
 
@@ -60,6 +62,64 @@ Si una regla falla, se registra el error (`outcome: "error"`) y el motor sigue c
 las demás. El resultado de procesar un evento es uno de:
 `fired` | `skipped` | `error` | `no_match` | `duplicate`, con un motivo cuando
 corresponde (`cooldown`, `sin permiso`, etc.).
+
+## Cooldown y superposición (rework, Parte B)
+
+El cooldown pasó de la regla a la **recompensa** y se reescribió para que sea
+predecible con canjes reales.
+
+### Causa del comportamiento errático anterior
+
+Con el diseño anterior, los canjes de un mismo ciclo de polling se procesaban en
+**paralelo**: `RuleEngine.handle` hacía `cooldowns.check()` → `await` (que podía
+resolver el canje por red) → `cooldowns.mark()`, así que dos canjes podían pasar
+la comprobación antes de que el primero marcara. Además el cooldown vivía **solo
+en memoria** y se perdía al reiniciar. (Se descartó como causa el uso del
+`redeemed_at` de la plataforma: el motor siempre usó el reloj local.)
+
+### Semántica
+
+- Cada recompensa tiene un **modo de repetición**: `queue` (esperar turno) u
+  `overlap` (superponer).
+- Solo hay **cooldown global por recompensa**, en segundos (0 = sin cooldown). El
+  cooldown por usuario se eliminó de todo el sistema.
+- El cooldown cuenta desde el momento en que la alerta **se dispara**, con un
+  único **reloj local inyectable**. No se usa el `redeemed_at` de la plataforma.
+- `last_fired_at` se persiste en la fila de la recompensa (clave: id local) y
+  sobrevive reinicios. Un `last_fired_at` en el futuro (cambio de hora) se
+  considera vencido. Editar, activar, desactivar, recrear en la plataforma o
+  cambiar el modo **no reinician** el cooldown; cambiar su duración se aplica desde
+  el `last_fired_at` existente.
+- La decisión es una **función pura** `decide(recompensa, ahora, lastFiredAt)` y la
+  comprobación + el registro son **una sola operación atómica** (sin `await` en el
+  medio), en `RewardDispatcher` (`src/server/reward-dispatch.ts`). Los canjes de un
+  mismo ciclo se procesan **de a uno**, ordenados por `redeemed_at`.
+- **Modo `queue`**: si dispara, se encola un `PlayClip` y el canje se acepta **al
+  encolar**. Si no, el canje queda omitido según la política global de omitidos,
+  con motivo `cooldown, faltan N s`.
+- **Modo `overlap`**: solo para clips de **solo audio**. Nunca lo bloquea un
+  cooldown, no entra en la cola y no lo afectan Saltar/Pausar/Reanudar/Vaciar. Al
+  dispararse, el servidor manda un `playAudio` fire-and-forget a los overlays; el
+  canje se acepta cuando el mensaje llegó a **al menos un overlay**. Si no hay
+  ninguno, queda omitido con el motivo `sin overlay conectado`; si el clip no
+es de solo audio, con `el clip no es de solo audio`. Al reconectar un overlay **no
+  se reenvía** nada.
+
+### Voces superpuestas en el overlay
+
+El overlay mantiene un **pool de voces** independiente del reproductor de video.
+Cada voz se libera al terminar, al llegar al recorte, a la duración máxima o por
+error; si al llegar un audio ya hay el máximo de voces, se corta la más antigua.
+El máximo simultáneo se configura en Ajustes → Alertas (`maxAudioVoices`, 1–20,
+por defecto 8). En el overlay cada voz es un `<video>` oculto: el medio es un mp4
+con audio y video, así que un `<video>` garantiza que el navegador decodifique el
+audio del contenedor (un `<audio>` dependería del soporte de mp4).
+
+### Historial
+
+El historial muestra `Disparó`, `Disparó · superpuesto` y los omitidos con el
+motivo exacto: `cooldown, faltan N s`, `sin overlay conectado`,
+`el clip no es de solo audio`.
 
 ## Persistencia
 

@@ -14,7 +14,7 @@ import Database from "better-sqlite3";
 export type SqliteDatabase = Database.Database;
 
 /** Cantidad de migraciones aplicadas; equivale al `user_version` esperado. */
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 9;
 
 interface LegacyRuleRow {
   id: string;
@@ -297,6 +297,24 @@ const MIGRATIONS: ReadonlyArray<(db: SqliteDatabase) => void> = [
   // provisorios a la API. Es genérico: la columna se llama `synced`, sin plataforma.
   (db) => {
     db.exec(`ALTER TABLE rewards ADD COLUMN synced INTEGER NOT NULL DEFAULT 0;`);
+  },
+  // Rework de cooldown y superposición (Parte B). El cooldown pasa a ser un dato
+  // de la recompensa (global, persistido en `last_fired_at` para sobrevivir
+  // reinicios) y se elimina el cooldown por usuario de todo el sistema. Se agrega
+  // el modo de repetición (`repetition`): "queue" (esperar turno) u "overlap"
+  // (superponer audios). Genérico: no menciona ninguna plataforma.
+  (db) => {
+    db.exec(`ALTER TABLE rewards ADD COLUMN repetition TEXT NOT NULL DEFAULT 'queue';`);
+    db.exec(`ALTER TABLE rewards ADD COLUMN last_fired_at INTEGER;`);
+    // Se descarta el cooldown por usuario (no hay datos que preservar de esa
+    // columna: deja de existir el concepto).
+    db.exec(`ALTER TABLE rewards DROP COLUMN user_cooldown_sec;`);
+  },
+  // Rework de superposición (Parte B, B4): marca de "solo audio" en los clips.
+  // Los clips de solo audio pueden usarse en modo overlap y se reproducen sin
+  // imagen en modo cola.
+  (db) => {
+    db.exec(`ALTER TABLE clips ADD COLUMN audio_only INTEGER NOT NULL DEFAULT 0;`);
   },
 ];
 

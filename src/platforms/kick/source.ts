@@ -191,7 +191,13 @@ export class KickEventSource implements EventSource {
         return true;
       });
       const names = await this.resolveNames(fresh.map((item) => item.redemption.redeemer.user_id));
-      for (const item of fresh) this.emitRedemption(item, names, checkedAt);
+      // Los canjes de un mismo ciclo se procesan DE A UNO, ordenados por
+      // `redeemed_at`: así la comprobación y el registro del cooldown son
+      // deterministas y dos canjes no entran en carrera.
+      const ordered = [...fresh].sort(
+        (a, b) => this.redeemedAt(a, checkedAt) - this.redeemedAt(b, checkedAt),
+      );
+      for (const item of ordered) await this.emitRedemption(item, names, checkedAt);
       this.failures = 0;
       this.stats.recordCheck(checkedAt, `OK: ${fresh.length} canje(s) nuevo(s)`, null);
     } catch (error) {
@@ -264,7 +270,16 @@ export class KickEventSource implements EventSource {
     }
   }
 
-  private emitRedemption(item: PendingItem, names: Map<string, string>, detectedAt: number): void {
+  private redeemedAt(item: PendingItem, fallback: number): number {
+    const parsed = Date.parse(item.redemption.redeemed_at);
+    return Number.isNaN(parsed) ? fallback : parsed;
+  }
+
+  private async emitRedemption(
+    item: PendingItem,
+    names: Map<string, string>,
+    detectedAt: number,
+  ): Promise<void> {
     const { redemption } = item;
     // Se marca como procesado ANTES de emitir: un reinicio no lo vuelve a disparar.
     markEventProcessed(this.db, KICK_PLATFORM, redemption.id, new Date(detectedAt).toISOString());
@@ -289,7 +304,7 @@ export class KickEventSource implements EventSource {
 
     for (const handler of [...this.handlers]) {
       try {
-        handler(event);
+        await handler(event);
       } catch (error) {
         this.logger?.(`kick: un handler falló al recibir el canje (${describeError(error)})`);
       }

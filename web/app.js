@@ -52,12 +52,15 @@ function dashboardApp() {
     dirtyTabs: {},
     // El punto de Descargas se pone rojo si hubo un error que todavía no se vio.
     downloadErrorUnseen: false,
+    // Modo del logo (Parte C): "auto" | "dynamic" | "static". Vive en localStorage.
+    logoMode: "auto",
 
     queue: { status: "idle", current: null, pending: [], size: 0, overlay: { connected: false, clients: 0 } },
 
     settings: {
       globalVolume: 100,
       defaultMaxDurationSec: 30,
+      maxAudioVoices: 8,
       watchdogMarginSec: 10,
       maxVideoDurationSec: 120,
       port: 8787,
@@ -288,6 +291,12 @@ function dashboardApp() {
       this.settingsTab = tab;
     },
 
+    // Modo del logo: se guarda en este navegador y se aplica al instante.
+    setLogoMode(mode) {
+      this.logoMode = mode;
+      VIULogo.writeMode(mode);
+    },
+
     setRightTab(tab) {
       this.rightTab = tab;
     },
@@ -335,6 +344,7 @@ function dashboardApp() {
     },
 
     async init() {
+      this.logoMode = VIULogo.readMode();
       await Promise.all([
         this.loadClips(),
         this.loadOverlay(),
@@ -477,6 +487,23 @@ function dashboardApp() {
       await this.saveTrim(clip);
     },
 
+    // Marca manual "solo audio" del clip (Parte B). El servidor la rechaza si
+    // alguna recompensa superpuesta usa el clip.
+    async toggleClipAudioOnly(clip) {
+      this.message = "";
+      const response = await api("/api/clips/" + encodeURIComponent(clip.id) + "/audio-only", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ audioOnly: !clip.audioOnly }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.ok) {
+        this.message = data.message || "No se pudo cambiar la marca de solo audio.";
+        return;
+      }
+      clip.audioOnly = data.clip.audioOnly;
+    },
+
     async play(clip) {
       this.message = "";
       const response = await api("/api/clips/" + encodeURIComponent(clip.id) + "/play", {
@@ -514,6 +541,11 @@ function dashboardApp() {
     async clearQueue() {
       await api("/api/clear", { method: "POST" });
       await this.loadQueue();
+    },
+
+    // Corta todas las voces superpuestas de los overlays conectados (Parte B).
+    async stopAudios() {
+      await api("/api/audio/stop", { method: "POST" });
     },
 
     // --- Overlay ---------------------------------------------------------------
@@ -575,6 +607,7 @@ function dashboardApp() {
         defaultMaxDurationSec: Number(this.settings.defaultMaxDurationSec),
         watchdogMarginSec: Number(this.settings.watchdogMarginSec),
         maxVideoDurationSec: Number(this.settings.maxVideoDurationSec),
+        maxAudioVoices: Number(this.settings.maxAudioVoices),
         maxVideoBytes: Math.round(Number(this.settingsForm.maxVideoMb) * BYTES_PER_MB),
         allowedDomains: domains,
         port: Number(this.settings.port),
@@ -888,16 +921,52 @@ function dashboardApp() {
     },
 
     // Nombre y duración del clip de una recompensa (para la tarjeta colapsada).
+    // Devuelve "" cuando no hay clip local (las recompensas de otra app no muestran
+    // nada del clip); "Clip no disponible" es sólo para una propia cuyo clip se borró.
     rewardClipLabel(reward) {
-      const clip = reward.clipId ? this.clipById(reward.clipId) : null;
+      if (!reward.clipId) return "";
+      const clip = this.clipById(reward.clipId);
       if (clip) return clip.title + " · " + this.formatDuration(clip.durationSec);
-      return reward.clipTitle ? reward.clipTitle : "Clip no disponible";
+      return "Clip no disponible";
     },
 
     // ¿El clip de la recompensa sigue existiendo en la biblioteca?
     rewardClipExists() {
       const form = this.rewardForm;
       return !!(form && form.clipId && this.clipById(form.clipId));
+    },
+
+    // ¿El clip elegido en el formulario es de solo audio?
+    rewardClipAudioOnly() {
+      const form = this.rewardForm;
+      if (!form || !form.clipId) return false;
+      const clip = this.clipById(form.clipId);
+      return !!(clip && clip.audioOnly);
+    },
+
+    // "Superponer" solo está disponible para clips de solo audio.
+    get rewardOverlapAllowed() {
+      return this.rewardClipAudioOnly();
+    },
+
+    // En modo superpuesto (o con un clip de solo audio) no hay imagen: se ocultan
+    // Posición y Animaciones.
+    get rewardNoVisual() {
+      if (!this.rewardForm) return false;
+      return this.rewardForm.repetition === "overlap" || this.rewardClipAudioOnly();
+    },
+
+    setRewardRepetition(mode) {
+      if (!this.rewardForm) return;
+      if (mode === "overlap" && !this.rewardOverlapAllowed) return;
+      this.rewardForm.repetition = mode === "overlap" ? "overlap" : "queue";
+    },
+
+    // Texto secundario de la tarjeta colapsada: modo de repetición.
+    rewardModeLabel(reward) {
+      if (reward.repetition === "overlap") return "superpuesto";
+      const seconds = Number(reward.cooldownSec) || 0;
+      return seconds > 0 ? "cooldown " + seconds + " s" : "";
     },
 
     rewardStateLabel(reward) {
@@ -992,7 +1061,7 @@ function dashboardApp() {
         volumePercent: 100,
         maxDurationSec: null,
         cooldownSec: 0,
-        userCooldownSec: 0,
+        repetition: "queue",
         positionX: 50,
         positionY: 50,
         enterAnimation: "none",
@@ -1022,7 +1091,7 @@ function dashboardApp() {
         volumePercent: Math.round((reward.volume ?? 1) * 100),
         maxDurationSec: reward.maxDurationSec ?? null,
         cooldownSec: reward.cooldownSec ?? 0,
-        userCooldownSec: reward.userCooldownSec ?? 0,
+        repetition: reward.repetition ?? "queue",
         positionX: reward.position ? Math.round(reward.position.x * 100) : 50,
         positionY: reward.position ? Math.round(reward.position.y * 100) : 50,
         enterAnimation: reward.enterAnimation ?? "none",
@@ -1063,6 +1132,12 @@ function dashboardApp() {
       this.rewardExpanded = true;
       if (!this.rewardTitleTouched) {
         this.rewardForm.title = clip.suggestedTitle || clip.title;
+      }
+      // Si estaba en "Superponer" y el nuevo clip no es de solo audio, vuelve a
+      // "Esperar turno" y se avisa en la ventana.
+      if (this.rewardForm.repetition === "overlap" && !clip.audioOnly) {
+        this.rewardForm.repetition = "queue";
+        this.rewardMessage = 'El clip elegido no es de solo audio: se cambió a "Esperar turno".';
       }
     },
 
@@ -1117,8 +1192,8 @@ function dashboardApp() {
         clipId: String(form.clipId),
         volume: Math.min(1, Math.max(0, (numberOrNull(form.volumePercent) ?? 100) / 100)),
         maxDurationSec: numberOrNull(form.maxDurationSec),
-        cooldownSec: Math.round(Number(form.cooldownSec) || 0),
-        userCooldownSec: Math.round(Number(form.userCooldownSec) || 0),
+        cooldownSec: form.repetition === "overlap" ? 0 : Math.round(Number(form.cooldownSec) || 0),
+        repetition: form.repetition === "overlap" ? "overlap" : "queue",
         position: this.rewardFormPosition(),
         enterAnimation: form.enterAnimation || "none",
         exitAnimation: form.exitAnimation || "none",
@@ -1164,6 +1239,7 @@ function dashboardApp() {
         body: JSON.stringify({
           volume: Math.min(1, Math.max(0, (numberOrNull(form.volumePercent) ?? 100) / 100)),
           maxDurationSec: numberOrNull(form.maxDurationSec) ?? undefined,
+          repetition: form.repetition === "overlap" ? "overlap" : "queue",
           position: this.rewardFormPosition(),
           enterAnimation: form.enterAnimation || "none",
           exitAnimation: form.exitAnimation || "none",
@@ -1392,10 +1468,10 @@ function dashboardApp() {
       }
     },
 
-    outcomeLabel(outcome) {
-      switch (outcome) {
+    outcomeLabel(entry) {
+      switch (entry.outcome) {
         case "fired":
-          return "Disparó";
+          return entry.reason === "superpuesto" ? "Disparó · superpuesto" : "Disparó";
         case "skipped":
           return "Omitido";
         case "error":
@@ -1405,7 +1481,7 @@ function dashboardApp() {
         case "duplicate":
           return "Duplicado";
         default:
-          return String(outcome);
+          return String(entry.outcome);
       }
     },
 

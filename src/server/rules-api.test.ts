@@ -12,7 +12,7 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { openMemoryDatabase, upsertClip } from "../db/index.ts";
+import { openMemoryDatabase, upsertClip, upsertReward, type ClipRecord, type RewardRecord } from "../db/index.ts";
 import type { ProcessResult, RunProcess } from "../media/run-process.ts";
 import type { RuleRecord } from "../db/index.ts";
 import { createServer, type AppServer } from "./server.ts";
@@ -102,8 +102,52 @@ function playRuleBody(overrides: Record<string, unknown> = {}): Record<string, u
     name: "Alerta de comando",
     enabled: true,
     trigger: { type: "chat_command", command: "alerta" },
-    conditions: { permission: "everyone", cooldownSec: 0, userCooldownSec: 0 },
+    conditions: { permission: "everyone" },
     action: { kind: "play_clip", clipId: "clip-1" },
+    ...overrides,
+  };
+}
+
+function clipRecord(id: string, audioOnly = false): ClipRecord {
+  return {
+    id,
+    sourceUrl: "https://www.youtube.com/watch?v=x",
+    title: id,
+    durationSec: 10,
+    sizeBytes: 1,
+    file: `${id}.mp4`,
+    createdAt: new Date().toISOString(),
+    trimStart: null,
+    trimEnd: null,
+    audioOnly,
+  };
+}
+
+function rewardRecord(overrides: Partial<RewardRecord> = {}): RewardRecord {
+  return {
+    id: "reward-1",
+    platform: "fake",
+    remoteRewardId: "rw-1",
+    title: "Mi recompensa",
+    cost: 100,
+    color: "#00e701",
+    description: "",
+    clipId: "clip-1",
+    volume: 1,
+    maxDurationSec: null,
+    cooldownSec: 0,
+    repetition: "queue",
+    lastFiredAt: null,
+    position: null,
+    enterAnimation: null,
+    exitAnimation: null,
+    desiredEnabled: true,
+    managed: true,
+    synced: true,
+    ruleId: null,
+    lastError: null,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
     ...overrides,
   };
 }
@@ -211,7 +255,7 @@ describe("disparo de reglas por eventos simulados", () => {
 
   it("respeta el permiso: un evento sin roles no dispara", async () => {
     const ctx = await withServer();
-    await postJson(ctx, "/api/rules", playRuleBody({ conditions: { permission: "mods", cooldownSec: 0, userCooldownSec: 0 } }));
+    await postJson(ctx, "/api/rules", playRuleBody({ conditions: { permission: "mods" } }));
 
     await postJson(ctx, "/api/simulate", { type: "chat_command", command: "alerta", userName: "Ana", userId: "u1" });
 
@@ -254,8 +298,46 @@ describe("API de clips", () => {
       createdAt: new Date().toISOString(),
       trimStart: null,
       trimEnd: null,
+      audioOnly: false,
     });
     const clips = (await ctx.server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie: ctx.cookie } })).json();
     expect(clips.clips[0].id).toBe("clip-x");
+  });
+
+  it("marca y desmarca un clip como solo audio", async () => {
+    const ctx = await withServer();
+    upsertClip(ctx.server.db, clipRecord("clip-a"));
+
+    const on = await postJson(ctx, "/api/clips/clip-a/audio-only", { audioOnly: true });
+    expect(on.statusCode).toBe(200);
+    expect((on.json.clip as { audioOnly: boolean }).audioOnly).toBe(true);
+
+    const off = await postJson(ctx, "/api/clips/clip-a/audio-only", { audioOnly: false });
+    expect(off.statusCode).toBe(200);
+    expect((off.json.clip as { audioOnly: boolean }).audioOnly).toBe(false);
+  });
+
+  it("no deja quitar 'solo audio' si una recompensa superpuesta usa el clip", async () => {
+    const ctx = await withServer();
+    upsertClip(ctx.server.db, clipRecord("clip-b", true));
+    upsertReward(
+      ctx.server.db,
+      rewardRecord({ id: "ov", clipId: "clip-b", repetition: "overlap", title: "Superpuesta" }),
+    );
+
+    const response = await postJson(ctx, "/api/clips/clip-b/audio-only", { audioOnly: false });
+    expect(response.statusCode).toBe(409);
+    expect(response.json.reason).toBe("CLIP_IN_OVERLAP_USE");
+    expect((response.json.rewards as Array<{ title: string }>)[0].title).toBe("Superpuesta");
+  });
+
+  it("deja quitar 'solo audio' si la recompensa que lo usa espera turno", async () => {
+    const ctx = await withServer();
+    upsertClip(ctx.server.db, clipRecord("clip-c", true));
+    upsertReward(ctx.server.db, rewardRecord({ id: "q", clipId: "clip-c", repetition: "queue" }));
+
+    const response = await postJson(ctx, "/api/clips/clip-c/audio-only", { audioOnly: false });
+    expect(response.statusCode).toBe(200);
+    expect((response.json.clip as { audioOnly: boolean }).audioOnly).toBe(false);
   });
 });

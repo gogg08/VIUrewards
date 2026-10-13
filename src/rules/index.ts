@@ -9,12 +9,11 @@ export {
   ruleMatches,
 } from "./matching.ts";
 
-export { CooldownTracker, type CooldownResult } from "./cooldown.ts";
+export { decide, MemoryCooldownGate, type CooldownDecision, type CooldownGate } from "./cooldown.ts";
 
 export { defaultActionResolver } from "./actions.ts";
 
 export {
-  MAX_COOLDOWN_SEC,
   MAX_MIN_AMOUNT,
   MAX_RULE_NAME_LENGTH,
   PERMISSIONS,
@@ -39,6 +38,7 @@ export type {
   RuleAction,
   RuleActionConfig,
   RuleActionContext,
+  RuleActionOutcome,
   RuleConditions,
   RuleTrigger,
 } from "./types.ts";

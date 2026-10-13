@@ -1,10 +1,13 @@
 /**
- * Motor de reglas (Fase 4A).
+ * Motor de reglas (Fase 4A; rework de cooldown en la Parte B).
  *
  * Recibe eventos normalizados y decide qué regla dispara y qué acción ejecuta.
  * No conoce plataformas ni acciones concretas: las acciones se construyen con la
- * fábrica inyectada. La idempotencia por `event.id` es necesaria porque más
- * adelante los canjes llegan por polling y un mismo evento puede repetirse.
+ * fábrica inyectada. La idempotencia por `event.id` es necesaria porque los
+ * canjes llegan por polling y un mismo evento puede repetirse.
+ *
+ * El cooldown ya NO vive acá: es un atributo de la recompensa, aplicado por el
+ * despachador de recompensas del servidor (que además decide queue vs overlap).
  *
  * Aislamiento de errores: si una regla falla, se registra y el motor sigue.
  */
@@ -12,9 +15,8 @@
 import type { EventType, NormalizedEvent } from "../events/index.ts";
 import type { EnqueueSink } from "../queue/index.ts";
 import { defaultActionResolver } from "./actions.ts";
-import { CooldownTracker } from "./cooldown.ts";
 import { hasPermission, matchesTrigger } from "./matching.ts";
-import type { ActionResolver, Rule, RuleActionContext } from "./types.ts";
+import type { ActionResolver, Rule, RuleActionContext, RuleActionOutcome } from "./types.ts";
 
 export type EngineOutcome = "fired" | "skipped" | "error" | "no_match" | "duplicate";
 
@@ -25,7 +27,7 @@ export interface EngineResult {
   outcome: EngineOutcome;
   /** Regla que disparó, o que se evaluó y no disparó. */
   ruleId?: string;
-  /** Motivo cuando no disparó: "cooldown", "sin permiso", mensaje de error, etc. */
+  /** Motivo cuando no disparó: "sin permiso", "cooldown, faltan N s", etc. */
   reason?: string;
 }
 
@@ -38,8 +40,6 @@ export interface EngineLogEntry {
 
 export interface RuleEngineOptions {
   queue: EnqueueSink;
-  /** Reloj inyectable para cooldowns. */
-  now?: () => number;
   /** Máximo de ids de eventos recordados para idempotencia. */
   maxRecentEventIds?: number;
   /** Resuelve el evento de origen (accept/reject) si la plataforma lo soporta. */
@@ -54,7 +54,6 @@ const DEFAULT_MAX_RECENT = 500;
 export class RuleEngine {
   private rules: Rule[] = [];
   private readonly queue: EnqueueSink;
-  private readonly cooldowns: CooldownTracker;
   private readonly resolveAction: ActionResolver;
   private readonly resolveEvent?: (event: NormalizedEvent, outcome: "accept" | "reject") => Promise<void>;
   private readonly logger?: (entry: EngineLogEntry) => void;
@@ -65,7 +64,6 @@ export class RuleEngine {
 
   constructor(options: RuleEngineOptions) {
     this.queue = options.queue;
-    this.cooldowns = new CooldownTracker(options.now);
     this.resolveAction = options.resolveAction ?? defaultActionResolver;
     this.resolveEvent = options.resolveEvent;
     this.logger = options.logger;
@@ -75,7 +73,6 @@ export class RuleEngine {
   /** Reemplaza el conjunto de reglas; se evalúan en el orden dado. */
   setRules(rules: Rule[]): void {
     this.rules = [...rules];
-    this.cooldowns.prune(new Set(rules.map((rule) => rule.id)));
   }
 
   getRules(): Rule[] {
@@ -112,14 +109,6 @@ export class RuleEngine {
         continue;
       }
 
-      const cooldown = this.cooldowns.check(rule.id, event.user.id, rule.conditions);
-      if (!cooldown.allowed) {
-        const reason = `cooldown (${cooldown.remainingSec} s)`;
-        last = { ...base, outcome: "skipped", ruleId: rule.id, reason };
-        this.log({ kind: "skipped", eventId: event.id, ruleId: rule.id, detail: reason });
-        continue;
-      }
-
       const context: RuleActionContext = {
         event,
         queue: this.queue,
@@ -127,8 +116,13 @@ export class RuleEngine {
       };
 
       try {
-        await this.resolveAction(rule.action).execute(context);
-        this.cooldowns.mark(rule.id, event.user.id, rule.conditions);
+        const outcome: void | RuleActionOutcome = await this.resolveAction(rule.action).execute(context);
+        if (outcome && outcome.fired === false) {
+          const reason = outcome.reason ?? "la acción no disparó";
+          last = { ...base, outcome: "skipped", ruleId: rule.id, reason };
+          this.log({ kind: "skipped", eventId: event.id, ruleId: rule.id, detail: reason });
+          continue;
+        }
         const result: EngineResult = { ...base, outcome: "fired", ruleId: rule.id };
         this.log({ kind: "fired", eventId: event.id, ruleId: rule.id });
         return result;

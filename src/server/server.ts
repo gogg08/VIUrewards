@@ -28,10 +28,12 @@ import {
   getRuleRecord,
   listClips,
   listHistory,
+  listOverlapRewardsUsingClip,
   listRewardsUsingClip,
   listRules,
   openMemoryDatabase,
   renameClip,
+  setClipAudioOnly,
   setClipTrim,
   setSetting,
   SETTING_OVERLAY_KEY,
@@ -67,6 +69,8 @@ import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index
 import { ANIMATION_NAMES, suggestedTitle } from "../rewards/index.ts";
 import { registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
 import { registerRewardApiRoutes } from "./rewards-routes.ts";
+import { clipUrl } from "./protocol.ts";
+import { RewardDispatcher } from "./reward-dispatch.ts";
 import { attachWebSocket } from "./ws.ts";
 
 export type { MediaPassthroughOptions } from "./jobs.ts";
@@ -148,6 +152,7 @@ interface PlayBody {
   position?: { x: number; y: number } | null;
   enterAnimation?: AnimationName | null;
   exitAnimation?: AnimationName | null;
+  repetition?: "queue" | "overlap";
 }
 
 const enqueueSchema = {
@@ -184,6 +189,7 @@ const playSchema = {
     },
     enterAnimation: { type: ["string", "null"], enum: [...ANIMATION_NAMES, null] },
     exitAnimation: { type: ["string", "null"], enum: [...ANIMATION_NAMES, null] },
+    repetition: { type: "string", enum: ["queue", "overlap"] },
   },
 } as const;
 
@@ -196,6 +202,7 @@ const settingsSchema = {
     maxVideoDurationSec: { type: "integer", minimum: 1, maximum: 3600 },
     maxVideoBytes: { type: "integer", minimum: 1048576, maximum: 2147483648 },
     watchdogMarginSec: { type: "integer", minimum: 1, maximum: 120 },
+    maxAudioVoices: { type: "integer", minimum: 1, maximum: 20 },
     allowedDomains: {
       type: "array",
       minItems: 1,
@@ -231,8 +238,6 @@ const ruleSchema = {
       additionalProperties: false,
       properties: {
         permission: { type: "string", enum: ["everyone", "subs", "mods"] },
-        cooldownSec: { type: "integer", minimum: 0, maximum: 86400 },
-        userCooldownSec: { type: "integer", minimum: 0, maximum: 86400 },
       },
     },
     action: {
@@ -352,6 +357,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         createdAt: new Date().toISOString(),
         trimStart: null,
         trimEnd: null,
+        audioOnly: false,
       });
     },
   });
@@ -389,15 +395,18 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   const sources: EventSource[] = [manualSource, simulatedSource];
   for (const integration of integrations) sources.push(integration.source);
 
+  // La resolución del evento de origen (accept/reject) es la misma para el motor
+  // (PlayClip acepta al encolar) y para el despachador (overlap acepta al enviar).
+  const resolveSource = async (event: NormalizedEvent, outcome: "accept" | "reject"): Promise<void> => {
+    const source = sources.find(
+      (item) => item.platform === event.platform && typeof item.resolve === "function",
+    );
+    if (source?.resolve) await source.resolve(event.id, outcome);
+  };
+
   const engine = new RuleEngine({
     queue,
-    now: options.now,
-    resolveEvent: async (event, outcome) => {
-      const source = sources.find(
-        (item) => item.platform === event.platform && typeof item.resolve === "function",
-      );
-      if (source?.resolve) await source.resolve(event.id, outcome);
-    },
+    resolveEvent: resolveSource,
     logger: debug
       ? (entry) =>
           console.log(
@@ -409,7 +418,10 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   });
   engine.setRules(listRules(db).map(toRule));
 
-  const recordHistory = async (event: NormalizedEvent, result: EngineResult): Promise<void> => {
+  const recordHistory = async (
+    event: NormalizedEvent,
+    result: EngineResult & { overlap?: boolean },
+  ): Promise<void> => {
     const settings = readSettings(db);
     addHistory(
       db,
@@ -423,7 +435,9 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         eventTs: event.timestamp,
         ruleId: result.ruleId ?? null,
         outcome: result.outcome,
-        reason: result.reason ?? null,
+        // En modo superpuesto, un "fired" se marca en `reason` para que el
+        // historial muestre "Disparó · superpuesto" (no hay columna extra).
+        reason: result.reason ?? (result.outcome === "fired" && result.overlap ? "superpuesto" : null),
         createdAt: new Date().toISOString(),
       },
       settings.eventHistoryMax,
@@ -437,6 +451,21 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
   // Coordinador del ciclo de vida de los canjes (Fase 4B). Solo se usa para
   // fuentes que soportan `resolve` (canjes que quedan pendientes hasta resolverlos).
+  // El procesamiento pasa por el despachador de recompensas (Parte B): aplica el
+  // cooldown global de la recompensa y el modo superpuesto antes del motor.
+  const dispatcher = new RewardDispatcher({
+    db,
+    engine,
+    now: () => options.now?.() ?? Date.now(),
+    broadcastAudio: (audio) => hub.broadcastAudio(audio),
+    resolveEvent: resolveSource,
+    mediaUrl: (clipId) => `${clipUrl(clipId)}?key=${encodeURIComponent(overlayKey)}`,
+    globalVolume: () => readSettings(db).globalVolume,
+    defaultMaxDuration: () => readSettings(db).defaultMaxDurationSec,
+    maxVoices: () => readSettings(db).maxAudioVoices,
+    logger: debug ? (message) => console.log(`[dispatch] ${message}`) : undefined,
+  });
+
   const coordinator = new RedemptionCoordinator({
     db,
     policy: () => {
@@ -447,17 +476,11 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         oldAction: settings.redemptionsOldAction,
       };
     },
-    resolve: async (event, outcome) => {
-      const source = sources.find(
-        (item) => item.platform === event.platform && typeof item.resolve === "function",
-      );
-      if (source?.resolve) await source.resolve(event.id, outcome);
-    },
+    resolve: resolveSource,
     process: async (event): Promise<ProcessOutcome> => {
-      // Un canje puede reprocesarse a mano: el motor olvida el id para volver a
-      // evaluarlo (la idempotencia persistente ya se aplica en la fuente).
-      engine.forget(event.id);
-      const result = await engine.handle(event);
+      // Un canje puede reprocesarse a mano: el despachador olvida el id del motor
+      // para volver a evaluarlo (la idempotencia persistente ya se aplica en la fuente).
+      const result = await dispatcher.process(event);
       await recordHistory(event, result);
       switch (result.outcome) {
         case "fired":
@@ -475,14 +498,14 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
   for (const source of sources) {
     // Los canjes que la plataforma deja pendientes pasan por el coordinador; el
-    // resto de los eventos (locales) van directo al motor.
+    // resto de los eventos (locales) van directo al motor. Se devuelve la promesa
+    // para que la fuente pueda procesar los canjes de un mismo ciclo de a uno.
     const resolvable = typeof source.resolve === "function";
     source.onEvent((event) => {
       if (event.type === "reward_redeemed" && resolvable) {
-        void coordinator.receive(event);
-      } else {
-        void recordEvent(event);
+        return coordinator.receive(event).then(() => undefined);
       }
+      return recordEvent(event);
     });
   }
 
@@ -698,6 +721,12 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       state: queue.getState(),
     }));
 
+    // Corta todas las voces superpuestas de los overlays conectados.
+    api.post("/api/audio/stop", async () => {
+      hub.stopAudio();
+      return { ok: true };
+    });
+
     // Descarga en segundo plano (reemplaza el enqueue por URL).
     api.post<{ Body: { url: string } }>(
       "/api/download",
@@ -785,6 +814,31 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         }
 
         const settings = readSettings(db);
+
+        // "Probar alerta" en modo superpuesto: un audio fire-and-forget al overlay.
+        if (body.repetition === "overlap") {
+          if (!clip.audioOnly) {
+            return reply
+              .code(409)
+              .send({ ok: false, message: "Elegí un clip de solo audio para probar en modo superpuesto." });
+          }
+          const sent = hub.broadcastAudio({
+            id: `test-${Date.now().toString(36)}`,
+            url: `${clipUrl(clip.id)}?key=${encodeURIComponent(overlayKey)}`,
+            volume: (request.body?.volume ?? 1) * (settings.globalVolume / 100),
+            trimStart: trim.trimStart,
+            trimEnd: trim.trimEnd,
+            maxDurationSec: request.body?.maxDurationSec ?? settings.defaultMaxDurationSec,
+            maxVoices: settings.maxAudioVoices,
+          });
+          if (sent === 0) {
+            return reply
+              .code(409)
+              .send({ ok: false, message: "No hay ningún overlay conectado. Revisá la fuente en OBS." });
+          }
+          return { ok: true, audio: true };
+        }
+
         const item = queue.enqueue({
           clipId: clip.id,
           priority: request.body?.priority,
@@ -829,6 +883,45 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         // se guarda igual (reproduce desde ahí hasta el final).
         const hasTrim = trim.trimStart !== 0 || trim.trimEnd !== null;
         setClipTrim(db, clip.id, hasTrim ? trim.trimStart : null, trim.trimEnd);
+        return { ok: true, clip: getClip(db, clip.id) };
+      },
+    );
+
+    // Marca manual "solo audio" (Parte B). No se puede quitar si alguna recompensa
+    // en modo superpuesto usa este clip (ese modo solo admite solo-audio).
+    api.post<{ Params: { id: string }; Body: { audioOnly: boolean } }>(
+      "/api/clips/:id/audio-only",
+      {
+        schema: {
+          body: {
+            type: "object",
+            additionalProperties: false,
+            required: ["audioOnly"],
+            properties: { audioOnly: { type: "boolean" } },
+          },
+        },
+      },
+      async (request, reply) => {
+        const clip = getClip(db, request.params.id);
+        if (!clip) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+
+        if (request.body.audioOnly === false) {
+          const overlap = listOverlapRewardsUsingClip(db, clip.id);
+          if (overlap.length > 0) {
+            const names = overlap.map((reward) => reward.title).join(", ");
+            return reply.code(409).send({
+              ok: false,
+              reason: "CLIP_IN_OVERLAP_USE",
+              message:
+                overlap.length === 1
+                  ? `No se puede quitar "solo audio": lo usa la recompensa superpuesta ${names}.`
+                  : `No se puede quitar "solo audio": lo usan las recompensas superpuestas ${names}.`,
+              rewards: overlap.map((reward) => ({ id: reward.id, title: reward.title })),
+            });
+          }
+        }
+
+        setClipAudioOnly(db, clip.id, request.body.audioOnly);
         return { ok: true, clip: getClip(db, clip.id) };
       },
     );
