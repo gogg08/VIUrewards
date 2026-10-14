@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
+import Database from "better-sqlite3";
 
+import { migrate } from "./database.ts";
 import {
   deleteClip,
   getClip,
@@ -44,7 +46,7 @@ function sampleClip(overrides: Partial<ClipRecord> = {}): ClipRecord {
     createdAt: "2026-01-01T00:00:00.000Z",
     trimStart: null,
     trimEnd: null,
-    audioOnly: false,
+    hasVideo: true,
     ...overrides,
   };
 }
@@ -83,6 +85,66 @@ describe("migraciones", () => {
       .all()
       .map((row) => (row as { name: string }).name);
     expect(clipColumns).toContain("audio_only");
+  });
+
+  it("la migración v10 agrega rewards.audio_only y clips.has_video", () => {
+    const db = openMemoryDatabase();
+    const rewardColumns = db
+      .prepare("PRAGMA table_info(rewards)")
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(rewardColumns).toContain("audio_only");
+    const clipColumns = db
+      .prepare("PRAGMA table_info(clips)")
+      .all()
+      .map((row) => (row as { name: string }).name);
+    expect(clipColumns).toContain("has_video");
+  });
+
+  it("la migración v10 marca audio_only en las recompensas superpuestas y con clip sin imagen", () => {
+    // Se parte de una base en user_version 9 (con clips.audio_only y sin rewards.audio_only).
+    const db = new Database(":memory:");
+    db.exec(`
+      CREATE TABLE clips (
+        id TEXT PRIMARY KEY, source_url TEXT NOT NULL, title TEXT NOT NULL,
+        duration_sec INTEGER NOT NULL DEFAULT 0, size_bytes INTEGER NOT NULL DEFAULT 0,
+        file TEXT NOT NULL, created_at TEXT NOT NULL, trim_start REAL, trim_end REAL,
+        audio_only INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE TABLE rewards (
+        id TEXT PRIMARY KEY, platform TEXT NOT NULL, remote_reward_id TEXT,
+        title TEXT NOT NULL, cost INTEGER NOT NULL DEFAULT 1,
+        color TEXT NOT NULL DEFAULT '#00e701', description TEXT NOT NULL DEFAULT '',
+        clip_id TEXT, volume REAL NOT NULL DEFAULT 1, max_duration_sec INTEGER,
+        cooldown_sec INTEGER NOT NULL DEFAULT 0, repetition TEXT NOT NULL DEFAULT 'queue',
+        last_fired_at INTEGER, position_json TEXT, enter_animation TEXT, exit_animation TEXT,
+        desired_enabled INTEGER NOT NULL DEFAULT 1, managed INTEGER NOT NULL DEFAULT 1,
+        synced INTEGER NOT NULL DEFAULT 0, rule_id TEXT, last_error TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+      );
+      INSERT INTO clips VALUES ('v', 'u', 'video', 10, 1, 'v.mp4', 'now', NULL, NULL, 0);
+      INSERT INTO clips VALUES ('a', 'u', 'audio', 10, 1, 'a.mp4', 'now', NULL, NULL, 1);
+      INSERT INTO rewards (id, platform, title, clip_id, repetition, created_at, updated_at)
+        VALUES ('ov', 'p', 'Ov', 'v', 'overlap', 'now', 'now');
+      INSERT INTO rewards (id, platform, title, clip_id, repetition, created_at, updated_at)
+        VALUES ('mk', 'p', 'Mk', 'a', 'queue', 'now', 'now');
+      INSERT INTO rewards (id, platform, title, clip_id, repetition, created_at, updated_at)
+        VALUES ('pl', 'p', 'Pl', 'v', 'queue', 'now', 'now');
+      PRAGMA user_version = 9;
+    `);
+
+    migrate(db);
+
+    const rows = db
+      .prepare<{ id: string; audio_only: number }>("SELECT id, audio_only FROM rewards ORDER BY id")
+      .all();
+    expect(rows).toEqual([
+      { id: "mk", audio_only: 1 },
+      { id: "ov", audio_only: 1 },
+      { id: "pl", audio_only: 0 },
+    ]);
+    // Todos los clips existentes conservan imagen.
+    expect(db.pragma("user_version", { simple: true })).toBe(SCHEMA_VERSION);
   });
 });
 
@@ -141,14 +203,14 @@ describe("clips", () => {
     expect(setClipTrim(db, "inexistente", 0, 1)).toBe(false);
   });
 
-  it("guarda la marca de solo audio y no la pisa al reinsertar (caché)", () => {
+  it("guarda si el clip tiene imagen y no lo pisa al reinsertar (caché)", () => {
     const db = openMemoryDatabase();
-    upsertClip(db, sampleClip({ audioOnly: true }));
-    expect(getClip(db, "abc")?.audioOnly).toBe(true);
+    upsertClip(db, sampleClip({ hasVideo: false }));
+    expect(getClip(db, "abc")?.hasVideo).toBe(false);
 
-    // Reprocesar la misma URL (audioOnly en falso por defecto) no debe quitarla.
+    // Reprocesar la misma URL (hasVideo en verdadero por defecto) no debe pisarlo.
     upsertClip(db, sampleClip({ sizeBytes: 999 }));
-    expect(getClip(db, "abc")?.audioOnly).toBe(true);
+    expect(getClip(db, "abc")?.hasVideo).toBe(false);
   });
 });
 

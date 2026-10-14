@@ -30,6 +30,7 @@ export interface NormalizedRewardInput {
   maxDurationSec?: number | null;
   cooldownSec?: number;
   repetition?: RewardRepetition;
+  audioOnly?: boolean;
   position?: { x: number; y: number } | null;
   enterAnimation?: AnimationName | null;
   exitAnimation?: AnimationName | null;
@@ -133,6 +134,11 @@ export function normalizeRewardInput(input: unknown): RewardValidation {
       return fail("El modo de repetición no es válido.");
     }
     out.repetition = input.repetition;
+  }
+
+  if (input.audioOnly !== undefined) {
+    if (typeof input.audioOnly !== "boolean") return fail("La opción de solo audio no es válida.");
+    out.audioOnly = input.audioOnly;
   }
 
   if (input.position !== undefined) {

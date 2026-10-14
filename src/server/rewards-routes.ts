@@ -34,6 +34,9 @@ const playbackProperties = {
   maxDurationSec: { type: ["number", "null"], minimum: 1 },
   cooldownSec: { type: "integer", minimum: 0, maximum: 86400 },
   repetition: { type: "string", enum: ["queue", "overlap"] },
+  // Informativo: el servidor recalcula el valor efectivo (Superponer y los clips
+  // sin imagen fuerzan "solo audio").
+  audioOnly: { type: "boolean" },
   position: {
     type: ["object", "null"],
     additionalProperties: false,

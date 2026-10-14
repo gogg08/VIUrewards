@@ -97,13 +97,19 @@ en memoria** y se perdía al reiniciar. (Se descartó como causa el uso del
 - **Modo `queue`**: si dispara, se encola un `PlayClip` y el canje se acepta **al
   encolar**. Si no, el canje queda omitido según la política global de omitidos,
   con motivo `cooldown, faltan N s`.
-- **Modo `overlap`**: solo para clips de **solo audio**. Nunca lo bloquea un
+- **Modo `overlap`**: **siempre es solo audio** (el interruptor "Solo audio" queda encendido y bloqueado). Nunca lo bloquea un
   cooldown, no entra en la cola y no lo afectan Saltar/Pausar/Reanudar/Vaciar. Al
   dispararse, el servidor manda un `playAudio` fire-and-forget a los overlays; el
   canje se acepta cuando el mensaje llegó a **al menos un overlay**. Si no hay
-  ninguno, queda omitido con el motivo `sin overlay conectado`; si el clip no
-es de solo audio, con `el clip no es de solo audio`. Al reconectar un overlay **no
+  ninguno, queda omitido con el motivo `sin overlay conectado`; si la recompensa
+  no tiene clip, con `sin clip`. Al reconectar un overlay **no
   se reenvía** nada.
+
+**"Solo audio" es una opción de la recompensa** (`rewards.audio_only`), no una
+marca del clip. El modo `overlap` la fuerza; un clip sin imagen también la fuerza
+(`clips.has_video = 0`). En modo `queue`, un clip sin imagen suena igual: el
+overlay reproduce el medio sin mostrar la imagen. `clips.audio_only` quedó en
+desuso (no se lee).
 
 ### Voces superpuestas en el overlay
 
@@ -118,8 +124,7 @@ audio del contenedor (un `<audio>` dependería del soporte de mp4).
 ### Historial
 
 El historial muestra `Disparó`, `Disparó · superpuesto` y los omitidos con el
-motivo exacto: `cooldown, faltan N s`, `sin overlay conectado`,
-`el clip no es de solo audio`.
+motivo exacto: `cooldown, faltan N s`, `sin overlay conectado`, `sin clip`.
 
 ## Persistencia
 

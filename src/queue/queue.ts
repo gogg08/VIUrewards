@@ -32,6 +32,8 @@ export interface ClipPlaybackParams {
   position: OverlayPosition;
   enterAnimation: AnimationName;
   exitAnimation: AnimationName;
+  /** La alerta suena sin mostrar imagen (clip de solo audio). */
+  audioOnly: boolean;
 }
 
 export interface QueueItem {
@@ -59,6 +61,8 @@ export interface EnqueueInput {
   position?: OverlayPosition;
   enterAnimation?: AnimationName;
   exitAnimation?: AnimationName;
+  /** Suena sin mostrar imagen (clip de solo audio). */
+  audioOnly?: boolean;
   label?: string;
 }
 
@@ -80,6 +84,7 @@ export const DEFAULT_PLAYBACK_PARAMS: ClipPlaybackParams = {
   position: { x: 0.5, y: 0.5 },
   enterAnimation: "fade",
   exitAnimation: "fade",
+  audioOnly: false,
 };
 
 /** Códigos de error de entrada de la cola. */
@@ -114,6 +119,7 @@ function resolveParams(input: EnqueueInput): ClipPlaybackParams {
     },
     enterAnimation: input.enterAnimation ?? DEFAULT_PLAYBACK_PARAMS.enterAnimation,
     exitAnimation: input.exitAnimation ?? DEFAULT_PLAYBACK_PARAMS.exitAnimation,
+    audioOnly: input.audioOnly === true,
   };
 }
 

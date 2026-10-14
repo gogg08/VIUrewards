@@ -19,6 +19,7 @@ import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
 import { AlertQueue, QueueInputError, validateTrim, type AnimationName } from "../queue/index.ts";
+import type { QueueItem, QueueState } from "../queue/index.ts";
 import {
   addHistory,
   deleteClip as deleteClipRow,
@@ -28,12 +29,10 @@ import {
   getRuleRecord,
   listClips,
   listHistory,
-  listOverlapRewardsUsingClip,
   listRewardsUsingClip,
   listRules,
   openMemoryDatabase,
   renameClip,
-  setClipAudioOnly,
   setClipTrim,
   setSetting,
   SETTING_OVERLAY_KEY,
@@ -153,6 +152,7 @@ interface PlayBody {
   enterAnimation?: AnimationName | null;
   exitAnimation?: AnimationName | null;
   repetition?: "queue" | "overlap";
+  audioOnly?: boolean;
 }
 
 const enqueueSchema = {
@@ -190,6 +190,7 @@ const playSchema = {
     enterAnimation: { type: ["string", "null"], enum: [...ANIMATION_NAMES, null] },
     exitAnimation: { type: ["string", "null"], enum: [...ANIMATION_NAMES, null] },
     repetition: { type: "string", enum: ["queue", "overlap"] },
+    audioOnly: { type: "boolean" },
   },
 } as const;
 
@@ -357,7 +358,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         createdAt: new Date().toISOString(),
         trimStart: null,
         trimEnd: null,
-        audioOnly: false,
+        hasVideo: true,
       });
     },
   });
@@ -667,6 +668,30 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
   // --- API protegida (requiere sesión) --------------------------------------
 
+  /**
+   * Vista de la cola para el dashboard: resuelve el NOMBRE del clip en un solo
+   * lugar, para todos los caminos (canje real, simulador, probar alerta,
+   * reencolado). La cola guarda `clipId`; acá se agrega `title` (nombre del clip)
+   * y `audioOnly` para mostrarlos. Si el clip ya no existe, el nombre es
+   * "Clip no disponible" (nunca el id). `label` sigue siendo el contexto (título
+   * de la recompensa, o el nombre del clip en una prueba de biblioteca).
+   */
+  const queueDisplayState = (): QueueState & {
+    current: (QueueItem & { title: string }) | null;
+    pending: (QueueItem & { title: string })[];
+  } => {
+    const withTitle = (item: QueueItem): QueueItem & { title: string } => ({
+      ...item,
+      title: item.clipId ? getClip(db, item.clipId)?.title ?? "Clip no disponible" : "Clip no disponible",
+    });
+    const state = queue.getState();
+    return {
+      ...state,
+      current: state.current ? withTitle(state.current) : null,
+      pending: state.pending.map(withTitle),
+    };
+  };
+
   await app.register(async (api) => {
     const requireSession = async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
       if (!hasValidSession(request)) {
@@ -676,7 +701,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     api.addHook("preHandler", requireSession);
 
     api.get("/api/state", async () => ({
-      ...queue.getState(),
+      ...queueDisplayState(),
       overlay: { connected: hub.clientCount() > 0, clients: hub.clientCount() },
     }));
 
@@ -693,7 +718,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
             maxDurationSec: request.body.maxDurationSec ?? settings.defaultMaxDurationSec,
             label: request.body.label,
           });
-          return { ok: true, item, state: queue.getState() };
+          return { ok: true, item, state: queueDisplayState() };
         } catch (error) {
           if (error instanceof QueueInputError) {
             return reply.code(400).send({ ok: false, reason: error.code, message: error.message });
@@ -705,20 +730,20 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
     api.post("/api/skip", async () => {
       const next = queue.skip();
-      return { ok: true, state: queue.getState(), next };
+      return { ok: true, state: queueDisplayState(), next };
     });
     api.post("/api/pause", async () => {
       queue.pause();
-      return { ok: true, state: queue.getState() };
+      return { ok: true, state: queueDisplayState() };
     });
     api.post("/api/resume", async () => {
       queue.resume();
-      return { ok: true, state: queue.getState() };
+      return { ok: true, state: queueDisplayState() };
     });
     api.post("/api/clear", async () => ({
       ok: true,
       removed: queue.clear(),
-      state: queue.getState(),
+      state: queueDisplayState(),
     }));
 
     // Corta todas las voces superpuestas de los overlays conectados.
@@ -816,12 +841,8 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         const settings = readSettings(db);
 
         // "Probar alerta" en modo superpuesto: un audio fire-and-forget al overlay.
+        // El modo overlap ya no depende de una marca del clip: la recompensa decide.
         if (body.repetition === "overlap") {
-          if (!clip.audioOnly) {
-            return reply
-              .code(409)
-              .send({ ok: false, message: "Elegí un clip de solo audio para probar en modo superpuesto." });
-          }
           const sent = hub.broadcastAudio({
             id: `test-${Date.now().toString(36)}`,
             url: `${clipUrl(clip.id)}?key=${encodeURIComponent(overlayKey)}`,
@@ -849,9 +870,10 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           position: request.body?.position ?? undefined,
           enterAnimation: request.body?.enterAnimation ?? undefined,
           exitAnimation: request.body?.exitAnimation ?? undefined,
+          audioOnly: request.body?.audioOnly === true,
           label: clip.title,
         });
-        return { ok: true, item, state: queue.getState() };
+        return { ok: true, item, state: queueDisplayState() };
       },
     );
 
@@ -883,45 +905,6 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         // se guarda igual (reproduce desde ahí hasta el final).
         const hasTrim = trim.trimStart !== 0 || trim.trimEnd !== null;
         setClipTrim(db, clip.id, hasTrim ? trim.trimStart : null, trim.trimEnd);
-        return { ok: true, clip: getClip(db, clip.id) };
-      },
-    );
-
-    // Marca manual "solo audio" (Parte B). No se puede quitar si alguna recompensa
-    // en modo superpuesto usa este clip (ese modo solo admite solo-audio).
-    api.post<{ Params: { id: string }; Body: { audioOnly: boolean } }>(
-      "/api/clips/:id/audio-only",
-      {
-        schema: {
-          body: {
-            type: "object",
-            additionalProperties: false,
-            required: ["audioOnly"],
-            properties: { audioOnly: { type: "boolean" } },
-          },
-        },
-      },
-      async (request, reply) => {
-        const clip = getClip(db, request.params.id);
-        if (!clip) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
-
-        if (request.body.audioOnly === false) {
-          const overlap = listOverlapRewardsUsingClip(db, clip.id);
-          if (overlap.length > 0) {
-            const names = overlap.map((reward) => reward.title).join(", ");
-            return reply.code(409).send({
-              ok: false,
-              reason: "CLIP_IN_OVERLAP_USE",
-              message:
-                overlap.length === 1
-                  ? `No se puede quitar "solo audio": lo usa la recompensa superpuesta ${names}.`
-                  : `No se puede quitar "solo audio": lo usan las recompensas superpuestas ${names}.`,
-              rewards: overlap.map((reward) => ({ id: reward.id, title: reward.title })),
-            });
-          }
-        }
-
-        setClipAudioOnly(db, clip.id, request.body.audioOnly);
         return { ok: true, clip: getClip(db, clip.id) };
       },
     );

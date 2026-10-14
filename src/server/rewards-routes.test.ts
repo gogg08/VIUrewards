@@ -171,7 +171,7 @@ async function withServer() {
     createdAt: new Date().toISOString(),
     trimStart: null,
     trimEnd: null,
-    audioOnly: false,
+    hasVideo: true,
   });
   await server.app.ready();
   await server.auth.setPassword("password123");

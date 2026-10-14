@@ -7,7 +7,7 @@
  *    registro atómicos, sin `await` en el medio) y, si dispara, va al motor de
  *    reglas (que encola el `PlayClip` y acepta el canje).
  *  - modo `overlap`: no hay cooldown ni cola; se manda un `playAudio` a los
- *    overlays conectados. Si no hay ninguno, o el clip no es de solo audio, el
+ *    overlays conectados. Si no hay ninguno o la recompensa no tiene clip, el
  *    canje queda omitido con el motivo correspondiente.
  *
  * El motor de reglas NO conoce recompensas: solo recibe los eventos que este
@@ -123,11 +123,11 @@ export class RewardDispatcher {
     base: Omit<EngineResult, "outcome">,
   ): Promise<EngineResult> {
     const clip = reward.clipId ? getClip(this.db, reward.clipId) : null;
-    if (!clip || !clip.audioOnly) {
-      this.logger?.(
-        `rewards: ${reward.id} modo=superpuesto → omitido (el clip no es de solo audio)`,
-      );
-      return { ...base, outcome: "skipped", ruleId: reward.ruleId ?? undefined, reason: "el clip no es de solo audio" };
+    // El modo overlap siempre usa playAudio (no depende de que el clip sea "solo
+    // audio"): la recompensa suena superpuesta.
+    if (!clip) {
+      this.logger?.(`rewards: ${reward.id} modo=superpuesto → omitido (sin clip)`);
+      return { ...base, outcome: "skipped", ruleId: reward.ruleId ?? undefined, reason: "sin clip" };
     }
 
     const audio: AudioPlayback = {

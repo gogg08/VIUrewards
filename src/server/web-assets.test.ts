@@ -118,4 +118,15 @@ describe("overlay (Browser Source)", () => {
     // respondía 401, así que el video nunca cargaba.
     expect(html).toMatch(/\/media\/.*key=/);
   });
+
+  it("el modo 'solo audio' oculta la imagen sin usar display: none ni display: none en CSS", () => {
+    // El video se oculta con `visibility: hidden` (sigue sonando el audio, el
+    // recorte y la duración máxima aplican y llegan `ended`/`error`).
+    expect(html).toMatch(/item\.params\.audioOnly\s*\?\s*"hidden"\s*:\s*"visible"/);
+    expect(html).toMatch(/style\.visibility\s*=/);
+    // Nunca se oculta la imagen de solo audio con `display: none`.
+    expect(html).not.toMatch(/audioOnly[^;]*display\s*[:=]\s*"?none/i);
+    // Sin animación de entrada/salida en solo audio.
+    expect(html).toMatch(/params\.audioOnly\)\s*return;\s*\n\s*if \(anim\) anim\.cancel/);
+  });
 });

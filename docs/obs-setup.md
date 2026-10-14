@@ -17,9 +17,20 @@ autenticarse.
 3. Configurá la fuente:
    - **URL:** la que muestra el dashboard en **"Copiar URL del overlay"**, por
      ejemplo `http://127.0.0.1:8787/overlay?key=xxxxxxxx`.
-   - **Ancho / Alto:** `1920` x `1080`
+   - **Ancho / Alto:** el **área de la alerta**. El video del clip llena la fuente
+     respetando su relación de aspecto (`object-fit: contain`); las barras que
+     sobran son **transparentes**, no negras.
+     - `1920` x `1080`: la alerta ocupa toda la pantalla (útil si el clip ya viene
+       con el tamaño final, por ejemplo un video a pantalla completa).
+     - Para una alerta más chica: poné el **ancho y alto de la fuente**
+       (Propiedades) del tamaño deseado y ubicala en OBS. El tamaño y la posición
+       de la alerta se manejan **en OBS**, no desde el dashboard.
    - **Usar tamaño personalizado de lienzo:** activado (así escala con la escena).
 4. Aceptar. La página tiene **fondo transparente**: solo se ve el video del clip.
+
+> El video se escala para llenar la fuente. Subir de escala un video de baja
+> resolución lo muestra **más borroso**: si el clip es de 480p y la fuente mide
+> 1920x1080, se verá estirado.
 
 > Antes de la Fase 3 la URL era `http://127.0.0.1:8787/overlay` sin token. Si ya
 > tenías la fuente configurada, actualizá la URL con el `?key=` que da el panel.
@@ -48,9 +59,12 @@ autenticarse.
 - **Recorte** del clip: hace *seek* al inicio y corta al final (no modifica el mp4).
 - **Duración máxima**: corta el video aunque no haya terminado. El tiempo efectivo
   es el **menor** entre el recorte y la duración máxima.
-- **Posición** (fracción del ancho/alto de la escena).
 - **Animación** de entrada y salida (fade, slide-up, slide-down, zoom, none).
 - **Reconexión automática**: si se corta el WebSocket, se vuelve a conectar solo.
+
+> La **posición X/Y** de la recompensa ya no la aplica el overlay: el lugar de la
+> alerta se controla moviendo la fuente en OBS. El dato se conserva en la base y
+> en la API, reservado para más adelante.
 
 ## Notas
 

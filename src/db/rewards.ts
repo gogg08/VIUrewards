@@ -43,6 +43,12 @@ export interface RewardRecord {
   cooldownSec: number;
   /** "queue" (esperar turno) u "overlap" (superponer audios). */
   repetition: RewardRepetition;
+  /**
+   * La alerta suena sin mostrar imagen. Se fuerza en modo overlap (siempre es solo
+   * audio) y también cuando el clip no tiene video. En esta etapa es una opción de
+   * la recompensa; el clip ya no tiene marca propia.
+   */
+  audioOnly: boolean;
   /** Momento (ms) en que la alerta se disparó por última vez; `null` si nunca. */
   lastFiredAt: number | null;
   /** Posición en el overlay (fracciones 0..1) o `null` (centro por defecto). */
@@ -80,6 +86,7 @@ interface RewardRow {
   max_duration_sec: number | null;
   cooldown_sec: number;
   repetition: string;
+  audio_only: number;
   last_fired_at: number | null;
   position_json: string | null;
   enter_animation: string | null;
@@ -124,6 +131,7 @@ function toRecord(row: RewardRow): RewardRecord {
     maxDurationSec: row.max_duration_sec,
     cooldownSec: row.cooldown_sec,
     repetition: parseRepetition(row.repetition),
+    audioOnly: row.audio_only === 1,
     lastFiredAt: row.last_fired_at,
     position: parsePosition(row.position_json),
     enterAnimation: row.enter_animation,
@@ -152,6 +160,7 @@ function serialize(reward: RewardRecord): Record<string, unknown> {
     maxDurationSec: reward.maxDurationSec,
     cooldownSec: reward.cooldownSec,
     repetition: reward.repetition,
+    audioOnly: reward.audioOnly ? 1 : 0,
     lastFiredAt: reward.lastFiredAt,
     positionJson: reward.position ? JSON.stringify({ x: reward.position.x, y: reward.position.y }) : null,
     enterAnimation: reward.enterAnimation,
@@ -168,11 +177,11 @@ function serialize(reward: RewardRecord): Record<string, unknown> {
 
 const UPSERT_SQL = `INSERT INTO rewards
   (id, platform, remote_reward_id, title, cost, color, description, clip_id, volume,
-   max_duration_sec, cooldown_sec, repetition, last_fired_at, position_json, enter_animation,
+   max_duration_sec, cooldown_sec, repetition, audio_only, last_fired_at, position_json, enter_animation,
    exit_animation, desired_enabled, managed, synced, rule_id, last_error, created_at, updated_at)
  VALUES
   (@id, @platform, @remoteRewardId, @title, @cost, @color, @description, @clipId, @volume,
-   @maxDurationSec, @cooldownSec, @repetition, @lastFiredAt, @positionJson, @enterAnimation,
+   @maxDurationSec, @cooldownSec, @repetition, @audioOnly, @lastFiredAt, @positionJson, @enterAnimation,
    @exitAnimation, @desiredEnabled, @managed, @synced, @ruleId, @lastError, @createdAt, @updatedAt)
  ON CONFLICT(id) DO UPDATE SET
    remote_reward_id  = excluded.remote_reward_id,
@@ -185,6 +194,7 @@ const UPSERT_SQL = `INSERT INTO rewards
    max_duration_sec  = excluded.max_duration_sec,
    cooldown_sec      = excluded.cooldown_sec,
    repetition        = excluded.repetition,
+   audio_only        = excluded.audio_only,
    position_json     = excluded.position_json,
    enter_animation   = excluded.enter_animation,
    exit_animation    = excluded.exit_animation,
@@ -250,9 +260,4 @@ export function listRewardsUsingClip(db: SqliteDatabase, clipId: string): Reward
     .prepare<RewardRow>("SELECT * FROM rewards WHERE clip_id = ? ORDER BY created_at ASC, id ASC")
     .all(clipId);
   return rows.map(toRecord);
-}
-
-/** Recompensas en modo `overlap` que usan un clip dado (para validar "solo audio"). */
-export function listOverlapRewardsUsingClip(db: SqliteDatabase, clipId: string): RewardRecord[] {
-  return listRewardsUsingClip(db, clipId).filter((reward) => reward.repetition === "overlap");
 }

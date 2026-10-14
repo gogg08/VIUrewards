@@ -237,7 +237,7 @@ function setup(clip = true): { db: SqliteDatabase; fake: FakeControls; service: 
       createdAt: new Date().toISOString(),
       trimStart: null,
       trimEnd: null,
-      audioOnly: false,
+      hasVideo: true,
     });
   }
   const fake = fakeIntegration();
@@ -266,6 +266,7 @@ function provisionalReward(): RewardRecord {
     maxDurationSec: null,
     cooldownSec: 0,
     repetition: "queue",
+    audioOnly: false,
     lastFiredAt: null,
     position: null,
     enterAnimation: null,

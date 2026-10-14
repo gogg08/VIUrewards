@@ -109,6 +109,15 @@ function validateAction(raw: unknown): RuleActionConfig | string {
       }
       action.maxDurationSec = raw.maxDurationSec;
     }
+    if (raw.audioOnly !== undefined) {
+      if (typeof raw.audioOnly !== "boolean") return "La opción de solo audio no es válida.";
+      action.audioOnly = raw.audioOnly;
+    }
+    if (raw.label !== undefined) {
+      const label = optionalString(raw.label, "label", 200);
+      if (label === null) return "El texto de contexto no es válido.";
+      if (label !== undefined) action.label = label;
+    }
     return action;
   }
 

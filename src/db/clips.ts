@@ -24,8 +24,8 @@ export interface ClipRecord {
   trimStart: number | null;
   /** Recorte no destructivo: segundo de fin (null = hasta el final). */
   trimEnd: number | null;
-  /** Marca manual: es un clip de solo audio (no muestra imagen). */
-  audioOnly: boolean;
+  /** ¿El archivo tiene imagen? Los mp4 vienen con video; los audios de la Etapa 3B, no. */
+  hasVideo: boolean;
 }
 
 interface ClipRow {
@@ -38,7 +38,7 @@ interface ClipRow {
   created_at: string;
   trim_start: number | null;
   trim_end: number | null;
-  audio_only: number;
+  has_video: number;
 }
 
 /** Metadatos que el módulo de media escribe en el sidecar `<id>.json`. */
@@ -61,7 +61,7 @@ function toRecord(row: ClipRow): ClipRecord {
     createdAt: row.created_at,
     trimStart: row.trim_start,
     trimEnd: row.trim_end,
-    audioOnly: row.audio_only === 1,
+    hasVideo: row.has_video === 1,
   };
 }
 
@@ -78,20 +78,20 @@ export function getClip(db: SqliteDatabase, id: string): ClipRecord | null {
 }
 
 /**
- * Inserta o actualiza un clip. En conflicto no pisa el título ni la marca de
- * "solo audio": ambos son decisiones del usuario que no deben perderse si el
- * mismo video se vuelve a procesar (caché).
+ * Inserta o actualiza un clip. En conflicto no pisa el título ni el recorte:
+ * son decisiones del usuario que no deben perderse si el mismo video se vuelve
+ * a procesar (caché).
  */
 export function upsertClip(db: SqliteDatabase, clip: ClipRecord): void {
   db.prepare(
-    `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at, trim_start, trim_end, audio_only)
-     VALUES (@id, @sourceUrl, @title, @durationSec, @sizeBytes, @file, @createdAt, @trimStart, @trimEnd, @audioOnly)
+    `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at, trim_start, trim_end, has_video)
+     VALUES (@id, @sourceUrl, @title, @durationSec, @sizeBytes, @file, @createdAt, @trimStart, @trimEnd, @hasVideo)
      ON CONFLICT(id) DO UPDATE SET
        source_url   = excluded.source_url,
        duration_sec = excluded.duration_sec,
        size_bytes   = excluded.size_bytes,
        file         = excluded.file`,
-  ).run({ ...clip, audioOnly: clip.audioOnly ? 1 : 0 });
+  ).run({ ...clip, hasVideo: clip.hasVideo ? 1 : 0 });
 }
 
 /** Guarda el recorte no destructivo. Devuelve `false` si el clip no existe. */
@@ -104,12 +104,6 @@ export function setClipTrim(
   const result = db
     .prepare("UPDATE clips SET trim_start = ?, trim_end = ? WHERE id = ?")
     .run(trimStart, trimEnd, id);
-  return result.changes > 0;
-}
-
-/** Marca o desmarca un clip como "solo audio". Devuelve `false` si no existe. */
-export function setClipAudioOnly(db: SqliteDatabase, id: string, audioOnly: boolean): boolean {
-  const result = db.prepare("UPDATE clips SET audio_only = ? WHERE id = ?").run(audioOnly ? 1 : 0, id);
   return result.changes > 0;
 }
 
@@ -182,7 +176,7 @@ export function reconcileClips(db: SqliteDatabase, mediaDir: string): ReconcileR
       createdAt: sidecar?.createdAt ?? new Date().toISOString(),
       trimStart: null,
       trimEnd: null,
-      audioOnly: false,
+      hasVideo: true,
     });
     added.push(id);
   }

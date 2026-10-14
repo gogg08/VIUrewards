@@ -43,6 +43,10 @@ export interface PlayClipActionConfig {
   position?: OverlayPosition;
   enterAnimation?: AnimationName;
   exitAnimation?: AnimationName;
+  /** Suena sin mostrar imagen (clip de solo audio). */
+  audioOnly?: boolean;
+  /** Texto de contexto para mostrar (p. ej. el título de la recompensa). */
+  label?: string;
 }
 
 export type RuleActionConfig = PlayClipActionConfig;

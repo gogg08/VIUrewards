@@ -122,6 +122,8 @@ function dashboardApp() {
     rewardDelete: null,
     // Flujo de canjes pendientes al desactivar o borrar (nunca silencioso).
     rewardPending: null,
+    // Id de la recompensa cuyo color se está guardando (una sola solicitud en vuelo).
+    rewardColorSaving: null,
     oldRedemptions: [],
     redemptionMessage: "",
     diagnostics: null,
@@ -485,23 +487,6 @@ function dashboardApp() {
       clip.trimStart = null;
       clip.trimEnd = null;
       await this.saveTrim(clip);
-    },
-
-    // Marca manual "solo audio" del clip (Parte B). El servidor la rechaza si
-    // alguna recompensa superpuesta usa el clip.
-    async toggleClipAudioOnly(clip) {
-      this.message = "";
-      const response = await api("/api/clips/" + encodeURIComponent(clip.id) + "/audio-only", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ audioOnly: !clip.audioOnly }),
-      });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.ok) {
-        this.message = data.message || "No se pudo cambiar la marca de solo audio.";
-        return;
-      }
-      clip.audioOnly = data.clip.audioOnly;
     },
 
     async play(clip) {
@@ -930,36 +915,88 @@ function dashboardApp() {
       return "Clip no disponible";
     },
 
+    // Nombre a mostrar de un ítem de la cola (actual o en espera). El servidor
+    // resuelve el nombre del clip en `title` para todos los caminos (canje real,
+    // simulador, Probar alerta), y pone el título de la recompensa en `label`.
+    // Nunca se muestra el id del clip.
+    queueItemName(item) {
+      if (!item) return "";
+      const clipName = item.title || "Clip no disponible";
+      const rewardName = item.label || "";
+      if (rewardName && rewardName !== clipName) return clipName + " · " + rewardName;
+      return clipName;
+    },
+
     // ¿El clip de la recompensa sigue existiendo en la biblioteca?
     rewardClipExists() {
       const form = this.rewardForm;
       return !!(form && form.clipId && this.clipById(form.clipId));
     },
 
-    // ¿El clip elegido en el formulario es de solo audio?
-    rewardClipAudioOnly() {
+    // ¿El clip elegido en el formulario tiene imagen? (si no se conoce, se asume que sí)
+    rewardClipHasVideo() {
       const form = this.rewardForm;
-      if (!form || !form.clipId) return false;
+      if (!form || !form.clipId) return true;
       const clip = this.clipById(form.clipId);
-      return !!(clip && clip.audioOnly);
+      return clip ? clip.hasVideo !== false : true;
     },
 
-    // "Superponer" solo está disponible para clips de solo audio.
+    // Superponer ya no exige un clip de solo audio: solo hace falta un clip elegido
+    // (el modo fuerza "solo audio").
     get rewardOverlapAllowed() {
-      return this.rewardClipAudioOnly();
+      const form = this.rewardForm;
+      return !!(form && form.clipId && this.clipById(form.clipId));
     },
 
-    // En modo superpuesto (o con un clip de solo audio) no hay imagen: se ocultan
-    // Posición y Animaciones.
-    get rewardNoVisual() {
-      if (!this.rewardForm) return false;
-      return this.rewardForm.repetition === "overlap" || this.rewardClipAudioOnly();
+    // El interruptor "Solo audio" queda bloqueado y encendido si lo fuerza el modo
+    // superpuesto o un clip sin imagen.
+    get rewardAudioOnlyLocked() {
+      const form = this.rewardForm;
+      if (!form) return false;
+      return form.repetition === "overlap" || !this.rewardClipHasVideo();
+    },
+
+    rewardAudioOnlyHint() {
+      const form = this.rewardForm;
+      if (!form) return "";
+      if (form.repetition === "overlap") return "Superponer siempre es solo audio";
+      if (!this.rewardClipHasVideo()) return "Este clip no tiene imagen";
+      return "";
+    },
+
+    rewardOverlapTitle() {
+      return this.rewardOverlapAllowed ? "Superponer los audios" : "Elegí un clip primero";
     },
 
     setRewardRepetition(mode) {
       if (!this.rewardForm) return;
       if (mode === "overlap" && !this.rewardOverlapAllowed) return;
       this.rewardForm.repetition = mode === "overlap" ? "overlap" : "queue";
+      this.syncRewardAudioOnly();
+    },
+
+    toggleRewardAudioOnly() {
+      if (!this.rewardForm) return;
+      if (this.rewardAudioOnlyLocked) return;
+      this.rewardForm.audioOnly = !this.rewardForm.audioOnly;
+      this.rewardAudioOnlyChoice = this.rewardForm.audioOnly;
+    },
+
+    // Mantiene el interruptor coherente con lo forzado (overlap / clip sin imagen).
+    // Al volver de Superponer, recupera lo que el creador había elegido (guardado
+    // en `rewardAudioOnlyChoice`).
+    syncRewardAudioOnly() {
+      const form = this.rewardForm;
+      if (!form) return;
+      if (form.repetition === "overlap") {
+        form.audioOnly = true;
+        return;
+      }
+      if (!this.rewardClipHasVideo()) {
+        form.audioOnly = true;
+        return;
+      }
+      form.audioOnly = !!this.rewardAudioOnlyChoice;
     },
 
     // Texto secundario de la tarjeta colapsada: modo de repetición.
@@ -1028,6 +1065,54 @@ function dashboardApp() {
       return reward.state === "enabled" || reward.state === "disabled" || reward.state === "apply_failed";
     },
 
+    // El color de la tarjeta se puede cambiar en los mismos estados que Editar.
+    rewardColorEditable(reward) {
+      return this.rewardEditable(reward) && this.rewardColorSaving !== reward.id;
+    },
+
+    // Abre el selector de color nativo del cuadradito (input oculto de la tarjeta).
+    openRewardColor(reward, event) {
+      if (!this.rewardColorEditable(reward)) return;
+      const input = event.currentTarget.parentElement.querySelector(".reward-color-input");
+      if (input) input.click();
+    },
+
+    // Guarda el color al terminar el selector nativo (evento change: no se dispara
+    // mientras se arrastra). Una sola solicitud en vuelo y nada si no cambió.
+    async applyRewardColor(reward, event) {
+      const next = String(event.target.value || "").toLowerCase();
+      if (!/^#[0-9a-fA-F]{6}$/.test(next)) return;
+      if (next === String(reward.color || "").toLowerCase()) return;
+      if (this.rewardColorSaving === reward.id) return;
+      const platform = this.activePlatform;
+      if (!platform) return;
+
+      const previous = reward.color;
+      this.rewardColorSaving = reward.id;
+      reward.color = next;
+      try {
+        const response = await api(this.rewardPath(platform, reward), {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ color: next }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          reward.color = previous;
+          this.message = data.message || "No se pudo cambiar el color.";
+          setTimeout(() => (this.message = ""), 4000);
+          return;
+        }
+        await this.loadRewards(platform);
+      } catch {
+        reward.color = previous;
+        this.message = "No se pudo cambiar el color.";
+        setTimeout(() => (this.message = ""), 4000);
+      } finally {
+        this.rewardColorSaving = null;
+      }
+    },
+
     animationLabel(name) {
       switch (name) {
         case "fade":
@@ -1050,6 +1135,7 @@ function dashboardApp() {
       this.rewardExpanded = false;
       this.rewardTitleTouched = false;
       this.rewardAdvancedOpen = false;
+      this.rewardAudioOnlyChoice = false;
       this.rewardForm = {
         id: null,
         title: "",
@@ -1062,8 +1148,7 @@ function dashboardApp() {
         maxDurationSec: null,
         cooldownSec: 0,
         repetition: "queue",
-        positionX: 50,
-        positionY: 50,
+        audioOnly: false,
         enterAnimation: "none",
         exitAnimation: "none",
       };
@@ -1080,6 +1165,7 @@ function dashboardApp() {
       this.rewardExpanded = true;
       this.rewardTitleTouched = true;
       this.rewardAdvancedOpen = false;
+      this.rewardAudioOnlyChoice = reward.audioOnly === true;
       this.rewardForm = {
         id: reward.localId,
         title: reward.title,
@@ -1092,8 +1178,7 @@ function dashboardApp() {
         maxDurationSec: reward.maxDurationSec ?? null,
         cooldownSec: reward.cooldownSec ?? 0,
         repetition: reward.repetition ?? "queue",
-        positionX: reward.position ? Math.round(reward.position.x * 100) : 50,
-        positionY: reward.position ? Math.round(reward.position.y * 100) : 50,
+        audioOnly: reward.audioOnly === true,
         enterAnimation: reward.enterAnimation ?? "none",
         exitAnimation: reward.exitAnimation ?? "none",
       };
@@ -1133,26 +1218,14 @@ function dashboardApp() {
       if (!this.rewardTitleTouched) {
         this.rewardForm.title = clip.suggestedTitle || clip.title;
       }
-      // Si estaba en "Superponer" y el nuevo clip no es de solo audio, vuelve a
-      // "Esperar turno" y se avisa en la ventana.
-      if (this.rewardForm.repetition === "overlap" && !clip.audioOnly) {
-        this.rewardForm.repetition = "queue";
-        this.rewardMessage = 'El clip elegido no es de solo audio: se cambió a "Esperar turno".';
-      }
+      // Si el nuevo clip no tiene imagen, "Solo audio" queda forzado y se
+      // recuerda lo que el creador había elegido para cuando vuelva a un clip con
+      // imagen. El modo de repetición no cambia: Superponer siempre es solo audio.
+      this.syncRewardAudioOnly();
     },
 
     markRewardTitleTouched() {
       this.rewardTitleTouched = true;
-    },
-
-    rewardFormPosition() {
-      const form = this.rewardForm;
-      if (!form) return null;
-      const x = numberOrNull(form.positionX);
-      const y = numberOrNull(form.positionY);
-      if (x === null || y === null) return null;
-      const clamp = (value) => Math.min(1, Math.max(0, value / 100));
-      return { x: clamp(x), y: clamp(y) };
     },
 
     async saveReward(platform) {
@@ -1194,7 +1267,7 @@ function dashboardApp() {
         maxDurationSec: numberOrNull(form.maxDurationSec),
         cooldownSec: form.repetition === "overlap" ? 0 : Math.round(Number(form.cooldownSec) || 0),
         repetition: form.repetition === "overlap" ? "overlap" : "queue",
-        position: this.rewardFormPosition(),
+        audioOnly: form.repetition === "overlap" ? true : form.audioOnly === true,
         enterAnimation: form.enterAnimation || "none",
         exitAnimation: form.exitAnimation || "none",
       };
@@ -1240,7 +1313,7 @@ function dashboardApp() {
           volume: Math.min(1, Math.max(0, (numberOrNull(form.volumePercent) ?? 100) / 100)),
           maxDurationSec: numberOrNull(form.maxDurationSec) ?? undefined,
           repetition: form.repetition === "overlap" ? "overlap" : "queue",
-          position: this.rewardFormPosition(),
+          audioOnly: form.repetition === "overlap" ? true : form.audioOnly === true,
           enterAnimation: form.enterAnimation || "none",
           exitAnimation: form.exitAnimation || "none",
         }),

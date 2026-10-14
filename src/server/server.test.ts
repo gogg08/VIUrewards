@@ -5,7 +5,9 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 
-import { openMemoryDatabase } from "../db/index.ts";
+import { listRules, openMemoryDatabase, toRule } from "../db/index.ts";
+import { createEvent, EmitterEventSource } from "../events/index.ts";
+import type { PlatformIntegration } from "../platforms/index.ts";
 import { createServer, type AppServer } from "./server.ts";
 import { SESSION_COOKIE } from "./auth.ts";
 
@@ -574,5 +576,251 @@ describe("WebSocket /ws del overlay", () => {
     expect(play?.url).toBe("/media/abc.mp4");
 
     client.close();
+  });
+});
+
+describe("nombre del clip en la cola (camino de canje real)", () => {
+  // Integración falsa de plataforma: una fuente `kick` cuyo `resolve` no toca la
+  // red. Así el camino real (coordinador de canjes -> despacho -> motor -> cola)
+  // funciona sin vincular una cuenta de verdad, sin saltarse ninguna capa.
+  function makeFakeIntegration(): PlatformIntegration {
+    class FakeKickSource extends EmitterEventSource {
+      async resolve(): Promise<void> {
+        /* El adaptador real habla con la API; acá no hace falta. */
+      }
+    }
+    const source = new FakeKickSource({
+      id: "kick",
+      platform: "kick",
+      capabilities: { types: ["reward_redeemed"], resolve: true },
+    });
+    const account = {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      state: "connected" as const,
+      accountId: "u1",
+      accountName: "Canal",
+      capabilities: source.capabilities,
+      hasCredentials: true,
+      clientId: "cid",
+      lastError: null,
+    };
+    const notImplemented = async (): Promise<never> => {
+      throw new Error("no implementado en el test");
+    };
+    return {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      source,
+      status: () => account,
+      setCredentials: notImplemented,
+      clearCredentials: async () => {},
+      beginLink: notImplemented,
+      completeLink: notImplemented,
+      unlink: async () => {},
+      test: notImplemented,
+      diagnostics: () => ({
+        enabled: true,
+        intervalMs: 5000,
+        lastCheckAt: null,
+        lastResult: null,
+        lastError: null,
+        latencyLastMs: null,
+        latencyMinMs: null,
+        latencyTypicalMs: null,
+        latencyMaxMs: null,
+        rateLimit429Count: 0,
+        lastRateLimitHeaders: {},
+      }),
+      listRewards: notImplemented,
+      createReward: notImplemented,
+      updateReward: notImplemented,
+      deleteReward: notImplemented,
+      listPendingRedemptions: notImplemented,
+      rejectRedemptions: notImplemented,
+      start: async () => {},
+      stop: async () => {},
+    };
+  }
+
+  async function setup(): Promise<Ctx> {
+    const { mediaDir } = makeMediaDir();
+    const server = await createServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      requireOverlay: false,
+      platforms: [makeFakeIntegration()],
+    });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES ('clip-1','https://x/y','Goku Ahhh!',4,4,'clip-1.mp4','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    // Recompensa local con su regla interna 1:1 (trigger reward_redeemed).
+    server.db
+      .prepare(
+        `INSERT INTO rewards (id, platform, remote_reward_id, title, cost, color, description,
+           clip_id, volume, max_duration_sec, cooldown_sec, repetition, audio_only, desired_enabled,
+           managed, synced, rule_id, created_at, updated_at)
+         VALUES ('local-1','kick','rw-1','test123',100,'#64f7d9','', 'clip-1',1,30,0,'queue',0,1,1,1,'rule-1',
+           '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    server.db
+      .prepare(
+        `INSERT INTO rules (id, name, enabled, trigger_json, conditions_json, action_json, created_at, updated_at)
+         VALUES ('rule-1','Recompensa: test123',1,
+           '{"type":"reward_redeemed","rewardId":"rw-1"}',
+           '{"permission":"everyone"}',
+           '{"kind":"play_clip","clipId":"clip-1","label":"test123"}',
+           '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    // El motor lee las reglas de la base al arrancar: replicamos ese paso.
+    server.engine.setRules(listRules(server.db).map(toRule));
+    return { server, mediaDir, cookie };
+  }
+
+  it("un canje real llega a /api/state con el nombre del clip", async () => {
+    const { server, cookie } = await setup();
+    const event = createEvent({
+      id: "c1",
+      platform: "kick",
+      type: "reward_redeemed",
+      user: { id: "u1", name: "Ana", roles: [] },
+      payload: { rewardId: "rw-1", rewardTitle: "test123", userInput: "" },
+    });
+
+    const received = await server.coordinator.receive(event);
+    expect(received.status).toBe("accepted");
+
+    const state = await server.app.inject({ method: "GET", url: "/api/state", headers: { cookie } });
+    const body = state.json();
+    // `title` es el nombre del clip resuelto; `label` el de la recompensa.
+    expect(body.current.title).toBe("Goku Ahhh!");
+    expect(body.current.label).toBe("test123");
+  });
+
+  it("el simulador (mismo camino del motor) también trae el nombre", async () => {
+    const { server, cookie } = await setup();
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/simulate",
+      headers: { cookie },
+      payload: { type: "reward_redeemed", rewardId: "rw-1", rewardTitle: "test123", userInput: "" },
+    });
+    expect(response.statusCode).toBe(200);
+    const state = await server.app.inject({ method: "GET", url: "/api/state", headers: { cookie } });
+    const body = state.json();
+    expect(body.current.title).toBe("Goku Ahhh!");
+    expect(body.current.label).toBe("test123");
+  });
+
+  it("si el clip se borra, el nombre pasa a 'Clip no disponible' (nunca el id)", async () => {
+    const { server, cookie } = await setup();
+    const event = createEvent({
+      id: "c2",
+      platform: "kick",
+      type: "reward_redeemed",
+      user: { id: "u1", name: "Ana", roles: [] },
+      payload: { rewardId: "rw-1", rewardTitle: "test123", userInput: "" },
+    });
+    await server.coordinator.receive(event);
+
+    // Borramos la fila del clip (simula un clip desaparecido).
+    server.db.prepare("DELETE FROM clips WHERE id = 'clip-1'").run();
+
+    const state = await server.app.inject({ method: "GET", url: "/api/state", headers: { cookie } });
+    const body = state.json();
+    expect(body.current.title).toBe("Clip no disponible");
+    expect(body.current.title).not.toContain("clip-1");
+  });
+});
+
+describe("audioOnly en todos los caminos que encolan", () => {
+  async function withServer2(): Promise<Ctx> {
+    const { server, mediaDir, cookie } = await withServer();
+    return { server, mediaDir, cookie };
+  }
+
+  it("la acción del motor (canje real/simulador) propaga audioOnly a params", async () => {
+    const { server, cookie } = await withServer2();
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES ('clip-1','https://x/y','Goku',4,4,'clip-1.mp4','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    server.db
+      .prepare(
+        `INSERT INTO rules (id, name, enabled, trigger_json, conditions_json, action_json, created_at, updated_at)
+         VALUES ('rule-1','R',1, '{"type":"reward_redeemed","rewardId":"rw-1"}',
+           '{"permission":"everyone"}',
+           '{"kind":"play_clip","clipId":"clip-1","audioOnly":true}',
+           '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    server.engine.setRules(listRules(server.db).map(toRule));
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/simulate",
+      headers: { cookie },
+      payload: { type: "reward_redeemed", rewardId: "rw-1", rewardTitle: "R", userInput: "" },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const state = await server.app.inject({ method: "GET", url: "/api/state", headers: { cookie } });
+    // Sin overlay, el ítem queda pendiente, pero con sus params ya resueltos.
+    const item = state.json().current ?? state.json().pending[0];
+    expect(item.params.audioOnly).toBe(true);
+  });
+
+  it("Probar alerta de la recompensa propaga audioOnly (config sin guardar)", async () => {
+    const { server, cookie } = await withServer2();
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES ('clip-1','https://x/y','Goku',4,4,'clip-1.mp4','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/clip-1/play",
+      headers: { cookie },
+      payload: { repetition: "queue", audioOnly: true, trimStart: 0, trimEnd: 2 },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.item.params.audioOnly).toBe(true);
+    expect(body.item.params.trimEnd).toBe(2);
+  });
+
+  it("Probar alerta de la biblioteca (el clip solo) siempre es con imagen", async () => {
+    const { server, cookie } = await withServer2();
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES ('clip-1','https://x/y','Goku',4,4,'clip-1.mp4','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/clip-1/play",
+      headers: { cookie },
+      payload: {},
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().item.params.audioOnly).toBe(false);
   });
 });

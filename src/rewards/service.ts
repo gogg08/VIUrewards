@@ -38,6 +38,7 @@ import {
 import type { PlatformIntegration, RewardInput, RewardView } from "../platforms/integration.ts";
 import type { PlayClipActionConfig } from "../rules/index.ts";
 import { ANIMATION_NAMES, normalizeRewardInput, type AnimationName } from "./validate.ts";
+import { resolveAudioOnly } from "./audio-only.ts";
 import type {
   RewardCreateInput,
   RewardListItem,
@@ -107,6 +108,22 @@ export class RewardService {
 
   private isConnected(): boolean {
     return this.integration.status().state === "connected";
+  }
+
+  /** ¿El clip tiene imagen? Sin clip o sin dato se asume que sí. */
+  private clipHasVideo(clipId: string | null): boolean {
+    if (!clipId) return true;
+    const clip = getClip(this.db, clipId);
+    return clip ? clip.hasVideo : true;
+  }
+
+  /** Valor efectivo de "solo audio" para una fila (overlap y clips sin imagen fuerzan). */
+  private effectiveAudioOnly(reward: RewardRecord): boolean {
+    return resolveAudioOnly({
+      repetition: reward.repetition,
+      requested: reward.audioOnly,
+      clipHasVideo: this.clipHasVideo(reward.clipId),
+    }).value;
   }
 
   // --- Vista unificada -------------------------------------------------------
@@ -196,6 +213,11 @@ export class RewardService {
       maxDurationSec: fields.maxDurationSec ?? null,
       cooldownSec: fields.cooldownSec ?? 0,
       repetition: fields.repetition ?? "queue",
+      audioOnly: resolveAudioOnly({
+        repetition: fields.repetition ?? "queue",
+        requested: fields.audioOnly ?? false,
+        clipHasVideo: this.clipHasVideo(fields.clipId),
+      }).value,
       lastFiredAt: null,
       position: fields.position ?? null,
       enterAnimation: fields.enterAnimation ?? null,
@@ -275,9 +297,12 @@ export class RewardService {
     if (fields.maxDurationSec !== undefined) merged.maxDurationSec = fields.maxDurationSec;
     if (fields.cooldownSec !== undefined) merged.cooldownSec = fields.cooldownSec;
     if (fields.repetition !== undefined) merged.repetition = fields.repetition;
+    if (fields.audioOnly !== undefined) merged.audioOnly = fields.audioOnly;
     if (fields.position !== undefined) merged.position = fields.position;
     if (fields.enterAnimation !== undefined) merged.enterAnimation = fields.enterAnimation;
     if (fields.exitAnimation !== undefined) merged.exitAnimation = fields.exitAnimation;
+    // "Solo audio" se recalcula: overlap y clips sin imagen lo fuerzan.
+    merged.audioOnly = this.effectiveAudioOnly(merged);
     merged.lastError = null;
 
     return this.persist(merged, remote, "No se pudo guardar la recompensa");
@@ -519,9 +544,10 @@ export class RewardService {
     createdAt: string,
     updatedAt: string,
   ): RuleRecord {
-    const action: PlayClipActionConfig = { kind: "play_clip", clipId: local.clipId ?? "", volume: local.volume };
+    const action: PlayClipActionConfig = { kind: "play_clip", clipId: local.clipId ?? "", volume: local.volume, label: local.title };
     if (local.maxDurationSec !== null) action.maxDurationSec = local.maxDurationSec;
     if (local.position) action.position = local.position;
+    if (this.effectiveAudioOnly(local)) action.audioOnly = true;
     // El recorte es del clip (no destructivo): se refleja en la acción para que la
     // alerta lo respete igual que "Probar alerta".
     const clip = local.clipId ? getClip(this.db, local.clipId) : null;
@@ -574,6 +600,7 @@ export class RewardService {
       maxDurationSec: local.maxDurationSec,
       cooldownSec: local.cooldownSec,
       repetition: local.repetition,
+      audioOnly: this.effectiveAudioOnly(local),
       position: local.position,
       enterAnimation: local.enterAnimation,
       exitAnimation: local.exitAnimation,
@@ -601,6 +628,7 @@ export class RewardService {
       maxDurationSec: null,
       cooldownSec: 0,
       repetition: "queue",
+      audioOnly: false,
       position: null,
       enterAnimation: null,
       exitAnimation: null,

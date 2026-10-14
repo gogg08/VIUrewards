@@ -42,6 +42,8 @@ export interface RewardListItem {
   cooldownSec: number;
   /** Modo de repetición: "queue" (esperar turno) u "overlap" (superponer audios). */
   repetition: RewardRepetition;
+  /** La alerta suena sin mostrar imagen (forzado en overlap o con clips sin imagen). */
+  audioOnly: boolean;
   position: { x: number; y: number } | null;
   enterAnimation: string | null;
   exitAnimation: string | null;
@@ -73,6 +75,7 @@ export interface RewardPlaybackInput {
   maxDurationSec?: number | null;
   cooldownSec?: number;
   repetition?: RewardRepetition;
+  audioOnly?: boolean;
   position?: { x: number; y: number } | null;
   enterAnimation?: string | null;
   exitAnimation?: string | null;

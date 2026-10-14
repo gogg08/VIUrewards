@@ -50,7 +50,15 @@ La columna es **una caja** con scroll vertical interno (nunca horizontal). Arrib
 
 Lista de recompensas con un botón "Nueva recompensa". Hasta la Etapa 4, la lista se muestra como **tarjetas compactas** con nombre (puede hacer wrap), costo, etiqueta de estado y los botones Editar/Borrar en una fila; las columnas Texto y Regla se quitan de la vista (el dato se conserva).
 
-**Tarjeta colapsada:** nombre de la alerta, costo, nombre del clip, color y un **toggle** de activa/desactiva. Sin miniatura.
+**Tarjeta colapsada** (todos los estados, incluidas las bloqueadas con los botones deshabilitados):
+1. **Nombre** (hace wrap) + **cuadradito de color** a la derecha.
+2. **Resumen en una línea:** costo · modo (`cooldown N s` o `superpuesto`) · ícono de parlante si es solo audio.
+3. **Clip:** nombre y duración (solo si apunta a un clip local).
+4. **Etiqueta de estado**, en su **propia línea**.
+5. **Separador sutil** (sin borde marcado).
+6. **Fila inferior:** Editar y Borrar juntos a la izquierda, el interruptor solo a la derecha (`justify-content: space-between`, centrado vertical, sin wrap en un ancho normal). La etiqueta de estado **nunca** comparte línea con los botones ni con el interruptor.
+
+Espaciado: entre líneas de texto `var(--space-2)`; antes de la fila inferior `var(--space-3)`. El **cuadradito de color es clicable**: abre el selector de color nativo del sistema (botón accesible con `aria-label` "Cambiar color"); al cerrarse o aceptarse se guarda el color, sin diálogos propios de la app. Si el guardado falla, vuelve al color anterior y se muestra el error en español. El interruptor queda deshabilitado — igual que Editar — en los estados bloqueados ("De otra app", "Falta en Kick", sin conexión, sin sincronizar). El color dentro de la ventana de crear/editar es parte del formulario y se guarda con Guardar.
 
 **Estados de una recompensa** (se contrastan con Kick al cargar la app y al apretar "Recargar"):
 
@@ -80,16 +88,17 @@ Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Bib
 - Los errores inmediatos (URL inválida, dominio no permitido, archivo de tipo no soportado) aparecen debajo del campo y no crean una tarea.
 
 ### Biblioteca
-- Grilla de tarjetas **simples**: miniatura, nombre, duración, ícono de parlante si está en modo solo audio (ícono propio si el archivo es de audio), y botón de probar.
+- Grilla de tarjetas **simples**: miniatura, nombre, duración y botón de probar. El **ícono de parlante** aparece cuando el archivo no tiene imagen (solo audio).
 - Filtro Todos / Video / Audio.
 - Clic en una tarjeta abre la ventana de detalle (sección 7.2).
+- **"Solo audio" ya no es una marca del clip**: se quitó el interruptor de las tarjetas. Ahora es una opción de cada recompensa (sección 7.1); el archivo de un clip sin imagen se recuerda en el clip (`has_video`), pero el creador no lo cambia desde la biblioteca.
 
 ## 6. Panel derecho: Cola e Historial
 
 **Una sola caja** con scroll vertical interno (nunca horizontal). Arriba, dentro de la caja, el selector **Cola | Historial**; debajo, el contenido de la pestaña, que scrollea dentro de la caja.
 
-- **Cola:** botones Saltar, Pausar, Reanudar y Vaciar en una sola fila (sin wrap). Muestra el clip en reproducción y los que esperan. Saltar es la forma de destrabar el clip en curso; Vaciar solo limpia la espera. El panel **no** muestra el aviso de overlay desconectado: eso lo informa el indicador del encabezado (con tooltip "Revisá la fuente en OBS"). Debajo, un botón **Cortar audios** corta todas las voces superpuestas de los overlays conectados (modo `overlap`); no toca la cola.
-- **Historial:** **filas de dos líneas**, sin truncar. Línea 1: el título de la recompensa (guardado como texto en el evento, para leerse aunque la recompensa ya no exista; si el evento no lo trae, el tipo en español) y el resultado como etiqueta (`Disparó`, `Disparó · superpuesto`, `Omitido`, etc.). Línea 2: usuario · hora · motivo si lo hay (`cooldown, faltan N s`, `sin overlay conectado`, `el clip no es de solo audio`), en texto secundario. Hora en formato 24 h corto (por ejemplo 18:59).
+- **Cola:** botones Saltar, Pausar, Reanudar, Vaciar y Cortar audios en una sola fila (sin wrap). Muestra el clip en reproducción y los que esperan. **Nombre del ítem (decision):** el servidor resuelve el **nombre del clip** en un solo lugar (`title`, o `"Clip no disponible"` si el clip ya no existe, **nunca el id**) para todos los caminos (canje real, simulador, Probar alerta, reencolado). La UI muestra **"nombre del clip · título de la recompensa"** cuando el contexto de la recompensa difiere del nombre del clip (p. ej. `Goku Ahhh! · test123`); si no hay título de recompensa o coincide con el del clip, muestra solo el nombre. El texto largo **salta de línea** dentro de la caja (`overflow-wrap: anywhere`), nunca desborda ni muestra el id. Cada ítem de **solo audio** lleva un ícono de parlante junto al nombre. Saltar es la forma de destrabar el clip en curso; Vaciar solo limpia la espera. El panel **no** muestra el aviso de overlay desconectado: eso lo informa el indicador del encabezado (con tooltip "Revisá la fuente en OBS"). **Cortar audios** corta todas las voces superpuestas de los overlays conectados (modo `overlap`); no toca la cola.
+- **Historial:** **filas de dos líneas**, sin truncar. Línea 1: el título de la recompensa (guardado como texto en el evento, para leerse aunque la recompensa ya no exista; si el evento no lo trae, el tipo en español) y el resultado como etiqueta (`Disparó`, `Disparó · superpuesto`, `Omitido`, etc.). Línea 2: usuario · hora · motivo si lo hay (`cooldown, faltan N s`, `sin overlay conectado`, `sin clip`), en texto secundario. Hora en formato 24 h corto (por ejemplo 18:59).
 
 ## 7. Ventanas flotantes
 
@@ -99,22 +108,32 @@ Todas se muestran sobre el panel principal, que se oscurece con negro de opacida
 
 **Ventana flotante** (modal sobre el panel oscurecido), no un formulario dentro de la columna. Arranca chica, con **solo el menú desplegable de clip** (nombre y duración, sin miniatura), y crece hacia abajo al elegir un clip, mostrando el resto de los campos, con transición suave, altura máxima y scroll interno; no ocupa toda la pantalla. Al **editar** una recompensa existente el clip ya está elegido, así que abre expandida; si el creador cambia de clip, no se vuelve a achicar. Si no hay ningún clip en la biblioteca, el desplegable muestra un estado vacío con el aviso de que primero hace falta agregar uno.
 
-Campos:
+Campos (una sola columna; ancho `min(600px, calc(100vw - 2rem))`, cuerpo con padding `--space-6` y scroll interno, encabezado y pie fijos; separación entre campos `--space-5`, entre etiqueta y control `--space-2`):
 1. **Clip:** menú desplegable con nombre y duración.
-2. **Nombre de la alerta:** se completa solo con el nombre del clip (limpiado: sin emojis ni hashtags), recortado a 50 caracteres, con contador. Se actualiza al cambiar de clip **mientras el creador no lo haya editado a mano**.
-3. **Costo en puntos.**
-4. **Descripción:** opcional, hasta 200 caracteres.
-5. **Color:** campo hex y selector de color nativo a la derecha, sincronizados y validados (`#RRGGBB`).
+2. **Nombre de la alerta:** se completa solo con el nombre del clip (limpiado: sin emojis ni hashtags), recortado a 50 caracteres, **con contador alineado a la derecha en la línea de la etiqueta**. Se actualiza al cambiar de clip **mientras el creador no lo haya editado a mano**.
+3. **Costo y Color en una fila de dos columnas** (costo angosto, ~40 %; color el resto): dentro de la columna Color, el campo hex y el **selector de color nativo (36–40 px)** van en una fila propia (`.color-row`, `display: flex`, `align-items: center`, `flex-wrap: nowrap`), el cuadradito a la derecha del hex. El hex es flexible (`flex: 1 1 auto; min-width: 0`) y el cuadradito es fijo (`flex: 0 0 auto`). El tamaño del cuadradito del modal (`--color-picker-size`, 40 px) es **mayor a propósito** que el chip de la tarjeta (`--reward-swatch-size`, 20 px): uno es un control, el otro una muestra.
+4. **Descripción:** opcional, hasta 200 caracteres, con contador a la derecha.
+5. **Divisor sutil** y botón fantasma **Opciones avanzadas** a ancho completo, alineado a la izquierda, con chevron.
 
-**Opciones avanzadas (colapsadas):** un selector segmentado **Repetición** con dos opciones:
-- **Esperar turno (`queue`):** se muestra **Duración máxima** y **Cooldown global (s; 0 = sin cooldown)** uno al lado del otro en campos angostos, más posición y animación de entrada y salida. El cooldown es **solo global** (el cooldown por usuario se eliminó); cuenta desde que la alerta se dispara y sobrevive a reinicios.
-- **Superponer (`overlap`):** solo disponible para clips de **solo audio** (con otro clip la opción queda deshabilitada con la explicación "Solo para clips de solo audio"; si el creador cambia a un clip que no lo es estando en superpuesto, vuelve a "Esperar turno" y se le avisa). No hay cooldown: se muestra **Duración máxima** y una línea explicativa ("Los audios suenan a la vez, sin esperar. El máximo simultáneo se cambia en Ajustes → Alertas"). Con superpuesto (o con un clip de solo audio) se **ocultan** Posición y Animaciones (no hay imagen).
+**Opciones avanzadas (colapsadas; una sola columna, cada grupo separado por `--space-5` y con su propio texto de ayuda, que es chico, secundario y va a `--space-2` del control):**
+1. **Repetición:** selector segmentado (Esperar turno | Superponer) a ancho completo, dos mitades iguales, textos en una sola línea (`nowrap`). Ayuda según el modo.
+2. **Solo audio:** etiqueta e interruptor en la misma fila (`space-between`). Ayuda debajo: "Suena sin mostrar la imagen"; en bloqueo, "Superponer siempre es solo audio" o "Este clip no tiene imagen". Es una opción **de la recompensa** (ya no una marca del clip). Queda **encendido y bloqueado** si lo fuerza el modo Superponer o si el clip no tiene imagen. Al volver de Superponer a Esperar turno, el interruptor recupera el valor que el creador había elegido antes. En modo **Esperar turno** con solo audio activado, el overlay reproduce el clip **sin mostrar la imagen** (el video se oculta con `visibility: hidden`, no con `display: none`, para que el audio siga sonando, el recorte y la duración máxima apliquen y los eventos `ended`/`error` sigan llegando) y **sin animación** de entrada/salida. El estado visible se decide por cada reproducción, no queda pegado de la anterior.
+3. **Volumen:** porcentaje a la derecha de la etiqueta; slider a ancho completo (0 a 100 %; se guarda 0 a 1).
+4. **Duración máxima** (placeholder "sin límite", ayuda "Vacío = sin límite") y **Cooldown global** (ayuda "0 = sin espera") en una fila de **dos columnas iguales**. El cooldown se **oculta** en Superponer: **la columna se conserva vacía** para que la duración no se estire ni salte. El cooldown es **solo global**; cuenta desde que la alerta se dispara y sobrevive a reinicios.
+5. **Animación de entrada y de salida**, en dos columnas iguales, **ocultas** si la recompensa es solo audio (no hay imagen).
+
+Si el ancho es menor a 520 px, las filas de dos columnas pasan a una sola. Sin overflow horizontal.
+
+- **Esperar turno (`queue`):** la alerta espera su turno en la cola. Un clip sin imagen suena igual, sin mostrar imagen.
+- **Superponer (`overlap`):** los audios suenan a la vez, sin esperar; **siempre es solo audio** (no hay imagen ni animaciones que mostrar). No hay cooldown. Línea explicativa: "Los audios suenan a la vez, sin esperar. El máximo simultáneo se cambia en Ajustes → Alertas".
+
+**Posición X e Y:** ocultas en la interfaz; se conservan en la base, la API y el código como reservadas, y el overlay no las aplica (sección 3).
 
 Volumen siempre como slider con porcentaje (0 a 100 %; se guarda 0 a 1).
 
 **Interruptores:** "Activar al guardar" es un interruptor (switch), no un checkbox. La tarjeta colapsada de la lista lleva un interruptor de activa/desactiva (`is_enabled`) con los estados de la sección 4.
 
-**Botones:** Probar alerta (reproduce con la configuración actual, sin guardar), Cancelar y Guardar.
+**Pie fijo** (borde superior sutil, padding `var(--space-4) var(--space-6)`): "Probar alerta" (fantasma) a la izquierda; "Cancelar" (secundario) y "Guardar" (primario) a la derecha, con gap `var(--space-3)`.
 
 **Notas:**
 - Se elimina "Pide texto al espectador": va siempre apagado (se envía explícitamente falso a Kick).
@@ -127,13 +146,13 @@ Volumen siempre como slider con porcentaje (0 a 100 %; se guarda 0 a 1).
 
 ### 7.2 Detalle del clip
 
-- **Reproductor grande** con el video (o reproductor de audio si es un archivo de audio). Con "solo audio" activo el video sigue visible acá para elegir el recorte; solo el overlay deja de mostrarlo.
+- **Reproductor grande** con el video (o reproductor de audio si es un archivo de audio). El recorte se elige acá.
 - **Recorte no destructivo:** inicio y fin, con botones "tomar del reproductor" y "restablecer", y la duración resultante.
-- **Solo audio:** toggle con el aviso "Afecta a todas las recompensas que usan este clip". La marca vive en el clip, no en la recompensa. Oculto si el archivo ya es audio.
 - **Nombre:** editable.
 - **Origen:** link de origen o "archivo local", más tamaño y duración.
-- **Probar alerta:** con la configuración actual (recorte y solo audio incluidos).
-- **Guardar / Cancelar:** los cambios se aplican con Guardar, no al instante. Cambiar recorte o solo audio de un clip en reproducción o en cola aplica a las próximas reproducciones; lo que está sonando no se interrumpe.
+- **Probar alerta:** con la configuración actual (recorte incluido).
+- **Guardar / Cancelar:** los cambios se aplican con Guardar, no al instante. Cambiar el recorte de un clip en reproducción o en cola aplica a las próximas reproducciones; lo que está sonando no se interrumpe.
+- **La ventana de detalle NO tiene "Solo audio":** esa opción pasó a ser de cada recompensa (sección 7.1).
 - **Borrar** (al final, separado, en rojo):
   - Si alguna recompensa lo usa (**incluidas las desactivadas**), el borrado se **bloquea** y se listan las recompensas, con la opción de borrarlas con una advertencia extra. Las recompensas "de otra app" aparecen en la lista pero sin opción de borrado.
   - Si es un archivo local, avisa que no se puede recuperar.
@@ -168,7 +187,7 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar
 - **Archivos locales:** se copian a la carpeta de la app con un nombre generado por nosotros; el nombre original solo sirve como título por defecto (escapado y recortado). El archivo original nunca se modifica ni se borra, ni siquiera al borrar el clip.
 - **Validación por contenido** (ffprobe), no por extensión; se rechaza lo que no sea audio o video. Límites configurables de tamaño y duración. Duplicados detectados por contenido.
 - **Normalización:** los videos se convierten como hoy (mp4); los audios a un único formato (m4a). El servidor sigue sirviendo solo formatos de una lista corta de permitidos.
-- **Solo audio** es una marca del clip (`audio_only`): el overlay reproduce el mismo archivo sin mostrar el video. No genera un archivo nuevo.
+- **Solo audio** es una **opción de cada recompensa** (`rewards.audio_only`): el overlay reproduce el mismo archivo sin mostrar el video (o superpone el audio, en modo Superponer). No genera un archivo nuevo. La columna `clips.has_video` dice si el archivo tiene imagen; `clips.audio_only` quedó en desuso (no se lee).
 - **Subida de archivos** desde el navegador: con sesión y validación de origen. Si requiere una dependencia nueva, se pide aprobación.
 - **Limpieza de caché:** la automática solo toca lo que se puede volver a descargar (clips de link). Los archivos locales **nunca se borran solos**: se muestran y el creador decide. Nunca se borra un clip usado por una recompensa activa o desactivada, ni uno que esté en la cola.
 
@@ -185,7 +204,11 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar
 - Tema oscuro por defecto, verde como color de acción principal (el verde se reserva para la acción principal de cada pantalla).
 - **Todos los colores, espaciados, radios y tipografías son variables CSS.** Ningún componente tiene colores escritos directamente. Así los temas futuros (**OLED**, **noche**, **día**) son solo juegos de valores. No se implementan ahora.
 - Botones primario, secundario, peligro y fantasma; tarjetas; formularios; estados vacíos; mensajes de error y de éxito; ventana flotante; desplegable.
-- El logo trae su propio fondo translúcido y **no se adapta al tema** (es el mismo en cualquier tema futuro). Se muestra con altura fija por la variable CSS `--logo-height` (32–40 px; 28 px en ventana angosta) y ancho automático.
+- El logo trae su propio fondo translúcido y **no se adapta al tema** (es el mismo en cualquier tema futuro). Se muestra con altura fija por la variable CSS `--logo-height` (52 px; 36 px en ventana angosta) y ancho automático.
+- **Scroll fino y oscuro en todos los navegadores.** Se define con las propiedades estándar `scrollbar-width: thin` y `scrollbar-color` sobre `*`, con colores en variables (`--scrollbar-thumb`, `--scrollbar-thumb-hover`, `--scrollbar-track`). Como respaldo, dentro de `@supports not (scrollbar-color: auto)`, hay reglas `::-webkit-scrollbar` (8 px) que no deben quedar fuera del bloque: en Chromium reciente anulan las propiedades estándar. `:root` fija `color-scheme: dark` para que los controles nativos (scroll, selects, inputs numéricos, selector de color) usen su variante oscura. Las cajas con scroll vertical usan `scrollbar-gutter: stable` para que el contenido no salte.
+  - `scrollbar-width` / `scrollbar-color` (estándar): soportadas por **Firefox 64+** y **Chromium 121+** (Chrome/Edge).
+  - `::-webkit-scrollbar`: Safari (todas las versiones) y Chromium anteriores a 121 usan el respaldo.
+  - `TODO(verificar)`: confirmar las versiones exactas de Safari con soporte de las propiedades estándar y el momento en que Chromium dejó de requerir el respaldo (la documentación viva de MDN es la referencia). 
 
 ## 12. Decisiones eliminadas
 

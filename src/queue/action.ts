@@ -33,6 +33,8 @@ export interface PlayClipOptions {
   position?: OverlayPosition;
   enterAnimation?: AnimationName;
   exitAnimation?: AnimationName;
+  /** Suena sin mostrar imagen (clip de solo audio). */
+  audioOnly?: boolean;
   label?: string;
 }
 
@@ -56,6 +58,7 @@ export class PlayClip implements Action {
       position: this.options.position,
       enterAnimation: this.options.enterAnimation,
       exitAnimation: this.options.exitAnimation,
+      audioOnly: this.options.audioOnly,
       label: this.options.label,
     });
   }

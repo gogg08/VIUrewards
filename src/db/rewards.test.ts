@@ -14,7 +14,6 @@ import {
   deleteReward,
   findRewardByRemoteId,
   getReward,
-  listOverlapRewardsUsingClip,
   listRewardsForPlatform,
   listRewardsUsingClip,
   setRewardError,
@@ -37,6 +36,7 @@ function baseReward(overrides: Partial<RewardRecord> = {}): RewardRecord {
     maxDurationSec: null,
     cooldownSec: 0,
     repetition: "queue",
+    audioOnly: false,
     lastFiredAt: null,
     position: null,
     enterAnimation: null,
@@ -194,12 +194,12 @@ describe("tabla rewards: acceso básico", () => {
     expect(getReward(db, "r1")?.lastFiredAt).toBe(12_345);
   });
 
-  it("lista las recompensas superpuestas que usan un clip", () => {
+  it("lista las recompensas que usan un clip", () => {
     const db = openMemoryDatabase();
     upsertReward(db, baseReward({ id: "q", clipId: "clip-1", repetition: "queue" }));
     upsertReward(db, baseReward({ id: "o", clipId: "clip-1", repetition: "overlap", remoteRewardId: "rw-o" }));
     upsertReward(db, baseReward({ id: "z", clipId: "clip-1", repetition: "overlap", remoteRewardId: "rw-z" }));
-    expect(listOverlapRewardsUsingClip(db, "clip-1").map((reward) => reward.id)).toEqual(["o", "z"]);
-    expect(listOverlapRewardsUsingClip(db, "otro")).toEqual([]);
+    expect(listRewardsUsingClip(db, "clip-1").map((reward) => reward.id)).toEqual(["o", "q", "z"]);
+    expect(listRewardsUsingClip(db, "otro")).toEqual([]);
   });
 });

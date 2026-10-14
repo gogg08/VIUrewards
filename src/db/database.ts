@@ -14,7 +14,7 @@ import Database from "better-sqlite3";
 export type SqliteDatabase = Database.Database;
 
 /** Cantidad de migraciones aplicadas; equivale al `user_version` esperado. */
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 interface LegacyRuleRow {
   id: string;
@@ -315,6 +315,25 @@ const MIGRATIONS: ReadonlyArray<(db: SqliteDatabase) => void> = [
   // imagen en modo cola.
   (db) => {
     db.exec(`ALTER TABLE clips ADD COLUMN audio_only INTEGER NOT NULL DEFAULT 0;`);
+  },
+  // "Solo audio" pasa de ser una marca del CLIP a una opción de cada RECOMPENSA.
+  //   - `rewards.audio_only`: la recompensa suena sin mostrar imagen. Se inicializa
+  //     con la marca del clip o con el modo overlap (la superposición siempre es
+  //     solo audio).
+  //   - `clips.has_video`: si el archivo tiene imagen. Todos los clips existentes
+  //     son mp4 con video, así que arrancan en 1. La marca de usuario
+  //     `clips.audio_only` deja de usarse (la columna se conserva por seguridad de
+  //     datos, pero ya no la lee nadie).
+  // Genérico: no menciona ninguna plataforma.
+  (db) => {
+    db.exec(`ALTER TABLE rewards ADD COLUMN audio_only INTEGER NOT NULL DEFAULT 0;`);
+    db.exec(`ALTER TABLE clips ADD COLUMN has_video INTEGER NOT NULL DEFAULT 1;`);
+    db.exec(`
+      UPDATE rewards
+         SET audio_only = 1
+       WHERE repetition = 'overlap'
+          OR (clip_id IS NOT NULL AND clip_id IN (SELECT id FROM clips WHERE audio_only = 1));
+    `);
   },
 ];
 

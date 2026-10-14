@@ -20,7 +20,7 @@ import { RewardDispatcher } from "./reward-dispatch.ts";
 
 const REWARD_REMOTE = "rw-1";
 
-function addClip(db: SqliteDatabase, id: string, audioOnly: boolean): void {
+function addClip(db: SqliteDatabase, id: string, hasVideo = true): void {
   upsertClip(db, {
     id,
     sourceUrl: "https://www.youtube.com/watch?v=x",
@@ -31,7 +31,7 @@ function addClip(db: SqliteDatabase, id: string, audioOnly: boolean): void {
     createdAt: new Date().toISOString(),
     trimStart: null,
     trimEnd: null,
-    audioOnly,
+    hasVideo,
   });
 }
 
@@ -49,6 +49,7 @@ function reward(overrides: Partial<RewardRecord> = {}): RewardRecord {
     maxDurationSec: null,
     cooldownSec: 0,
     repetition: "queue",
+    audioOnly: false,
     lastFiredAt: null,
     position: null,
     enterAnimation: null,
@@ -244,12 +245,47 @@ describe("modo superpuesto", () => {
     expect(h.resolutions).toEqual([]);
   });
 
-  it("si el clip no es de solo audio queda omitido con el motivo exacto", async () => {
+  it("el modo overlap siempre usa playAudio, aunque el clip tenga imagen", async () => {
     const h = makeHarness();
-    addClip(h.db, "clip-1", false);
+    addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ repetition: "overlap" }));
     const result = await h.dispatcher.process(rewardEvent("c1"));
-    expect(result).toMatchObject({ outcome: "skipped", reason: "el clip no es de solo audio" });
-    expect(h.audios).toEqual([]);
+    expect(result.outcome).toBe("fired");
+    expect(h.audios).toHaveLength(1);
+    expect(h.queue.getState().current).toBeNull();
+  });
+});
+
+describe("modo cola con solo audio", () => {
+  it("encola el clip marcando audioOnly (el overlay oculta la imagen)", async () => {
+    const db = openMemoryDatabase();
+    const queue = new AlertQueue();
+    const engine = new RuleEngine({ queue });
+    engine.setRules([
+      {
+        id: "rule-1",
+        name: "Recompensa: Alerta",
+        enabled: true,
+        trigger: { type: "reward_redeemed", rewardId: REWARD_REMOTE },
+        conditions: { permission: "everyone" },
+        action: { kind: "play_clip", clipId: "clip-1", audioOnly: true },
+      },
+    ]);
+    const dispatcher = new RewardDispatcher({
+      db,
+      engine,
+      now: () => 1_000,
+      broadcastAudio: () => 1,
+      resolveEvent: async () => {},
+      mediaUrl: (clipId) => `/media/${clipId}.mp4`,
+      globalVolume: () => 100,
+      defaultMaxDuration: () => 30,
+      maxVoices: () => 8,
+    });
+    addClip(db, "clip-1", true);
+    upsertReward(db, reward({ repetition: "queue", audioOnly: true }));
+    const result = await dispatcher.process(rewardEvent("c1"));
+    expect(result.outcome).toBe("fired");
+    expect(queue.getState().current?.params.audioOnly).toBe(true);
   });
 });

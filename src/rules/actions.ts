@@ -21,6 +21,8 @@ export function defaultActionResolver(config: RuleActionConfig): RuleAction {
     position: config.position,
     enterAnimation: config.enterAnimation,
     exitAnimation: config.exitAnimation,
+    audioOnly: config.audioOnly,
+    label: config.label,
   });
   // `PlayClip` encola; el motor solo ve esta interfaz. Adaptamos el retorno
   // (QueueItem) a `void` para satisfacer `RuleAction`.

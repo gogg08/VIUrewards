@@ -7,7 +7,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 
 import { AlertQueue } from "../queue/index.ts";
-import { openMemoryDatabase } from "../db/index.ts";
+import { listRules, openMemoryDatabase, toRule } from "../db/index.ts";
+import { createEvent, EmitterEventSource } from "../events/index.ts";
+import type { PlatformIntegration } from "../platforms/index.ts";
 import { createServer as createAppServer, type AppServer } from "./server.ts";
 import { attachWebSocket, type WebSocketHub, type WebSocketOptions } from "./ws.ts";
 
@@ -224,6 +226,163 @@ describe("servidor - gating del overlay", () => {
 
     const after = await server.app.inject({ method: "GET", url: "/api/state", headers: { cookie } });
     expect(after.json().overlay.clients).toBe(1);
+    ws.close();
+  });
+});
+
+describe("audioOnly viaja en el mensaje play (camino de canje real)", () => {
+  function fakeKickIntegration(): PlatformIntegration {
+    class FakeKickSource extends EmitterEventSource {
+      async resolve(): Promise<void> {
+        /* El adaptador real habla con la API; acá no hace falta. */
+      }
+    }
+    const source = new FakeKickSource({
+      id: "kick",
+      platform: "kick",
+      capabilities: { types: ["reward_redeemed"], resolve: true },
+    });
+    const account = {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      state: "connected" as const,
+      accountId: "u1",
+      accountName: "Canal",
+      capabilities: source.capabilities,
+      hasCredentials: true,
+      clientId: "cid",
+      lastError: null,
+    };
+    const notImplemented = async (): Promise<never> => {
+      throw new Error("no implementado en el test");
+    };
+    return {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      source,
+      status: () => account,
+      setCredentials: notImplemented,
+      clearCredentials: async () => {},
+      beginLink: notImplemented,
+      completeLink: notImplemented,
+      unlink: async () => {},
+      test: notImplemented,
+      diagnostics: () => ({
+        enabled: true,
+        intervalMs: 5000,
+        lastCheckAt: null,
+        lastResult: null,
+        lastError: null,
+        latencyLastMs: null,
+        latencyMinMs: null,
+        latencyTypicalMs: null,
+        latencyMaxMs: null,
+        rateLimit429Count: 0,
+        lastRateLimitHeaders: {},
+      }),
+      listRewards: notImplemented,
+      createReward: notImplemented,
+      updateReward: notImplemented,
+      deleteReward: notImplemented,
+      listPendingRedemptions: notImplemented,
+      rejectRedemptions: notImplemented,
+      start: async () => {},
+      stop: async () => {},
+    };
+  }
+
+  async function withQueueServer(): Promise<{ server: AppServer; port: number }> {
+    const parent = mkdtempSync(join(tmpdir(), "ws-audio-test-"));
+    dirs.push(parent);
+    const mediaDir = join(parent, "media");
+    mkdirSync(mediaDir, { recursive: true });
+    const server = await createAppServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      port: 0,
+      requireOverlay: true,
+      platforms: [fakeKickIntegration()],
+    });
+    servers.push(server);
+    const info = await server.start();
+    return { server, port: info.port };
+  }
+
+  function seedClipAndReward(server: AppServer, audioOnly: boolean): void {
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES ('clip-1','https://x/y','Goku Ahhh!',4,4,'clip-1.mp4','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    server.db
+      .prepare(
+        `INSERT INTO rewards (id, platform, remote_reward_id, title, cost, color, description,
+           clip_id, volume, max_duration_sec, cooldown_sec, repetition, audio_only, desired_enabled,
+           managed, synced, rule_id, created_at, updated_at)
+         VALUES ('local-1','kick','rw-1','test123',100,'#64f7d9','', 'clip-1',1,30,0,'queue',?,1,1,1,'rule-1',
+           '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run(audioOnly ? 1 : 0);
+    // La regla interna la arma RewardService.buildRule con audioOnly cuando
+    // corresponde; acá replicamos esa forma (la clave que prueba el bug).
+    const action: Record<string, unknown> = { kind: "play_clip", clipId: "clip-1", label: "test123" };
+    if (audioOnly) action.audioOnly = true;
+    server.db
+      .prepare(
+        `INSERT INTO rules (id, name, enabled, trigger_json, conditions_json, action_json, created_at, updated_at)
+         VALUES ('rule-1','Recompensa: test123',1,
+           '{"type":"reward_redeemed","rewardId":"rw-1"}',
+           '{"permission":"everyone"}',
+           ?, '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run(JSON.stringify(action));
+    server.engine.setRules(listRules(server.db).map(toRule));
+  }
+
+  it("una recompensa en queue con audio_only activo manda params.audioOnly=true", async () => {
+    const { server, port } = await withQueueServer();
+    seedClipAndReward(server, true);
+
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    const event = createEvent({
+      id: "c1",
+      platform: "kick",
+      type: "reward_redeemed",
+      user: { id: "u1", name: "Ana", roles: [] },
+      payload: { rewardId: "rw-1", rewardTitle: "test123", userInput: "" },
+    });
+    await server.coordinator.receive(event);
+
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const play = messages.find((m) => m.type === "play");
+    const item = play?.item as { clipId: string; params: { audioOnly: boolean } };
+    expect(item.clipId).toBe("clip-1");
+    // El overlay decide ocultar la imagen con este campo.
+    expect(item.params.audioOnly).toBe(true);
+    ws.close();
+  });
+
+  it("sin audio_only, params.audioOnly es false", async () => {
+    const { server, port } = await withQueueServer();
+    seedClipAndReward(server, false);
+
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    const event = createEvent({
+      id: "c1",
+      platform: "kick",
+      type: "reward_redeemed",
+      user: { id: "u1", name: "Ana", roles: [] },
+      payload: { rewardId: "rw-1", rewardTitle: "test123", userInput: "" },
+    });
+    await server.coordinator.receive(event);
+
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const play = messages.find((m) => m.type === "play");
+    const item = play?.item as { params: { audioOnly: boolean } };
+    expect(item.params.audioOnly).toBe(false);
     ws.close();
   });
 });
