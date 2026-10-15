@@ -32,14 +32,26 @@ function dashboardApp() {
     clips: [],
     overlay: { key: "", url: "" },
     overlayRevealed: false,
-    job: null,
+    // Trabajos de descarga/subida de esta sesión (los últimos 20 se muestran en
+    // el panel Descargas). El estado se refresca con polling de /api/jobs.
+    jobs: [],
     message: "",
     copied: false,
-    editingId: null,
-    editTitle: "",
+    // Archivos subiéndose ahora mismo (para el tope de subidas simultáneas).
+    uploadingCount: 0,
+    // Arrastrando archivos sobre la página (aviso "Soltá para agregar...").
+    dragActive: false,
+    dragDepth: 0,
+    // Filtro de la biblioteca: "all" | "video" | "audio" (Etapa 3A).
+    libraryFilter: "all",
+    // Detalle del clip abierto (borrador editable; null = cerrado).
+    clipDetail: null,
+    // Confirmación de borrado del clip (null = cerrada).
+    clipDelete: null,
     pollTimer: null,
     queueTimer: null,
     feedTimer: null,
+    jobsTimer: null,
 
     // --- Interfaz (Etapa 2 del rediseño) -------------------------------------
     settingsOpen: false,
@@ -129,12 +141,26 @@ function dashboardApp() {
     diagnostics: null,
 
     get downloading() {
-      return this.job !== null && ["queued", "downloading", "converting"].includes(this.job.status);
+      return this.jobs.some((job) => ["queued", "downloading", "converting"].includes(job.status)) || this.uploadingCount > 0;
     },
 
-    get jobLabel() {
-      if (!this.job) return "";
-      switch (this.job.status) {
+    // ¿Hay algún trabajo con error que todavía no se vio?
+    get jobsHaveError() {
+      return this.jobs.some((job) => job.status === "error");
+    },
+
+    // Los últimos 20 trabajos de la sesión, más nuevos primero.
+    get recentJobs() {
+      return this.jobs.slice(0, 20);
+    },
+
+    get downloadsEmpty() {
+      return this.jobs.length === 0 && this.uploadingCount === 0;
+    },
+
+    jobLabel(job) {
+      if (!job) return "";
+      switch (job.status) {
         case "queued":
           return "En cola...";
         case "downloading":
@@ -144,10 +170,35 @@ function dashboardApp() {
         case "ready":
           return "Listo";
         case "error":
-          return this.job.message || "No se pudo descargar.";
+          return job.message || "No se pudo descargar.";
         default:
           return "";
       }
+    },
+
+    // Etiqueta de la fila: nombre del archivo local, o el link recortado.
+    jobName(job) {
+      if (!job) return "";
+      if (job.kind === "local") return job.filename || "Archivo local";
+      return this.shortUrl(job.url);
+    },
+
+    shortUrl(url) {
+      const text = String(url || "");
+      try {
+        const parsed = new URL(text);
+        const path = parsed.pathname.length > 1 ? parsed.pathname : "";
+        return (parsed.hostname + path).slice(0, 60);
+      } catch {
+        return text.slice(0, 60);
+      }
+    },
+
+    // ¿El error de un trabajo parece de yt-dlp desactualizado?
+    jobNeedsYtdlpUpdate(job) {
+      if (!job || job.status !== "error") return false;
+      const message = String(job.message || "").toLowerCase();
+      return message.includes("yt-dlp") || message.includes("actualiz");
     },
 
     get maskedOverlayUrl() {
@@ -235,7 +286,7 @@ function dashboardApp() {
 
     get downloadStatusClass() {
       if (this.downloading) return "ok";
-      if (this.job && this.job.status === "error" && this.downloadErrorUnseen) return "error";
+      if (this.jobsHaveError && this.downloadErrorUnseen) return "error";
       // Cadena vacía: no se muestra el punto.
       return "";
     },
@@ -355,6 +406,7 @@ function dashboardApp() {
         this.loadRules(),
         this.loadEvents(),
         this.loadPlatforms(),
+        this.refreshJobs(),
       ]);
       // Datos de la plataforma activa (recompensas y canjes pendientes antiguos).
       await this.loadRewards(this.activePlatform);
@@ -367,6 +419,8 @@ function dashboardApp() {
         void this.loadEvents();
         void this.loadOldRedemptions(this.activePlatform);
       }, 2000);
+      // Trabajos de descarga/subida.
+      this.startJobsPolling();
     },
 
     async loadClips() {
@@ -397,100 +451,386 @@ function dashboardApp() {
       });
       const data = await response.json();
       if (!response.ok || !data.ok) {
-        this.message = "No se pudo iniciar la descarga.";
+        // Error inmediato (URL inválida, dominio no permitido): no crea una tarea.
+        this.message = data.message || "No se pudo iniciar la descarga.";
         return;
       }
-      this.job = data.job;
+      this.url = "";
       this.downloadErrorUnseen = false;
-      this.pollJob(data.job.id);
+      await this.refreshJobs();
+      this.notifyAdded();
     },
 
-    pollJob(id) {
-      if (this.pollTimer !== null) clearTimeout(this.pollTimer);
-      this.pollTimer = setTimeout(async () => {
-        const response = await api("/api/jobs/" + encodeURIComponent(id));
-        const data = await response.json();
-        if (!data.ok) {
-          this.job = { status: "error", message: "No se encontró el trabajo." };
+    // --- Descargas y archivos locales (Etapa 3B) -------------------------------
+
+    // Refresca la lista de trabajos desde el servidor y recarga la biblioteca si
+    // cambió la cantidad de clips listos.
+    async refreshJobs() {
+      const response = await api("/api/jobs");
+      if (!response.ok) return;
+      const data = await response.json();
+      const previousReady = new Set(
+        this.jobs.filter((job) => job.status === "ready").map((job) => job.id),
+      );
+      const next = Array.isArray(data.jobs) ? data.jobs : [];
+      const newlyReady = next.some((job) => job.status === "ready" && !previousReady.has(job.id));
+      if (next.some((job) => job.status === "error")) this.downloadErrorUnseen = true;
+      this.jobs = next;
+      if (newlyReady) await this.loadClips();
+    },
+
+    startJobsPolling() {
+      if (this.jobsTimer !== null) clearInterval(this.jobsTimer);
+      this.jobsTimer = setInterval(() => void this.refreshJobs(), 1000);
+    },
+
+    // Aviso breve al agregar algo a descargas (no abre el panel).
+    notifyAdded() {
+      this.message = "";
+    },
+
+    // Sube un archivo local (input o arrastrado). Respeta el tope de subidas.
+    async uploadFiles(fileList) {
+      const files = Array.from(fileList || []);
+      if (files.length === 0) return;
+      for (const file of files) {
+        if (this.uploadingCount >= 2) {
+          this.message = "Hay dos archivos subiéndose; esperá a que terminen.";
+          break;
+        }
+        void this.uploadOne(file);
+      }
+    },
+
+    async uploadOne(file) {
+      this.uploadingCount += 1;
+      try {
+        const form = new FormData();
+        form.append("file", file, file.name);
+        const response = await api("/api/uploads", { method: "POST", body: form });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          this.message = data.message || "No se pudo agregar el archivo.";
           return;
         }
-        this.job = data.job;
-        if (this.job.status === "ready") {
-          this.url = "";
-          await this.loadClips();
-        } else if (this.job.status === "error") {
-          this.downloadErrorUnseen = true;
-        } else {
-          this.pollJob(id);
-        }
-      }, 1000);
+        this.downloadErrorUnseen = false;
+        await this.refreshJobs();
+      } finally {
+        this.uploadingCount = Math.max(0, this.uploadingCount - 1);
+      }
     },
 
-    startRename(clip) {
-      this.editingId = clip.id;
-      this.editTitle = clip.title;
+    openFilePicker() {
+      const input = this.$refs.fileInput;
+      if (input) input.click();
     },
 
-    async saveRename(clip) {
-      const title = this.editTitle.trim();
-      if (!title) return;
-      const response = await api("/api/clips/" + encodeURIComponent(clip.id) + "/rename", {
+    onFilePicked(event) {
+      const input = event.target;
+      const files = input && input.files ? input.files : [];
+      void this.uploadFiles(files);
+      // Permite volver a elegir el mismo archivo.
+      if (input) input.value = "";
+    },
+
+    // --- Arrastrar y soltar (toda la página) -----------------------------------
+
+    onDragEnter(event) {
+      if (this.settingsOpen) return;
+      if (!this.hasFiles(event)) return;
+      this.dragDepth += 1;
+      this.dragActive = true;
+    },
+
+    onDragOver(event) {
+      if (!this.hasFiles(event)) return;
+      // Evita que el navegador abra el archivo al soltarlo, esté Ajustes abierto o no.
+      event.preventDefault();
+      if (this.settingsOpen) return;
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    },
+
+    onDragLeave() {
+      this.dragDepth = Math.max(0, this.dragDepth - 1);
+      if (this.dragDepth === 0) this.dragActive = false;
+    },
+
+    onDrop(event) {
+      this.dragDepth = 0;
+      this.dragActive = false;
+      // Siempre se evita que el navegador abra el archivo soltado, aunque Ajustes
+      // esté abierto (en ese caso se ignora la subida).
+      event.preventDefault();
+      if (this.settingsOpen) return;
+      const files = this.filesFromEvent(event);
+      if (files.length > 0) void this.uploadFiles(files);
+    },
+
+    hasFiles(event) {
+      const dt = event && event.dataTransfer;
+      if (!dt) return false;
+      if (dt.types && Array.from(dt.types).includes("Files")) return true;
+      return dt.items ? Array.from(dt.items).some((item) => item.kind === "file") : false;
+    },
+
+    filesFromEvent(event) {
+      const dt = event && event.dataTransfer;
+      if (!dt) return [];
+      if (dt.files && dt.files.length > 0) return Array.from(dt.files);
+      if (dt.items) {
+        return Array.from(dt.items)
+          .filter((item) => item.kind === "file")
+          .map((item) => item.getAsFile())
+          .filter(Boolean);
+      }
+      return [];
+    },
+
+    // --- Panel Descargas --------------------------------------------------------
+
+    async retryJob(job) {
+      if (!job) return;
+      if (job.kind === "local") return;
+      await this.startDownloadUrl(job.url);
+    },
+
+    async startDownloadUrl(url) {
+      this.message = "";
+      const response = await api("/api/download", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ url: String(url || "").trim() }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        this.message = data.message || "No se pudo iniciar la descarga.";
+        return;
+      }
+      this.downloadErrorUnseen = false;
+      await this.refreshJobs();
+    },
+
+    async cancelJob(job) {
+      if (!job || job.status === "ready" || job.status === "error") return;
+      await api("/api/jobs/" + encodeURIComponent(job.id) + "/cancel", { method: "POST" });
+      await this.refreshJobs();
+    },
+
+    removeJob(job) {
+      if (!job) return;
+      this.jobs = this.jobs.filter((item) => item.id !== job.id);
+    },
+
+    clearFinishedJobs() {
+      this.jobs = this.jobs.filter((job) => job.status !== "ready" && job.status !== "error");
+    },
+
+    async viewJobClip(job) {
+      if (!job || !job.clipId) return;
+      await this.loadClips();
+      const clip = this.clips.find((item) => item.id === job.clipId);
+      if (clip) {
+        this.downloadsOpen = false;
+        this.openClip(clip);
+      }
+    },
+
+    openYtdlpSettings() {
+      this.openSettings("library");
+    },
+
+    // --- Biblioteca (Etapa 3A) -------------------------------------------------
+
+    // Clips que pasan el filtro actual (Todos / Video / Audio).
+    filteredClips() {
+      const clips = this.clips || [];
+      if (this.libraryFilter === "video") return clips.filter((clip) => clip.hasVideo !== false);
+      if (this.libraryFilter === "audio") return clips.filter((clip) => clip.hasVideo === false);
+      return clips;
+    },
+
+    setLibraryFilter(filter) {
+      this.libraryFilter = filter;
+    },
+
+    // Abre la ventana de detalle con un borrador editable de los campos del clip.
+    openClip(clip) {
+      this.clipDetail = {
+        id: clip.id,
+        title: clip.title,
+        file: clip.file,
+        hasVideo: clip.hasVideo !== false,
+        isLocal: clip.sourceUrl === "" || clip.local === true,
+        sourceUrl: clip.sourceUrl,
+        sizeBytes: clip.sizeBytes,
+        durationSec: clip.durationSec,
+        trimStart: clip.trimStart,
+        trimEnd: clip.trimEnd,
+        saved: false,
+        error: "",
+      };
+    },
+
+    closeClip() {
+      const detail = this.clipDetail;
+      if (!detail) return;
+      const changed =
+        detail.title !== this.clipById(detail.id)?.title ||
+        detail.trimStart !== this.clipById(detail.id)?.trimStart ||
+        detail.trimEnd !== this.clipById(detail.id)?.trimEnd;
+      if (changed && !window.confirm("Hay cambios sin guardar. ¿Cerrar igual?")) return;
+      this.clipDetail = null;
+    },
+
+    closeClipBackdrop(event) {
+      if (event.target === event.currentTarget) this.closeClip();
+    },
+
+    useClipTime(which) {
+      const player = this.$refs.clipPlayer;
+      if (!player) return;
+      const seconds = Math.round(player.currentTime * 10) / 10;
+      if (which === "start") this.clipDetail.trimStart = seconds;
+      else this.clipDetail.trimEnd = seconds;
+    },
+
+    resetClipTrim() {
+      if (!this.clipDetail) return;
+      this.clipDetail.trimStart = null;
+      this.clipDetail.trimEnd = null;
+    },
+
+    // Duración resultante del recorte del borrador (para mostrarla).
+    clipResultDuration() {
+      const detail = this.clipDetail;
+      if (!detail) return "";
+      const start = Number(detail.trimStart) || 0;
+      const total = Number(detail.durationSec) || 0;
+      const end = detail.trimEnd === null || detail.trimEnd === undefined ? total : Number(detail.trimEnd);
+      return this.formatDuration(Math.max(0, end - start));
+    },
+
+    // Guarda nombre y recorte juntos (los cambios se aplican con Guardar).
+    async saveClipDetail() {
+      const detail = this.clipDetail;
+      if (!detail) return;
+      detail.error = "";
+      const title = String(detail.title || "").trim();
+      if (!title) {
+        detail.error = "El nombre no puede quedar vacío.";
+        return;
+      }
+
+      const rename = await api("/api/clips/" + encodeURIComponent(detail.id) + "/rename", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ title }),
       });
-      if (response.ok) {
-        clip.title = title;
-        this.editingId = null;
-      }
-    },
-
-    async remove(clip) {
-      if (!window.confirm("¿Borrar el clip \"" + clip.title + "\"? Esta acción no se puede deshacer.")) {
+      const renameData = await rename.json().catch(() => ({}));
+      if (!rename.ok) {
+        detail.error = renameData.message || "No se pudo guardar el nombre.";
         return;
       }
-      const response = await api("/api/clips/" + encodeURIComponent(clip.id), { method: "DELETE" });
-      if (response.ok) await this.loadClips();
-    },
 
-    // --- Recorte no destructivo ------------------------------------------------
-
-    useCurrentTime(clip, which) {
-      const video = document.getElementById("clip-video-" + clip.id);
-      if (!video) return;
-      const seconds = Math.round(video.currentTime * 10) / 10;
-      if (which === "start") clip.trimStart = seconds;
-      else clip.trimEnd = seconds;
-    },
-
-    async saveTrim(clip) {
-      const response = await api("/api/clips/" + encodeURIComponent(clip.id) + "/trim", {
+      const trim = await api("/api/clips/" + encodeURIComponent(detail.id) + "/trim", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          trimStart: numberOrNull(clip.trimStart),
-          trimEnd: numberOrNull(clip.trimEnd),
+          trimStart: numberOrNull(detail.trimStart),
+          trimEnd: numberOrNull(detail.trimEnd),
+        }),
+      });
+      const trimData = await trim.json().catch(() => ({}));
+      if (!trim.ok) {
+        detail.error = trimData.message || "No se pudo guardar el recorte.";
+        return;
+      }
+
+      await this.loadClips();
+      const saved = this.clipById(detail.id);
+      if (saved) {
+        detail.title = saved.title;
+        detail.trimStart = saved.trimStart;
+        detail.trimEnd = saved.trimEnd;
+      }
+      detail.saved = true;
+      setTimeout(() => (detail.saved = false), 1500);
+    },
+
+    // "Probar alerta" del detalle: reproduce con el recorte actual (siempre con imagen).
+    async testClipDetail() {
+      const detail = this.clipDetail;
+      if (!detail) return;
+      detail.error = "";
+      const response = await api("/api/clips/" + encodeURIComponent(detail.id) + "/play", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          trimStart: numberOrNull(detail.trimStart),
+          trimEnd: numberOrNull(detail.trimEnd),
         }),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        this.message = data.message || "No se pudo guardar el recorte.";
+        detail.error = data.message || "No se pudo probar la alerta.";
         return;
       }
-      clip.trimStart = data.clip.trimStart;
-      clip.trimEnd = data.clip.trimEnd;
-      clip.trimSaved = true;
-      setTimeout(() => (clip.trimSaved = false), 1500);
+      await this.loadQueue();
     },
 
-    async resetTrim(clip) {
-      clip.trimStart = null;
-      clip.trimEnd = null;
-      await this.saveTrim(clip);
+    // --- Borrado del clip (con la guarda de recompensas que lo usan) ----------
+
+    askDeleteClip() {
+      const detail = this.clipDetail;
+      if (!detail) return;
+      const clip = this.clipById(detail.id);
+      if (!clip) return;
+      this.clipDelete = { clip, using: [] };
+      // Se consulta la lista de recompensas que lo usan al pedir el borrado.
+      this.loadClipUsage(clip.id);
     },
 
+    async loadClipUsage(clipId) {
+      const response = await api("/api/clips/" + encodeURIComponent(clipId) + "/usage");
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && this.clipDelete) this.clipDelete.using = data.rewards || [];
+    },
+
+    cancelClipDelete() {
+      this.clipDelete = null;
+    },
+
+    // `alsoRewards` = true cuando el creador acepta borrar las recompensas que lo usan.
+    async confirmDeleteClip(alsoRewards) {
+      const pending = this.clipDelete;
+      if (!pending) return;
+      const response = await api("/api/clips/" + encodeURIComponent(pending.clip.id), {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ deleteUsingRewards: alsoRewards === true }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        this.clipDelete = null;
+        if (this.clipDetail) {
+          this.clipDetail.error = data.message || "No se pudo borrar el clip.";
+        }
+        return;
+      }
+      this.clipDelete = null;
+      this.clipDetail = null;
+      await this.loadClips();
+      // Si el borrado también se llevó recompensas que usaban el clip, el panel
+      // izquierdo queda desactualizado: se recarga para que desaparezcan. Un
+      // segundo después se repite por si la baja de recompensas demoró en asentar.
+      if (alsoRewards === true) {
+        await this.loadRewards(this.activePlatform);
+        setTimeout(() => void this.loadRewards(this.activePlatform), 1000);
+      }
+    },
+
+    // "Probar alerta" desde la tarjeta de la biblioteca (el clip solo, con imagen).
     async play(clip) {
-      this.message = "";
       const response = await api("/api/clips/" + encodeURIComponent(clip.id) + "/play", {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -499,14 +839,7 @@ function dashboardApp() {
           trimEnd: numberOrNull(clip.trimEnd),
         }),
       });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        this.message = data.message || "No se pudo probar la alerta.";
-        return;
-      }
-      this.message = "Alerta enviada a la cola.";
-      await this.loadQueue();
-      setTimeout(() => (this.message = ""), 2500);
+      if (response.ok) await this.loadQueue();
     },
 
     // --- Cola ------------------------------------------------------------------

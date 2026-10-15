@@ -42,6 +42,11 @@ export interface WebSocketOptions {
   resolveWatchdogMarginMs?: () => number;
   /** Se avisa cuando cambia la cantidad de overlays conectados. */
   onClientsChanged?: (count: number) => void;
+  /**
+   * Devuelve la URL de reproducción de un clip (mp4 o m4a) con la clave del
+   * overlay. Si falta, se usa `clipUrl` (mp4) como antes.
+   */
+  resolveClipUrl?: (clipId: string) => string;
 }
 
 const WS_PATH = "/ws";
@@ -151,7 +156,9 @@ export function attachWebSocket(
         const sent = sendToAll({
           type: "play",
           item: state.current,
-          url: clipUrl(state.current.clipId),
+          url: options.resolveClipUrl
+            ? options.resolveClipUrl(state.current.clipId)
+            : clipUrl(state.current.clipId),
         });
         debug(`play "${state.current.clipId}" (${state.current.id}) a ${sent} overlay(s)`);
         armWatchdog(state.current);

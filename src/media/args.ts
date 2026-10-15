@@ -87,3 +87,61 @@ export function buildFfmpegArgs(
     outputPath,
   ];
 }
+
+/**
+ * Args de ffprobe para inspeccionar un archivo local por CONTENIDO (Etapa 3B).
+ * Devuelve un JSON con los streams y el formato; la extensión del archivo no se
+ * usa para decidir el tipo. `-show_error` deja el error legible si el archivo no
+ * es media.
+ */
+export function buildFfprobeArgs(inputPath: string): string[] {
+  return [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-print_format",
+    "json",
+    "-show_format",
+    "-show_streams",
+    "-i",
+    inputPath,
+  ];
+}
+
+export interface AudioFfmpegArgsOptions {
+  /** Bitrate de audio en kbps. */
+  audioBitrateKbps?: number;
+}
+
+/**
+ * Args de ffmpeg para normalizar un archivo SIN imagen a m4a (AAC), aplicando la
+ * misma normalización de volumen que los videos (Etapa 3B).
+ */
+export function buildAudioFfmpegArgs(
+  inputPath: string,
+  outputPath: string,
+  options: AudioFfmpegArgsOptions = {},
+): string[] {
+  const bitrate = options.audioBitrateKbps ?? 128;
+  return [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    "-y",
+    "-i",
+    inputPath,
+    "-vn",
+    "-c:a",
+    "aac",
+    "-b:a",
+    `${bitrate}k`,
+    "-af",
+    "loudnorm=I=-16:TP=-1.5:LRA=11",
+    "-movflags",
+    "+faststart",
+    "-f",
+    "ipod",
+    outputPath,
+  ];
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildFfmpegArgs, buildYtdlpArgs } from "./args.ts";
+import { buildAudioFfmpegArgs, buildFfmpegArgs, buildFfprobeArgs, buildYtdlpArgs } from "./args.ts";
 
 const TEMPLATE = "/media/abc.%(ext)s";
 
@@ -91,5 +91,27 @@ describe("buildFfmpegArgs", () => {
     const args = buildFfmpegArgs("/a", "/b", { maxHeight: 720 });
     const scaleIndex = args.indexOf("-vf");
     expect(args[scaleIndex + 1]).toContain("720");
+  });
+});
+
+describe("buildFfprobeArgs", () => {
+  it("pide streams y formato en JSON, con la entrada al final", () => {
+    const args = buildFfprobeArgs("/tmp/archivo.bin");
+    expect(Array.isArray(args)).toBe(true);
+    expect(args).toContain("-show_streams");
+    expect(args).toContain("-show_format");
+    expect(args.join(" ")).toContain("json");
+    expect(args.at(-1)).toBe("/tmp/archivo.bin");
+  });
+});
+
+describe("buildAudioFfmpegArgs", () => {
+  it("convierte a AAC sin video y con faststart", () => {
+    const args = buildAudioFfmpegArgs("/tmp/cancion.bin", "/media/abc.m4a");
+    expect(args).toContain("-vn");
+    expect(args).toContain("aac");
+    expect(args).toContain("+faststart");
+    expect(args.at(-1)).toBe("/media/abc.m4a");
+    expect(args.join(" ")).not.toContain("libx264");
   });
 });

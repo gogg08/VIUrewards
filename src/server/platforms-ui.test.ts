@@ -86,7 +86,6 @@ const NULLABLE_STATE = [
   "rewardDelete",
   "rewardPending",
   "diagnostics",
-  "job",
   "activePlatform",
 ];
 
@@ -260,6 +259,16 @@ describe("UI del dashboard (plataformas)", () => {
     expect(overlay).toMatch(/#clip\s*\{[^}]*background:\s*transparent/s);
     // La posición X/Y ya no se aplica en el overlay (queda reservada).
     expect(overlay).not.toMatch(/anchor\.style\.left/);
+  });
+
+  it("el overlay usa la URL del mensaje play (resuelve mp4 o m4a) en vez de fijar .mp4", () => {
+    const overlay = readFileSync(join(overlayDir, "index.html"), "utf8");
+    // La reproducción pasa la URL explícita del servidor; el respaldo solo
+    // aplica cuando no viene (por ejemplo el `state` al reconectar).
+    expect(overlay).toMatch(/play\(message\.item,\s*message\.url\)/);
+    expect(overlay).toMatch(/function mediaUrl\(clipId,\s*explicitUrl\)/);
+    expect(overlay).toMatch(/if \(explicitUrl\) return explicitUrl;/);
+    expect(overlay).toMatch(/const url = mediaUrl\(item\.clipId,\s*explicitUrl\);/);
   });
 
   it("el desplegable de clip del modal reafirma su valor tras renderizar las opciones", () => {

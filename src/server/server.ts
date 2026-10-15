@@ -11,10 +11,12 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { createWriteStream, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
+import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 
@@ -65,8 +67,8 @@ import { RuleEngine, validateRuleInput, type EngineResult } from "../rules/index
 import type { Clip, MediaOptions } from "../media/index.ts";
 import { createPlatformIntegrations, type PlatformIntegration } from "../platforms/index.ts";
 import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index.ts";
-import { ANIMATION_NAMES, suggestedTitle } from "../rewards/index.ts";
-import { registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
+import { ANIMATION_NAMES, RewardService, suggestedTitle } from "../rewards/index.ts";
+import { httpStatusForPlatformReason, registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
 import { registerRewardApiRoutes } from "./rewards-routes.ts";
 import { clipUrl } from "./protocol.ts";
 import { RewardDispatcher } from "./reward-dispatch.ts";
@@ -83,6 +85,8 @@ export const SESSION_TTL_SEC = 7 * 24 * 60 * 60;
 export interface ServerOptions {
   /** Carpeta desde donde se sirven los clips en /media. */
   mediaDir: string;
+  /** Carpeta de temporales de las subidas de archivos locales (Etapa 3B). */
+  uploadsDir?: string;
   /** Base local. Si no se pasa, se usa una en memoria (tests). */
   db?: SqliteDatabase;
   port?: number;
@@ -325,9 +329,13 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   const overlayHtmlPath = options.overlayHtml ?? DEFAULT_OVERLAY_HTML;
   const mediaOptions: MediaPassthroughOptions = options.media ?? {};
   const db = options.db ?? openMemoryDatabase();
+  // Temporales de las subidas de archivos locales. Viven fuera de /media para no
+  // servirse ni aparecer en la biblioteca; cada trabajo los borra al terminar.
+  const uploadsDir = resolve(options.uploadsDir ?? join(mediaDir, "..", ".uploads"));
 
   // @fastify/static falla si la raíz no existe todavía.
   mkdirSync(mediaDir, { recursive: true });
+  mkdirSync(uploadsDir, { recursive: true });
 
   const auth = new AuthManager(db, options.auth);
   let overlayKey =
@@ -347,23 +355,47 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       };
     },
     run: options.run,
+    localResolve: () => {
+      const settings = readSettings(db);
+      return {
+        maxDurationSec: settings.maxVideoDurationSec,
+        maxBytes: settings.maxVideoBytes,
+        timeoutMs: mediaOptions.timeoutMs,
+        maxHeight: mediaOptions.maxHeight,
+        binarySearch: mediaOptions.binarySearch,
+        logsDir: mediaOptions.logsDir,
+      };
+    },
+    // Los temporales de subida viven acá; el trabajo los borra al terminar.
     onReady: (clip: Clip, job) => {
+      const hasVideo = clip.hasVideo !== false;
       upsertClip(db, {
         id: clip.id,
-        sourceUrl: job.url,
+        // Un archivo local no tiene URL de origen.
+        sourceUrl: job.kind === "local" ? "" : job.url,
         title: clip.title,
         durationSec: clip.durationSec,
         sizeBytes: clip.sizeBytes,
-        file: `${clip.id}.mp4`,
+        file: `${clip.id}.${hasVideo ? "mp4" : "m4a"}`,
         createdAt: new Date().toISOString(),
         trimStart: null,
         trimEnd: null,
-        hasVideo: true,
+        hasVideo,
       });
     },
   });
 
   const app = Fastify({ logger: false });
+
+  // URL de reproducción de un clip servido por /media, con la clave del overlay.
+  // El archivo puede ser mp4 (video) o m4a (audio local); se resuelve por la
+  // extensión guardada en la base. Si el clip no existe, se asume mp4 (el overlay
+  // informará el error de carga).
+  const mediaUrlWithKey = (clipId: string): string => {
+    const clip = getClip(db, clipId);
+    const ext = clip?.file.toLowerCase().endsWith(".m4a") ? "m4a" : "mp4";
+    return `${clipUrl(clipId, ext)}?key=${encodeURIComponent(overlayKey)}`;
+  };
 
   // El hub del overlay se crea ya: así puede informar en todo momento cuántos
   // overlays hay conectados y la cola no arranca clips que nadie reproduce.
@@ -371,6 +403,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   const hub = attachWebSocket(app.server, queue, {
     getKey: () => overlayKey,
     resolveWatchdogMarginMs: () => readSettings(db).watchdogMarginSec * 1000,
+    resolveClipUrl: (clipId) => mediaUrlWithKey(clipId),
     onClientsChanged: (count) => {
       if (requireOverlay) queue.setPlayerReady(count > 0);
     },
@@ -460,7 +493,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     now: () => options.now?.() ?? Date.now(),
     broadcastAudio: (audio) => hub.broadcastAudio(audio),
     resolveEvent: resolveSource,
-    mediaUrl: (clipId) => `${clipUrl(clipId)}?key=${encodeURIComponent(overlayKey)}`,
+    mediaUrl: (clipId) => mediaUrlWithKey(clipId),
     globalVolume: () => readSettings(db).globalVolume,
     defaultMaxDuration: () => readSettings(db).defaultMaxDurationSec,
     maxVoices: () => readSettings(db).maxAudioVoices,
@@ -582,13 +615,30 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   });
 
   // /media es solo lectura y solo sirve archivos dentro de la carpeta media.
+  // Además de los mp4 (videos), se sirven los m4a (audios locales, Etapa 3B).
   await app.register(fastifyStatic, {
     root: mediaDir,
     prefix: "/media/",
     index: false,
     list: false,
-    allowedPath: (pathname: string) => pathname.toLowerCase().endsWith(".mp4"),
+    allowedPath: (pathname: string) => {
+      const lower = pathname.toLowerCase();
+      return lower.endsWith(".mp4") || lower.endsWith(".m4a");
+    },
     decorateReply: false,
+  });
+
+  // Subidas de archivos locales (Etapa 3B). Streaming a disco, con el límite de
+  // tamaño vigente; nunca se carga todo el archivo en memoria. El límite real se
+  // aplica por request (lee la configuración); acá se fija el máximo permitido
+  // para no aceptar nada fuera de rango ni siquiera antes de la ruta.
+  await app.register(fastifyMultipart, {
+    limits: {
+      fileSize: 2 * 1024 * 1024 * 1024,
+      files: 1,
+      fields: 4,
+    },
+    throwFileSizeLimit: true,
   });
 
   // --- Páginas --------------------------------------------------------------
@@ -700,6 +750,75 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     };
     api.addHook("preHandler", requireSession);
 
+    // Borra las recompensas que usan un clip, una por una, reutilizando el flujo de
+    // `RewardService.remove` (rechazo de canjes pendientes). Si alguna pide
+    // confirmación o falla el rechazo de pendientes, se corta y se le devuelve al
+    // cliente una respuesta ya formateada; el clip no se borra hasta que se resuelva.
+    const removeRewardsForClip = async (
+      using: ReturnType<typeof listRewardsUsingClip>,
+    ): Promise<{ ok: true } | { ok: false; status: number; body: unknown }> => {
+      for (const reward of using) {
+        const integration = integrations.find((candidate) => candidate.id === reward.platform);
+        if (!integration) {
+          return {
+            ok: false,
+            status: 409,
+            body: {
+              ok: false,
+              reason: "NO_PLATFORM",
+              message: `No se puede borrar la recompensa ${reward.title}: su plataforma no está disponible.`,
+              rewards: [{ id: reward.id, title: reward.title, enabled: reward.desiredEnabled }],
+            },
+          };
+        }
+        const service = new RewardService({
+          db,
+          integration,
+          onRulesChanged: () => engine.setRules(listRules(db).map(toRule)),
+          logger: debug ? (message) => console.log(`[rewards] ${message}`) : undefined,
+        });
+        const result = await service.remove(reward.id, {});
+        if (result.ok) continue;
+        if (result.needsConfirm) {
+          return {
+            ok: false,
+            status: 409,
+            body: {
+              ok: false,
+              needsConfirm: true,
+              pending: result.pending,
+              message: result.message,
+              rewards: [{ id: reward.id, title: reward.title, enabled: reward.desiredEnabled }],
+            },
+          };
+        }
+        if (result.failed && result.failed.length > 0) {
+          return {
+            ok: false,
+            status: 409,
+            body: {
+              ok: false,
+              reason: "REJECT_FAILED",
+              failed: result.failed,
+              message: result.message,
+              rewards: [{ id: reward.id, title: reward.title, enabled: reward.desiredEnabled }],
+            },
+          };
+        }
+        return {
+          ok: false,
+          status: httpStatusForPlatformReason(result.reason ?? "UNKNOWN"),
+          body: {
+            ok: false,
+            reason: result.reason ?? "UNKNOWN",
+            message: result.message ?? "No se pudo borrar una recompensa que usa el clip.",
+            rewards: [{ id: reward.id, title: reward.title, enabled: reward.desiredEnabled }],
+          },
+        };
+      }
+      return { ok: true };
+    };
+
     api.get("/api/state", async () => ({
       ...queueDisplayState(),
       overlay: { connected: hub.clientCount() > 0, clients: hub.clientCount() },
@@ -759,6 +878,54 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       async (request) => ({ ok: true, job: jobs.create(request.body.url) }),
     );
 
+    // Subida de un archivo local (Etapa 3B). Se escribe con streaming a un
+    // temporal y se crea un trabajo que lo valida por contenido (ffprobe) y lo
+    // normaliza. Los errores inmediatos (sin archivo, demasiado grande) no crean
+    // trabajo y se devuelven con un mensaje en español.
+    api.post("/api/uploads", async (request, reply) => {
+      let part;
+      try {
+        part = await request.file({ limits: { fileSize: readSettings(db).maxVideoBytes } });
+      } catch (error) {
+        const tooBig =
+          typeof error === "object" && error !== null && (error as { code?: string }).code === "FST_REQ_FILE_TOO_LARGE";
+        return reply.code(413).send({
+          ok: false,
+          reason: tooBig ? "TOO_BIG" : "UPLOAD_FAILED",
+          message: tooBig
+            ? "El archivo supera el tamaño máximo configurado."
+            : "No se pudo recibir el archivo.",
+        });
+      }
+      if (!part) {
+        return reply.code(400).send({ ok: false, reason: "NO_FILE", message: "No se recibió ningún archivo." });
+      }
+
+      const filename = typeof part.filename === "string" ? part.filename : "archivo";
+      const tempPath = join(uploadsDir, `${randomUUID()}.upload`);
+      try {
+        await pipeline(part.file, createWriteStream(tempPath));
+      } catch (error) {
+        rmSync(tempPath, { force: true });
+        const tooBig =
+          typeof error === "object" && error !== null && (error as { code?: string }).code === "FST_REQ_FILE_TOO_LARGE";
+        return reply.code(tooBig ? 413 : 400).send({
+          ok: false,
+          reason: tooBig ? "TOO_BIG" : "UPLOAD_FAILED",
+          message: tooBig
+            ? "El archivo supera el tamaño máximo configurado."
+            : "No se pudo recibir el archivo.",
+        });
+      }
+      if (part.file.truncated) {
+        rmSync(tempPath, { force: true });
+        return reply
+          .code(413)
+          .send({ ok: false, reason: "TOO_BIG", message: "El archivo supera el tamaño máximo configurado." });
+      }
+      return { ok: true, job: jobs.createLocal(tempPath, filename) };
+    });
+
     api.get("/api/jobs", async () => ({ jobs: jobs.list() }));
     api.get<{ Params: { id: string } }>("/api/jobs/:id", async (request, reply) => {
       const job = jobs.get(request.params.id);
@@ -766,11 +933,45 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       return { ok: true, job };
     });
 
+    // Cancela un trabajo en curso. Limpia los temporales y descarta el resultado.
+    api.post<{ Params: { id: string } }>("/api/jobs/:id/cancel", async (request, reply) => {
+      if (!jobs.cancel(request.params.id)) {
+        return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+      }
+      return { ok: true };
+    });
+
     api.get("/api/clips", async () => ({
       // `suggestedTitle` es un nombre propuesto a partir del título del clip, para
       // el formulario de recompensas (rediseño, Etapa 4A).
       clips: listClips(db).map((clip) => ({ ...clip, suggestedTitle: suggestedTitle(clip.title) })),
     }));
+
+    // Limpieza de caché (Etapa 3B, sección 9): borra SOLO los clips de link que
+    // se pueden volver a descargar. Nunca toca archivos locales, ni clips usados
+    // por una recompensa (activa o desactivada), ni clips en la cola.
+    api.post("/api/clips/cleanup", async () => {
+      const state = queue.getState();
+      const inQueue = new Set<string>();
+      if (state.current) inQueue.add(state.current.clipId);
+      for (const item of state.pending) inQueue.add(item.clipId);
+
+      const removed: string[] = [];
+      for (const clip of listClips(db)) {
+        // Los archivos locales nunca se borran solos.
+        if (clip.sourceUrl === "") continue;
+        if (inQueue.has(clip.id)) continue;
+        if (listRewardsUsingClip(db, clip.id).length > 0) continue;
+        const filePath = resolve(mediaDir, clip.file);
+        if (filePath.startsWith(mediaDir + sep)) {
+          rmSync(filePath, { force: true });
+          rmSync(join(mediaDir, `${clip.id}.json`), { force: true });
+        }
+        deleteClipRow(db, clip.id);
+        removed.push(clip.id);
+      }
+      return { ok: true, removed };
+    });
 
     api.post<{ Params: { id: string }; Body: { title: string } }>(
       "/api/clips/:id/rename",
@@ -785,39 +986,76 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       },
     );
 
-    api.delete<{ Params: { id: string } }>("/api/clips/:id", async (request, reply) => {
-      const clip = getClip(db, request.params.id);
-      if (!clip) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
-
-      // Guarda provisional (rediseño, Etapa 4A): no se borra un clip que alguna
-      // recompensa use (incluidas las desactivadas). La ventana de detalle de la
-      // Etapa 3A reutilizará esta misma lista para ofrecer borrar las recompensas.
-      const using = listRewardsUsingClip(db, clip.id);
-      if (using.length > 0) {
-        const names = using.map((reward) => reward.title).join(", ");
-        return reply.code(409).send({
-          ok: false,
-          reason: "CLIP_IN_USE",
-          message:
-            using.length === 1
-              ? `No se puede borrar el clip: lo usa la recompensa ${names}.`
-              : `No se puede borrar el clip: lo usan las recompensas ${names}.`,
-          rewards: using.map((reward) => ({
-            id: reward.id,
-            title: reward.title,
-            enabled: reward.desiredEnabled,
-          })),
-        });
-      }
-
-      const filePath = resolve(mediaDir, clip.file);
-      if (filePath.startsWith(mediaDir + sep)) {
-        rmSync(filePath, { force: true });
-        rmSync(join(mediaDir, `${clip.id}.json`), { force: true });
-      }
-      deleteClipRow(db, clip.id);
-      return { ok: true };
+    // Recompensas que usan un clip (incluidas las desactivadas). La reutiliza la
+    // ventana de detalle para advertir antes de borrar.
+    api.get<{ Params: { id: string } }>("/api/clips/:id/usage", async (request, reply) => {
+      if (!getClip(db, request.params.id)) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+      return {
+        ok: true,
+        rewards: listRewardsUsingClip(db, request.params.id).map((reward) => ({
+          id: reward.id,
+          title: reward.title,
+          enabled: reward.desiredEnabled,
+        })),
+      };
     });
+
+    api.delete<{ Params: { id: string }; Body: { deleteUsingRewards?: boolean } | null }>(
+      "/api/clips/:id",
+      {
+        schema: {
+          body: {
+            // `null` permite un DELETE sin cuerpo (el caso de borrar un clip que
+            // ninguna recompensa usa), que antes era el único camino.
+            type: ["object", "null"],
+            additionalProperties: false,
+            properties: { deleteUsingRewards: { type: "boolean" } },
+          },
+        },
+      },
+      async (request, reply) => {
+        const clip = getClip(db, request.params.id);
+        if (!clip) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+
+        // Guarda (rediseño, Etapa 3A): no se borra un clip que alguna recompensa
+        // use (incluidas las desactivadas). La ventana de detalle ofrece borrar
+        // esas recompensas con una advertencia extra (`deleteUsingRewards`).
+        const using = listRewardsUsingClip(db, clip.id);
+        if (using.length > 0 && request.body?.deleteUsingRewards !== true) {
+          const names = using.map((reward) => reward.title).join(", ");
+          return reply.code(409).send({
+            ok: false,
+            reason: "CLIP_IN_USE",
+            message:
+              using.length === 1
+                ? `No se puede borrar el clip: lo usa la recompensa ${names}.`
+                : `No se puede borrar el clip: lo usan las recompensas ${names}.`,
+            rewards: using.map((reward) => ({
+              id: reward.id,
+              title: reward.title,
+              enabled: reward.desiredEnabled,
+            })),
+          });
+        }
+
+        if (using.length > 0) {
+          // Borra las recompensas que usan el clip. Reutiliza el flujo de borrado
+          // de recompensas (rechazo de canjes pendientes). Si alguna pide
+          // confirmación por canjes pendientes, se corta y se le devuelve al
+          // cliente para que confirme: el clip no se borra todavía.
+          const pending = await removeRewardsForClip(using);
+          if (!pending.ok) return reply.code(pending.status).send(pending.body);
+        }
+
+        const filePath = resolve(mediaDir, clip.file);
+        if (filePath.startsWith(mediaDir + sep)) {
+          rmSync(filePath, { force: true });
+          rmSync(join(mediaDir, `${clip.id}.json`), { force: true });
+        }
+        deleteClipRow(db, clip.id);
+        return { ok: true };
+      },
+    );
 
     api.post<{ Params: { id: string }; Body: PlayBody }>(
       "/api/clips/:id/play",
@@ -845,7 +1083,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         if (body.repetition === "overlap") {
           const sent = hub.broadcastAudio({
             id: `test-${Date.now().toString(36)}`,
-            url: `${clipUrl(clip.id)}?key=${encodeURIComponent(overlayKey)}`,
+            url: mediaUrlWithKey(clip.id),
             volume: (request.body?.volume ?? 1) * (settings.globalVolume / 100),
             trimStart: trim.trimStart,
             trimEnd: trim.trimEnd,
@@ -870,7 +1108,8 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           position: request.body?.position ?? undefined,
           enterAnimation: request.body?.enterAnimation ?? undefined,
           exitAnimation: request.body?.exitAnimation ?? undefined,
-          audioOnly: request.body?.audioOnly === true,
+          // Un clip sin imagen (audio local) suena igual sin mostrar imagen.
+          audioOnly: request.body?.audioOnly === true || clip.hasVideo === false,
           label: clip.title,
         });
         return { ok: true, item, state: queueDisplayState() };

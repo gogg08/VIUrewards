@@ -111,7 +111,7 @@ describe("/media - solo lectura, sin traversal y protegido", () => {
     }
   });
 
-  it("no sirve archivos que no sean mp4", async () => {
+  it("no sirve archivos que no sean mp4 ni m4a", async () => {
     const { server, mediaDir, cookie } = await withServer();
     writeFileSync(join(mediaDir, "notes.txt"), "no soy un clip", "utf8");
     const response = await server.app.inject({
@@ -120,6 +120,232 @@ describe("/media - solo lectura, sin traversal y protegido", () => {
       headers: { cookie },
     });
     expect(response.statusCode).not.toBe(200);
+  });
+
+  it("sirve los m4a locales (audios) además de los mp4", async () => {
+    const { server, mediaDir, cookie } = await withServer();
+    writeFileSync(join(mediaDir, "clipa.m4a"), "m4a-bytes", "utf8");
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/media/clipa.m4a",
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.body).toBe("m4a-bytes");
+  });
+});
+
+/** Arma un cuerpo multipart/form-data simple con un solo archivo. */
+function multipartBody(
+  filename: string,
+  content: Buffer,
+): { body: Buffer; contentType: string } {
+  const boundary = "----VIUrewardsTestBoundary";
+  const head =
+    `--${boundary}\r\n` +
+    `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+    `Content-Type: application/octet-stream\r\n\r\n`;
+  const tail = `\r\n--${boundary}--\r\n`;
+  return {
+    body: Buffer.concat([Buffer.from(head, "utf8"), content, Buffer.from(tail, "utf8")]),
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
+describe("subidas de archivos locales (Etapa 3B)", () => {
+  // Ejecutor falso: ffprobe responde un audio; ffmpeg crea la salida m4a.
+  function fakeRun() {
+    return async (command: string, args: string[]) => {
+      if (command.includes("ffprobe")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({ streams: [{ codec_type: "audio" }], format: { duration: "9" } }),
+          stderr: "",
+          timedOut: false,
+        };
+      }
+      writeFileSync(args[args.length - 1], "m4a-out", "utf8");
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    };
+  }
+
+  const binarySearch = {
+    pathEnv: "/fake/bin",
+    extraDirs: [] as string[],
+    platform: "linux" as NodeJS.Platform,
+    exists: () => true,
+  };
+
+  async function withUploadServer(): Promise<Ctx> {
+    const { mediaDir } = makeMediaDir();
+    const server = await createServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      requireOverlay: false,
+      media: { binarySearch },
+      run: fakeRun(),
+    });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+    return { server, mediaDir, cookie };
+  }
+
+  async function waitForJob(server: AppServer, id: string, cookie: string): Promise<Record<string, unknown>> {
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      const response = await server.app.inject({
+        method: "GET",
+        url: `/api/jobs/${id}`,
+        headers: { cookie },
+      });
+      const job = response.json().job;
+      if (job && (job.status === "ready" || job.status === "error")) return job;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    throw new Error("el trabajo no terminó a tiempo");
+  }
+
+  it("sube un archivo local, lo convierte a m4a y lo registra sin imagen", async () => {
+    const { server, cookie } = await withUploadServer();
+    const { body, contentType } = multipartBody("cancion.mp3", Buffer.from("audio-bytes"));
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { cookie, "content-type": contentType },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(200);
+    const job = response.json().job;
+    expect(job.kind).toBe("local");
+
+    const done = await waitForJob(server, job.id, cookie);
+    expect(done.status).toBe("ready");
+    expect(done.title).toBe("cancion");
+
+    const clips = server.db.prepare("SELECT file, has_video, source_url FROM clips").all() as Array<{
+      file: string;
+      has_video: number;
+      source_url: string;
+    }>;
+    expect(clips).toHaveLength(1);
+    expect(clips[0].file.endsWith(".m4a")).toBe(true);
+    expect(clips[0].has_video).toBe(0);
+    expect(clips[0].source_url).toBe("");
+  });
+
+  it("rechaza un archivo que no es audio ni video sin crear un clip", async () => {
+    const { mediaDir } = makeMediaDir();
+    const server = await createServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      requireOverlay: false,
+      media: { binarySearch },
+      run: async (command: string) => {
+        if (command.includes("ffprobe")) {
+          return { code: 0, stdout: JSON.stringify({ streams: [], format: {} }), stderr: "", timedOut: false };
+        }
+        return { code: 0, stdout: "", stderr: "", timedOut: false };
+      },
+    });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+
+    const { body, contentType } = multipartBody("trampa.mp4", Buffer.from("no-es-media"));
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { cookie, "content-type": contentType },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(200);
+    const done = await waitForJob(server, response.json().job.id, cookie);
+    expect(done.status).toBe("error");
+    expect(String(done.message)).toContain("audio");
+    const count = server.db.prepare("SELECT COUNT(*) AS n FROM clips").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
+  it("requiere sesión", async () => {
+    const { server } = await withUploadServer();
+    const { body, contentType } = multipartBody("x.mp3", Buffer.from("a"));
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { "content-type": contentType },
+      payload: body,
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("cancela un trabajo en curso", async () => {
+    const { server, cookie } = await withUploadServer();
+    const { body, contentType } = multipartBody("x.mp3", Buffer.from("a"));
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { cookie, "content-type": contentType },
+      payload: body,
+    });
+
+    // Puede haber terminado ya; cancelar debe seguir siendo seguro.
+    const cancel = await server.app.inject({
+      method: "POST",
+      url: `/api/jobs/${response.json().job.id}/cancel`,
+      headers: { cookie },
+    });
+    expect(cancel.statusCode).toBe(200);
+
+    const missing = await server.app.inject({
+      method: "POST",
+      url: "/api/jobs/no-existe/cancel",
+      headers: { cookie },
+    });
+    expect(missing.statusCode).toBe(404);
+  });
+});
+
+describe("limpieza de caché (Etapa 3B)", () => {
+  function insertClip(server: AppServer, id: string, file: string, sourceUrl: string): void {
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at, has_video)
+         VALUES (?, ?, 'clip', 5, 4, ?, '2026-01-01T00:00:00.000Z', 1)`,
+      )
+      .run(id, sourceUrl, file);
+  }
+
+  it("borra solo los clips de link sin recompensas y respeta los locales y en uso", async () => {
+    const { server, mediaDir, cookie } = await withServer();
+    writeFileSync(join(mediaDir, "link.mp4"), "x", "utf8");
+    writeFileSync(join(mediaDir, "local.m4a"), "y", "utf8");
+    writeFileSync(join(mediaDir, "usado.mp4"), "z", "utf8");
+    insertClip(server, "link", "link.mp4", "https://youtu.be/aaaa");
+    insertClip(server, "local", "local.m4a", "");
+    insertClip(server, "usado", "usado.mp4", "https://youtu.be/bbbb");
+
+    // Una recompensa (desactivada) usa "usado": no debe borrarse.
+    server.db
+      .prepare(
+        `INSERT INTO rewards (id, platform, title, cost, color, description, clip_id, desired_enabled, managed, synced, created_at, updated_at)
+         VALUES ('r1', 'kick', 'test', 1, '#64f7d9', '', 'usado', 0, 1, 1, '2026-01-01', '2026-01-01')`,
+      )
+      .run();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/cleanup",
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().removed).toEqual(["link"]);
+
+    const remaining = server.db.prepare("SELECT id FROM clips ORDER BY id").all() as Array<{ id: string }>;
+    expect(remaining.map((row) => row.id).sort()).toEqual(["local", "usado"]);
   });
 });
 
@@ -345,6 +571,178 @@ describe("biblioteca y overlay (API)", () => {
   });
 });
 
+describe("borrado de clip con recompensas que lo usan (Etapa 3A)", () => {
+  function insertClip(server: AppServer, id = "clip-1"): void {
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES (?, 'https://x/y', 'Clip uno', 5, 4, ?, '2026-01-01T00:00:00.000Z')`,
+      )
+      .run(id, `${id}.mp4`);
+  }
+
+  function insertReward(
+    server: AppServer,
+    id: string,
+    clipId: string,
+    options: { enabled?: boolean } = {},
+  ): void {
+    server.db
+      .prepare(
+        `INSERT INTO rewards (id, platform, remote_reward_id, title, clip_id, desired_enabled, managed, synced, created_at, updated_at)
+         VALUES (?, 'kick', ?, ?, ?, ?, 1, 1, '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z')`,
+      )
+      .run(id, `kick-${id}`, `Alerta ${id}`, clipId, options.enabled === false ? 0 : 1);
+  }
+
+  /** Integración falsa que registra los borrados y no tiene canjes pendientes. */
+  function fakeIntegration(): { integration: PlatformIntegration; deleted: string[] } {
+    const deleted: string[] = [];
+    class FakeSource extends EmitterEventSource {
+      async resolve(): Promise<void> {}
+    }
+    const source = new FakeSource({
+      id: "kick",
+      platform: "kick",
+      capabilities: { types: ["reward_redeemed"], resolve: true },
+    });
+    const account = {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      state: "connected" as const,
+      accountId: "u1",
+      accountName: "Canal",
+      capabilities: source.capabilities,
+      hasCredentials: true,
+      clientId: "cid",
+      lastError: null,
+    };
+    const notImplemented = async (): Promise<never> => {
+      throw new Error("no implementado en el test");
+    };
+    const integration: PlatformIntegration = {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      source,
+      status: () => account,
+      setCredentials: notImplemented,
+      clearCredentials: async () => {},
+      beginLink: notImplemented,
+      completeLink: notImplemented,
+      unlink: async () => {},
+      test: notImplemented,
+      diagnostics: () => ({
+        enabled: true,
+        intervalMs: 5000,
+        lastCheckAt: null,
+        lastResult: null,
+        lastError: null,
+        latencyLastMs: null,
+        latencyMinMs: null,
+        latencyTypicalMs: null,
+        latencyMaxMs: null,
+        rateLimit429Count: 0,
+        lastRateLimitHeaders: {},
+      }),
+      listRewards: notImplemented,
+      createReward: notImplemented,
+      updateReward: notImplemented,
+      deleteReward: async (rewardId: string) => {
+        deleted.push(rewardId);
+        return { ok: true, value: { id: rewardId } };
+      },
+      listPendingRedemptions: async () => ({ ok: true, value: [] }),
+      rejectRedemptions: async () => ({ ok: true, value: [] }),
+      start: async () => {},
+      stop: async () => {},
+    };
+    return { integration, deleted };
+  }
+
+  async function withKick(): Promise<Ctx & { deleted: string[] }> {
+    const { mediaDir } = makeMediaDir();
+    const { integration, deleted } = fakeIntegration();
+    const server = await createServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      requireOverlay: false,
+      platforms: [integration],
+    });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+    return { server, mediaDir, cookie, deleted };
+  }
+
+  it("GET /api/clips/:id/usage lista las recompensas que lo usan (también desactivadas)", async () => {
+    const { server, cookie } = await withKick();
+    insertClip(server);
+    insertReward(server, "rw-on", "clip-1", { enabled: true });
+    insertReward(server, "rw-off", "clip-1", { enabled: false });
+    insertReward(server, "rw-other", "otro-clip");
+
+    const response = await server.app.inject({ method: "GET", url: "/api/clips/clip-1/usage", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { rewards: Array<{ id: string; enabled: boolean }> };
+    expect(body.rewards.map((reward) => reward.id).sort()).toEqual(["rw-off", "rw-on"]);
+    expect(body.rewards.find((reward) => reward.id === "rw-off")?.enabled).toBe(false);
+  });
+
+  it("GET /api/clips/:id/usage devuelve 404 si el clip no existe", async () => {
+    const { server, cookie } = await withKick();
+    const response = await server.app.inject({ method: "GET", url: "/api/clips/nope/usage", headers: { cookie } });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it("rechazar el borrado con CLIP_IN_USE por defecto (sin confirmar)", async () => {
+    const { server, cookie } = await withKick();
+    insertClip(server);
+    insertReward(server, "rw-1", "clip-1");
+
+    const response = await server.app.inject({ method: "DELETE", url: "/api/clips/clip-1", headers: { cookie } });
+    expect(response.statusCode).toBe(409);
+    expect(response.json().reason).toBe("CLIP_IN_USE");
+  });
+
+  it("borra las recompensas que lo usan y luego el clip con deleteUsingRewards", async () => {
+    const { server, cookie, deleted } = await withKick();
+    insertClip(server);
+    insertReward(server, "rw-1", "clip-1");
+    insertReward(server, "rw-2", "clip-1");
+
+    const response = await server.app.inject({
+      method: "DELETE",
+      url: "/api/clips/clip-1",
+      headers: { cookie, "content-type": "application/json" },
+      payload: { deleteUsingRewards: true },
+    });
+    expect(response.statusCode).toBe(200);
+
+    // Las recompensas se borraron en la plataforma y localmente, y el clip también.
+    expect(deleted.sort()).toEqual(["kick-rw-1", "kick-rw-2"]);
+    const rewards = server.db.prepare("SELECT COUNT(*) AS n FROM rewards").get() as { n: number };
+    expect(rewards.n).toBe(0);
+    const clips = await server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie } });
+    expect(clips.json().clips).toHaveLength(0);
+  });
+
+  it("valida el body (esquema estricto: tipo incorrecto rechazado)", async () => {
+    const { server, cookie } = await withKick();
+    insertClip(server);
+    // `deleteUsingRewards` tiene que ser booleano.
+    const response = await server.app.inject({
+      method: "DELETE",
+      url: "/api/clips/clip-1",
+      headers: { cookie, "content-type": "application/json" },
+      payload: { deleteUsingRewards: "sí" },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+});
+
 describe("configuración, recorte y contraseña (parte B)", () => {
   function insertClip(server: AppServer, id = "vid", durationSec = 10): void {
     server.db
@@ -440,6 +838,34 @@ describe("configuración, recorte y contraseña (parte B)", () => {
     expect(params.trimEnd).toBe(5);
     expect(params.volume).toBeCloseTo(0.5);
     expect(params.maxDurationSec).toBe(7);
+  });
+
+  it("cambiar el recorte de un clip encolado no altera el ítem ya en la cola", async () => {
+    // B5: el recorte viaja en los parámetros del ítem al encolar, así que
+    // cambiarlo después no interrumpe ni altera lo que ya está sonando/en cola.
+    const { server, cookie } = await withServer();
+    insertClip(server);
+    const enqueued = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/vid/play",
+      headers: { cookie },
+      payload: { trimStart: 1, trimEnd: 3 },
+    });
+    expect(enqueued.statusCode).toBe(200);
+
+    // Se cambia el recorte guardado del clip.
+    await server.app.inject({
+      method: "POST",
+      url: "/api/clips/vid/trim",
+      headers: { cookie },
+      payload: { trimStart: null, trimEnd: null },
+    });
+
+    // El ítem en la cola conserva el recorte con el que se encoló.
+    const state = await server.app.inject({ method: "GET", url: "/api/state", headers: { cookie } });
+    const current = state.json().current;
+    expect(current.params.trimStart).toBe(1);
+    expect(current.params.trimEnd).toBe(3);
   });
 
   it("GET/POST /api/settings y aviso de reinicio al cambiar el puerto", async () => {
@@ -573,7 +999,9 @@ describe("WebSocket /ws del overlay", () => {
 
     const play = messages.find((m) => m.type === "play");
     expect(play).toBeDefined();
-    expect(play?.url).toBe("/media/abc.mp4");
+    // El mensaje lleva la URL del archivo (mp4 para videos) con la clave del
+    // overlay, igual que los audios superpuestos.
+    expect(play?.url).toContain("/media/abc.mp4");
 
     client.close();
   });
@@ -822,5 +1250,25 @@ describe("audioOnly en todos los caminos que encolan", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json().item.params.audioOnly).toBe(false);
+  });
+
+  it("Probar alerta de la biblioteca de un clip sin imagen fuerza audioOnly", async () => {
+    const { server, cookie } = await withServer2();
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, has_video, created_at)
+         VALUES ('clip-a','local','Tema',10,10,'clip-a.m4a',0,'2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+
+    const response = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/clip-a/play",
+      headers: { cookie },
+      payload: {},
+    });
+    expect(response.statusCode).toBe(200);
+    // Un clip que es un archivo de audio se reproduce sin mostrar imagen.
+    expect(response.json().item.params.audioOnly).toBe(true);
   });
 });

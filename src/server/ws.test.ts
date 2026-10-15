@@ -310,13 +310,13 @@ describe("audioOnly viaja en el mensaje play (camino de canje real)", () => {
     return { server, port: info.port };
   }
 
-  function seedClipAndReward(server: AppServer, audioOnly: boolean): void {
+  function seedClipAndReward(server: AppServer, audioOnly: boolean, file = "clip-1.mp4"): void {
     server.db
       .prepare(
         `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
-         VALUES ('clip-1','https://x/y','Goku Ahhh!',4,4,'clip-1.mp4','2026-01-01T00:00:00.000Z')`,
+         VALUES ('clip-1','https://x/y','Goku Ahhh!',4,4,?,'2026-01-01T00:00:00.000Z')`,
       )
-      .run();
+      .run(file);
     server.db
       .prepare(
         `INSERT INTO rewards (id, platform, remote_reward_id, title, cost, color, description,
@@ -383,6 +383,29 @@ describe("audioOnly viaja en el mensaje play (camino de canje real)", () => {
     const play = messages.find((m) => m.type === "play");
     const item = play?.item as { params: { audioOnly: boolean } };
     expect(item.params.audioOnly).toBe(false);
+    ws.close();
+  });
+
+  it("el mensaje play lleva la URL del archivo real (m4a), no un mp4 fijo", async () => {
+    // Clip de audio: el archivo es .m4a. El servidor debe resolver la URL con
+    // esa extensión; el overlay la usa tal cual (bug: antes pedía .mp4 → 404).
+    const { server, port } = await withQueueServer();
+    seedClipAndReward(server, true, "clip-1.m4a");
+
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    const event = createEvent({
+      id: "c1",
+      platform: "kick",
+      type: "reward_redeemed",
+      user: { id: "u1", name: "Ana", roles: [] },
+      payload: { rewardId: "rw-1", rewardTitle: "test123", userInput: "" },
+    });
+    await server.coordinator.receive(event);
+
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const play = messages.find((m) => m.type === "play") as { url: string };
+    expect(play.url).toContain("/media/clip-1.m4a");
+    expect(play.url).toContain("key=");
     ws.close();
   });
 });

@@ -7,18 +7,29 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 
 import { processVideo, type Clip, type MediaOptions } from "../media/index.ts";
+import { ingestLocalFile, type IngestLocalFileOptions } from "../media/ingest.ts";
 
 export type DownloadStatus = "queued" | "downloading" | "converting" | "ready" | "error";
 
+export type DownloadKind = "link" | "local";
+
 export interface DownloadJob {
   id: string;
+  /** `link`: descarga por URL. `local`: archivo subido/arrastrado. */
+  kind: DownloadKind;
+  /** URL para los trabajos de link; vacío para los locales. */
   url: string;
+  /** Nombre original del archivo, para los trabajos locales. */
+  filename?: string;
   status: DownloadStatus;
   clipId?: string;
   title?: string;
   message?: string;
+  /** ¿Ya existía un clip con este contenido? (duplicados por contenido). */
+  duplicate?: boolean;
   /** Etiqueta opcional del trabajo. */
   tag?: string;
   createdAt: number;
@@ -45,16 +56,23 @@ export interface DownloadJobManagerOptions {
   mediaDir: string;
   media?: MediaPassthroughOptions;
   /**
-   * Se evalúa en cada descarga y se mezcla sobre `media`. Permite leer los
-   * límites desde la configuración vigente sin reiniciar el servidor.
-   */
+ * Se evalúa en cada descarga y se mezcla sobre `media`. Permite leer los
+ * límites desde la configuración vigente sin reiniciar el servidor.
+ */
   resolve?: () => MediaPassthroughOptions;
+  /**
+   * Opciones de la ingesta de archivos locales, evaluadas en cada trabajo (para
+   * leer los límites vigentes). Se mezclan con `run`.
+   */
+  localResolve?: () => Omit<IngestLocalFileOptions, "mediaDir" | "run">;
   /** Se llama cuando el clip queda listo (para registrarlo en la base). */
   onReady?: (clip: Clip, job: DownloadJob) => void;
   /** Ejecutor de procesos, inyectable en tests. */
   run?: MediaOptions["run"];
   /** Máximo de trabajos en memoria; se descartan los terminados más viejos. */
   maxJobs?: number;
+  /** Tareas simultáneas; el resto queda en cola. Por defecto 2. */
+  maxConcurrent?: number;
 }
 
 export interface CreateJobOptions {
@@ -65,6 +83,7 @@ export interface CreateJobOptions {
 }
 
 const DEFAULT_MAX_JOBS = 50;
+const DEFAULT_MAX_CONCURRENT = 2;
 
 function snapshot(job: DownloadJob): DownloadJob {
   return { ...job };
@@ -75,18 +94,28 @@ export class DownloadJobManager {
   private readonly mediaDir: string;
   private readonly media: MediaPassthroughOptions;
   private readonly resolve?: () => MediaPassthroughOptions;
+  private readonly localResolve?: () => Omit<IngestLocalFileOptions, "mediaDir" | "run">;
   private readonly onReady?: (clip: Clip, job: DownloadJob) => void;
   private readonly run?: MediaOptions["run"];
   private readonly maxJobs: number;
+  private readonly maxConcurrent: number;
   private readonly onDone = new Map<string, (job: DownloadJob) => void>();
+  private readonly cancelled = new Set<string>();
+  /** Runners esperando un turno (mientras ya hay el máximo de tareas activas). */
+  private readonly pendingRunners: Array<() => void> = [];
+  /** Ids de trabajos que ya tomaron un turno (para no liberar de más). */
+  private readonly holdingSlot = new Set<string>();
+  private active = 0;
 
   constructor(options: DownloadJobManagerOptions) {
     this.mediaDir = options.mediaDir;
     this.media = options.media ?? {};
     this.resolve = options.resolve;
+    this.localResolve = options.localResolve;
     this.onReady = options.onReady;
     this.run = options.run;
     this.maxJobs = options.maxJobs ?? DEFAULT_MAX_JOBS;
+    this.maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
   }
 
   /** Crea un trabajo y arranca la descarga en segundo plano. */
@@ -94,6 +123,7 @@ export class DownloadJobManager {
     const now = Date.now();
     const job: DownloadJob = {
       id: randomUUID(),
+      kind: "link",
       url,
       status: "queued",
       tag: options.tag,
@@ -102,8 +132,44 @@ export class DownloadJobManager {
     };
     this.jobs.set(job.id, job);
     if (options.onDone) this.onDone.set(job.id, options.onDone);
-    void this.runJob(job);
+    this.schedule(job.id, () => void this.runLinkJob(job));
     return snapshot(job);
+  }
+
+  /**
+   * Crea un trabajo para un archivo local ya volcado a disco (temporal). Lo
+   * valida por contenido y lo normaliza. El temporal se limpia al terminar.
+   */
+  createLocal(
+    tempPath: string,
+    filename: string,
+    options: CreateJobOptions = {},
+  ): DownloadJob {
+    const now = Date.now();
+    const job: DownloadJob = {
+      id: randomUUID(),
+      kind: "local",
+      url: "",
+      filename,
+      status: "queued",
+      tag: options.tag,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.jobs.set(job.id, job);
+    if (options.onDone) this.onDone.set(job.id, options.onDone);
+    this.schedule(job.id, () => void this.runLocalJob(job, tempPath));
+    return snapshot(job);
+  }
+
+  /** Marca un trabajo en curso como cancelado (si todavía corre) y limpia. */
+  cancel(id: string): boolean {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    if (job.status === "ready" || job.status === "error") return true;
+    this.cancelled.add(id);
+    this.finish(job, { status: "error", message: "Cancelado." });
+    return true;
   }
 
   get(id: string): DownloadJob | null {
@@ -116,7 +182,7 @@ export class DownloadJobManager {
     return [...this.jobs.values()].sort((a, b) => b.createdAt - a.createdAt).map(snapshot);
   }
 
-  private async runJob(job: DownloadJob): Promise<void> {
+  private async runLinkJob(job: DownloadJob): Promise<void> {
     const update = (patch: Partial<DownloadJob>): void => {
       Object.assign(job, patch);
       job.updatedAt = Date.now();
@@ -130,6 +196,7 @@ export class DownloadJobManager {
         run: this.run,
         onStage: (stage) => update({ status: stage }),
       });
+      if (this.cancelled.has(job.id)) return;
       if (result.ok) {
         update({ status: "ready", clipId: result.clip.id, title: result.clip.title });
         this.onReady?.(result.clip, job);
@@ -137,18 +204,94 @@ export class DownloadJobManager {
         update({ status: "error", message: result.message });
       }
     } catch (error) {
+      if (this.cancelled.has(job.id)) return;
       update({
         status: "error",
         message: error instanceof Error ? error.message : "Error inesperado al descargar.",
       });
     } finally {
-      const onDone = this.onDone.get(job.id);
-      if (onDone) {
-        this.onDone.delete(job.id);
-        onDone(snapshot(job));
-      }
-      this.prune();
+      this.finish(job);
     }
+  }
+
+  private async runLocalJob(job: DownloadJob, tempPath: string): Promise<void> {
+    const update = (patch: Partial<DownloadJob>): void => {
+      Object.assign(job, patch);
+      job.updatedAt = Date.now();
+    };
+
+    try {
+      const localOptions = this.localResolve?.() ?? {};
+      const result = await ingestLocalFile(tempPath, {
+        mediaDir: this.mediaDir,
+        originalName: job.filename,
+        ...(localOptions ?? {}),
+        run: this.run,
+        onStage: (stage) => update({ status: stage === "converting" ? "converting" : "downloading" }),
+      });
+      if (this.cancelled.has(job.id)) return;
+      if (result.ok) {
+        update({
+          status: "ready",
+          clipId: result.clip.id,
+          title: result.clip.title,
+          duplicate: result.clip.duplicate,
+        });
+        this.onReady?.(result.clip, job);
+      } else {
+        update({ status: "error", message: result.message });
+      }
+    } catch (error) {
+      if (this.cancelled.has(job.id)) return;
+      update({
+        status: "error",
+        message: error instanceof Error ? error.message : "Error inesperado al agregar el archivo.",
+      });
+    } finally {
+      // El archivo temporal se limpia siempre (el original del usuario no se toca).
+      rmSync(tempPath, { force: true });
+      this.finish(job);
+    }
+  }
+
+  /** Arranca el runner ya mismo si hay lugar; si no, lo deja en cola. */
+  private schedule(id: string, runner: () => void): void {
+    if (this.active < this.maxConcurrent) {
+      this.active += 1;
+      this.holdingSlot.add(id);
+      runner();
+      return;
+    }
+    this.pendingRunners.push(() => {
+      this.holdingSlot.add(id);
+      runner();
+    });
+  }
+
+  /** Libera un turno y arranca el siguiente runner en cola. */
+  private releaseSlot(id: string): void {
+    if (!this.holdingSlot.delete(id)) return;
+    this.active = Math.max(0, this.active - 1);
+    const next = this.pendingRunners.shift();
+    if (next) {
+      this.active += 1;
+      next();
+    }
+  }
+
+  private finish(job: DownloadJob, patch?: Partial<DownloadJob>): void {
+    if (patch) {
+      Object.assign(job, patch);
+      job.updatedAt = Date.now();
+    }
+    const onDone = this.onDone.get(job.id);
+    if (onDone) {
+      this.onDone.delete(job.id);
+      onDone(snapshot(job));
+    }
+    this.cancelled.delete(job.id);
+    this.prune();
+    this.releaseSlot(job.id);
   }
 
   private prune(): void {

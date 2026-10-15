@@ -65,7 +65,14 @@
       // al WebSocket y a los clips, porque el Browser Source de OBS no comparte
       // la cookie del dashboard.
       const overlayKey = new URLSearchParams(location.search).get("key") || "";
-      function mediaUrl(clipId) {
+      /**
+       * URL de reproducción de un clip. El servidor la resuelve (mp4 o m4a,
+       * según el archivo) y la manda en el mensaje `play`. Cuando no viene
+       * (por ejemplo el `state` que se envía al reconectar), se asume mp4: el
+       * servidor informará el error de carga si el archivo no existe.
+       */
+      function mediaUrl(clipId, explicitUrl) {
+        if (explicitUrl) return explicitUrl;
         return "/media/" + encodeURIComponent(clipId) + ".mp4?key=" + encodeURIComponent(overlayKey);
       }
 
@@ -261,7 +268,7 @@
       }
 
       /** Reproduce un clip desde cero (o reemplaza al que esté en curso). */
-      function play(item) {
+      function play(item, explicitUrl) {
         const gen = ++generation;
         clearTimers();
         current = item;
@@ -270,7 +277,7 @@
         remainingMs = effectiveSec(item) * 1000;
         place(item);
 
-        const url = mediaUrl(item.clipId);
+        const url = mediaUrl(item.clipId, explicitUrl);
         if (video.getAttribute("src") !== url) video.setAttribute("src", url);
 
         const start = Math.max(0, Number(item.params.trimStart) || 0);
@@ -298,7 +305,7 @@
       }
 
       /** Carga un clip y lo deja detenido (estado pausado). */
-      function hold(item) {
+      function hold(item, explicitUrl) {
         const gen = ++generation;
         clearTimers();
         current = item;
@@ -307,7 +314,7 @@
         remainingMs = effectiveSec(item) * 1000;
         place(item);
 
-        const url = mediaUrl(item.clipId);
+        const url = mediaUrl(item.clipId, explicitUrl);
         if (video.getAttribute("src") !== url) video.setAttribute("src", url);
 
         const start = Math.max(0, Number(item.params.trimStart) || 0);
@@ -482,7 +489,7 @@
             break;
           }
           case "play":
-            play(message.item);
+            play(message.item, message.url);
             break;
           case "stop":
             stop();

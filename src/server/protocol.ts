@@ -37,14 +37,14 @@ export type OverlayMessage =
   | { type: "ended"; itemId: string; reason?: string }
   | { type: "error"; itemId?: string; message: string };
 
-/** URL de reproducción de un clip servido por /media. */
-export function clipUrl(clipId: string): string {
-  return `/media/${encodeURIComponent(clipId)}.mp4`;
+/** URL de reproducción de un clip servido por /media (mp4 por defecto). */
+export function clipUrl(clipId: string, ext: "mp4" | "m4a" = "mp4"): string {
+  return `/media/${encodeURIComponent(clipId)}.${ext}`;
 }
 
 /** URL de reproducción con la clave del overlay (para el Browser Source de OBS). */
-export function clipUrlWithKey(clipId: string, key: string): string {
-  return `${clipUrl(clipId)}?key=${encodeURIComponent(key)}`;
+export function clipUrlWithKey(clipId: string, key: string, ext: "mp4" | "m4a" = "mp4"): string {
+  return `${clipUrl(clipId, ext)}?key=${encodeURIComponent(key)}`;
 }
 
 /** Parsea un mensaje del overlay. Devuelve `null` si no es un JSON válido. */

@@ -141,4 +141,50 @@ describe("DownloadJobManager", () => {
     const list = manager.list();
     expect(list[0].id).toBe(second.id);
   });
+
+  it("no arranca más de maxConcurrent a la vez; el resto espera", async () => {
+    const { mediaDir } = makeDirs();
+    let running = 0;
+    let peak = 0;
+    const holders: Array<() => void> = [];
+    const run: RunProcess = async (command, args) => {
+      if (command.includes("yt-dlp")) {
+        running += 1;
+        peak = Math.max(peak, running);
+        await new Promise<void>((resolve) => holders.push(resolve));
+        const template = args[args.indexOf("-o") + 1];
+        const source = template.replace("%(ext)s", "mp4");
+        writeFileSync(source, "v");
+        writeFileSync(
+          source.replace(/\.src\.mp4$/, ".src.info.json"),
+          JSON.stringify({ title: "t", duration: 3, vcodec: "avc1", acodec: "mp4a" }),
+        );
+        running -= 1;
+      } else {
+        writeFileSync(args[args.length - 1], "mp4");
+      }
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    };
+    const manager = new DownloadJobManager({
+      mediaDir,
+      media: { binarySearch },
+      run,
+      maxConcurrent: 2,
+    });
+
+    const a = manager.create("https://www.youtube.com/watch?v=aaaaaaaaaaa");
+    const b = manager.create("https://www.youtube.com/watch?v=bbbbbbbbbbb");
+    const c = manager.create("https://www.youtube.com/watch?v=ccccccccccc");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    // Solo los dos primeros tomaron un turno.
+    expect(peak).toBe(2);
+    expect(manager.get(c.id)?.status).toBe("queued");
+
+    // Al liberar, arranca el tercero.
+    holders.shift()?.();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(manager.get(c.id)?.status).not.toBe("queued");
+    holders.forEach((release) => release());
+  });
 });

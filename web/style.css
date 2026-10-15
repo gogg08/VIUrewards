@@ -618,6 +618,106 @@ input[type="checkbox"] {
   letter-spacing: 0.04em;
 }
 
+/* --- Descargas (panel) --------------------------------------------------- */
+
+.dropdown-menu-wide {
+  min-width: 420px;
+  max-width: min(520px, calc(100vw - 2rem));
+}
+
+.dropdown-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.dropdown-head h3 {
+  margin: 0;
+}
+
+.job-list {
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.job-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.job-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.job-name {
+  overflow-wrap: anywhere;
+}
+
+.job-state {
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+  overflow-wrap: anywhere;
+}
+
+.job-state.error {
+  color: var(--color-danger);
+}
+
+.job-actions {
+  display: flex;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+/* --- Arrastrar y soltar -------------------------------------------------- */
+
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--color-bg) 72%, transparent);
+  border: 2px dashed var(--color-accent);
+  pointer-events: none;
+}
+
+.drop-overlay span {
+  padding: var(--space-3) var(--space-6);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  font-size: var(--text-lg);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 /* --- Control segmentado (Cola | Historial) ------------------------------- */
 
 .segmented {
@@ -1103,6 +1203,156 @@ input[type="checkbox"] {
   font-size: var(--text-xs);
 }
 
+/* Tarjeta simple de la biblioteca (rediseño, Etapa 3A): se abre en la ventana
+   de detalle. Los controles de recorte, renombrar y borrar viven en esa ventana. */
+.clip-card {
+  padding: 0;
+  border: 1px solid var(--color-border);
+  background: var(--color-panel-2);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.clip-card:hover,
+.clip-card:focus-visible {
+  border-color: var(--color-border-strong);
+  background: var(--color-panel-3);
+}
+
+.clip-thumb {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: var(--color-player);
+  overflow: hidden;
+}
+
+.clip-audio-badge {
+  position: absolute;
+  right: var(--space-2);
+  bottom: var(--space-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-scrim);
+  color: var(--color-text);
+}
+
+.clip-play-icon {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  color: var(--color-text);
+  background: var(--color-scrim);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease;
+}
+
+.clip-card:hover .clip-play-icon,
+.clip-card:focus-visible .clip-play-icon,
+.clip-play-icon:focus-visible {
+  opacity: 1;
+}
+
+/* --- Ventana de detalle del clip (Etapa 3A) ------------------------------ */
+
+.clip-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.clip-modal-body video,
+.clip-modal-body audio {
+  width: 100%;
+  max-height: 45vh;
+  background: var(--color-player);
+  border-radius: var(--radius-sm);
+  display: block;
+}
+
+.clip-trim {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-3);
+}
+
+.trim-inline {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.trim-inline input {
+  width: 5.5rem;
+  min-width: 0;
+}
+
+.clip-facts {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.clip-facts > div {
+  display: flex;
+  gap: var(--space-3);
+  align-items: baseline;
+}
+
+.clip-facts dt {
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  min-width: 4.5rem;
+  margin: 0;
+}
+
+.clip-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Botón de ícono del encabezado de la caja "Agregar un clip". */
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  padding: 0;
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled),
+.icon-button:focus-visible:not(:disabled) {
+  border-color: var(--color-border-strong);
+  background: var(--color-panel-3);
+}
+
+.icon-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 /* --- Recorte ------------------------------------------------------------- */
 
 .trim {
@@ -1267,6 +1517,13 @@ table.grid td.actions button {
 
 .reward-modal.expanded {
   max-height: min(88vh, 100%);
+}
+
+/* Ventana de detalle del clip: ancho cómodo para el reproductor y el recorte. */
+.clip-modal {
+  width: min(720px, calc(100vw - 2rem));
+  height: auto;
+  max-height: min(90vh, 100%);
 }
 
 /* Cuerpo de la ventana de recompensa: una columna, con separación amplia entre

@@ -16,7 +16,19 @@
     <script defer src="/web/alpine.min.js"></script>
   </head>
   <body>
-    <div class="app" x-data="dashboardApp()" @keydown.escape.window="onEscape()">
+    <div
+      class="app"
+      x-data="dashboardApp()"
+      @keydown.escape.window="onEscape()"
+      @dragenter.window="onDragEnter($event)"
+      @dragover.window="onDragOver($event)"
+      @dragleave.window="onDragLeave($event)"
+      @drop.window="onDrop($event)"
+    >
+      <!-- Aviso de arrastrar y soltar (toda la página). -->
+      <template x-if="dragActive">
+        <div class="drop-overlay"><span>Soltá para agregar a la biblioteca</span></div>
+      </template>
       <!-- ================= Encabezado ================= -->
       <header class="topbar">
         <div class="topbar-left">
@@ -75,9 +87,77 @@
               <!-- Punto: vacío si no hay actividad, verde si hay algo en curso, rojo si hubo un error sin ver. -->
               <span class="dot dot-corner" x-show="downloadStatusClass" :class="downloadStatusClass"></span>
             </button>
-            <div class="dropdown-menu" x-show="downloadsOpen" x-cloak>
-              <h3>Descargas de esta sesión</h3>
-              <p class="empty">Todavía no hay descargas.</p>
+            <div class="dropdown-menu dropdown-menu-wide" x-show="downloadsOpen" x-cloak>
+              <div class="dropdown-head">
+                <h3>Descargas de esta sesión</h3>
+                <button
+                  type="button"
+                  class="ghost sm"
+                  x-show="jobs.length > 0"
+                  @click="clearFinishedJobs()"
+                >
+                  Limpiar terminados
+                </button>
+              </div>
+              <p class="empty" x-show="downloadsEmpty">Todavía no hay descargas.</p>
+              <ul class="job-list">
+                <template x-for="job in recentJobs" :key="job.id">
+                  <li class="job-row">
+                    <div class="job-info">
+                      <span class="job-name" :title="jobName(job)" x-text="jobName(job)"></span>
+                      <span class="job-state" :class="{ error: job.status === 'error' }">
+                        <span x-text="jobLabel(job)"></span>
+                        <template x-if="job.status === 'ready' && job.duplicate">
+                          <span class="muted"> — ya estaba en la biblioteca</span>
+                        </template>
+                      </span>
+                    </div>
+                    <div class="job-actions">
+                      <button
+                        type="button"
+                        class="ghost sm"
+                        x-show="job.status === 'error' && job.kind === 'link'"
+                        @click="retryJob(job)"
+                      >
+                        Reintentar
+                      </button>
+                      <button
+                        type="button"
+                        class="ghost sm"
+                        x-show="job.status === 'ready'"
+                        @click="viewJobClip(job)"
+                      >
+                        Ver
+                      </button>
+                      <button
+                        type="button"
+                        class="ghost sm"
+                        x-show="job.status !== 'ready' && job.status !== 'error'"
+                        @click="cancelJob(job)"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        class="ghost sm"
+                        x-show="job.status === 'error' || job.status === 'ready'"
+                        @click="removeJob(job)"
+                      >
+                        Quitar
+                      </button>
+                      <button
+                        type="button"
+                        class="ghost sm"
+                        x-show="jobNeedsYtdlpUpdate(job)"
+                        @click="openYtdlpSettings()"
+                      >
+                        Actualizar yt-dlp
+                      </button>
+                    </div>
+                  </li>
+                </template>
+              </ul>
+              <p class="hint" x-show="uploadingCount > 0" x-text="'Subiendo ' + uploadingCount + ' archivo(s)…'"></p>
             </div>
           </div>
 
@@ -294,18 +374,30 @@
                   type="url"
                   x-model="url"
                   placeholder="https://www.youtube.com/watch?v=..."
-                  :disabled="downloading"
                 />
-                <button class="primary" type="submit" :disabled="downloading || !url">Descargar</button>
+                <button class="primary" type="submit" :disabled="!url">Descargar</button>
+                <!-- Archivo local: abre el selector; también se puede arrastrar. -->
+                <button
+                  type="button"
+                  class="icon-button"
+                  title="Agregar un archivo local"
+                  aria-label="Agregar un archivo local"
+                  @click="openFilePicker()"
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <path d="M12 5v14M5 12h14" />
+                  </svg>
+                </button>
+                <input
+                  type="file"
+                  class="visually-hidden"
+                  x-ref="fileInput"
+                  accept="audio/*,video/*"
+                  multiple
+                  @change="onFilePicked($event)"
+                />
               </form>
-              <!-- x-if (no x-show): el subárbol sólo existe cuando hay job, así no se
-                   leen propiedades de `job` mientras es null. -->
-              <template x-if="job">
-                <div class="progress" :class="{ error: job.status === 'error' }">
-                  <span x-text="jobLabel"></span>
-                  <span x-show="job.status === 'ready'"> — ya está en la biblioteca.</span>
-                </div>
-              </template>
+              <p class="hint">O arrastrá un video o audio a cualquier parte de la página.</p>
               <p class="error" x-show="message" x-text="message"></p>
             </div>
           </div>
@@ -314,67 +406,58 @@
             <div class="box-head">
               <div class="box-title-row">
                 <h2>Biblioteca <span class="muted" x-text="'(' + clips.length + ')'"></span></h2>
+                <div class="segmented">
+                  <button :class="{ active: libraryFilter === 'all' }" @click="setLibraryFilter('all')">Todos</button>
+                  <button :class="{ active: libraryFilter === 'video' }" @click="setLibraryFilter('video')">Video</button>
+                  <button :class="{ active: libraryFilter === 'audio' }" @click="setLibraryFilter('audio')">Audio</button>
+                </div>
               </div>
             </div>
             <div class="box-body">
               <p class="empty" x-show="clips.length === 0">Todavía no hay clips. Pegá una URL arriba para empezar.</p>
+              <p class="empty" x-show="clips.length > 0 && filteredClips().length === 0">
+                Ningún clip coincide con el filtro.
+              </p>
 
               <div class="clip-grid">
-                <template x-for="clip in clips" :key="clip.id">
-                  <div class="clip">
-                    <video
-                      :id="'clip-video-' + clip.id"
-                      :src="'/media/' + clip.file"
-                      controls
-                      preload="metadata"
-                    ></video>
-                    <div class="body">
-                      <template x-if="editingId !== clip.id">
-                        <div class="title" x-text="clip.title"></div>
+                <template x-for="clip in filteredClips()" :key="clip.id">
+                  <div
+                    class="clip clip-card"
+                    role="button"
+                    tabindex="0"
+                    :aria-label="'Ver detalle de ' + clip.title"
+                    @click="openClip(clip)"
+                    @keydown.enter.prevent="openClip(clip)"
+                    @keydown.space.prevent="openClip(clip)"
+                  >
+                    <span class="clip-thumb">
+                      <template x-if="clip.hasVideo === false">
+                        <span class="clip-audio-badge" title="Solo audio" aria-label="Solo audio">
+                          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                            <path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z" />
+                          </svg>
+                        </span>
                       </template>
-                      <template x-if="editingId === clip.id">
-                        <input type="text" x-model="editTitle" @keydown.enter.prevent="saveRename(clip)" />
-                      </template>
-
-                      <div class="meta">
+                      <!-- Botón de probar: reproduce el clip solo (siempre con imagen) sin abrir el detalle. -->
+                      <button
+                        type="button"
+                        class="clip-play-icon"
+                        title="Probar alerta"
+                        aria-label="Probar alerta"
+                        @click.stop="play(clip)"
+                      >
+                        <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
+                          <path d="M8 5v14l11-7z" />
+                        </svg>
+                      </button>
+                    </span>
+                    <span class="body">
+                      <span class="title" x-text="clip.title"></span>
+                      <span class="meta">
                         <span x-text="formatDuration(clip.durationSec)"></span> ·
                         <span x-text="formatSize(clip.sizeBytes)"></span>
-                      </div>
-
-                      <!-- Recorte no destructivo (no modifica el archivo) -->
-                      <div class="trim">
-                        <div class="trim-row">
-                          <label>Inicio (s)</label>
-                          <input type="number" min="0" step="0.1" x-model.number="clip.trimStart" placeholder="0" />
-                          <button @click="useCurrentTime(clip, 'start')">Desde el video</button>
-                        </div>
-                        <div class="trim-row">
-                          <label>Fin (s)</label>
-                          <input type="number" min="0" step="0.1" x-model.number="clip.trimEnd" placeholder="final" />
-                          <button @click="useCurrentTime(clip, 'end')">Desde el video</button>
-                        </div>
-                        <div class="trim-row">
-                          <button class="primary" @click="saveTrim(clip)">Guardar recorte</button>
-                          <button @click="resetTrim(clip)">Restablecer</button>
-                          <span class="ok" x-show="clip.trimSaved">Guardado</span>
-                        </div>
-                      </div>
-
-                      <div class="row">
-                        <template x-if="editingId !== clip.id">
-                          <button @click="startRename(clip)">Renombrar</button>
-                        </template>
-                        <template x-if="editingId === clip.id">
-                          <button class="primary" @click="saveRename(clip)">Guardar</button>
-                        </template>
-                        <template x-if="editingId === clip.id">
-                          <button @click="editingId = null">Cancelar</button>
-                        </template>
-
-                        <button @click="play(clip)">Probar alerta</button>
-                        <button class="danger" @click="remove(clip)">Borrar</button>
-                      </div>
-                    </div>
+                      </span>
+                    </span>
                   </div>
                 </template>
               </div>
@@ -1233,6 +1316,155 @@
           <div class="modal-foot">
             <button @click="cancelRewardPending()">Cancelar</button>
             <button class="danger" @click="confirmRewardPending(activePlatform)" x-text="rewardPendingActionLabel"></button>
+          </div>
+        </div>
+      </div>
+      </template>
+
+      <!-- ================= Detalle del clip (Etapa 3A) ================= -->
+      <!-- x-if (no x-show): el contenido sólo existe con el detalle abierto, así
+           ninguna expresión lee propiedades de `clipDetail` cuando es null. -->
+      <template x-if="clipDetail">
+      <div class="modal" x-cloak @click="closeClipBackdrop($event)">
+        <div class="modal-window clip-modal" role="dialog" aria-modal="true" aria-label="Detalle del clip">
+          <div class="modal-head">
+            <h2 x-text="clipDetail.title || 'Clip'"></h2>
+          </div>
+
+          <div class="modal-body clip-modal-body">
+            <!-- Reproductor grande (o de audio si el clip no tiene imagen). -->
+            <template x-if="clipDetail.hasVideo === false">
+              <audio
+                :src="'/media/' + clipDetail.file"
+                x-ref="clipPlayer"
+                controls
+                preload="metadata"
+              ></audio>
+            </template>
+            <template x-if="clipDetail.hasVideo !== false">
+              <video
+                :src="'/media/' + clipDetail.file"
+                x-ref="clipPlayer"
+                controls
+                preload="metadata"
+              ></video>
+            </template>
+
+            <label class="field">
+              <span>Nombre</span>
+              <input type="text" maxlength="200" x-model="clipDetail.title" />
+            </label>
+
+            <!-- Recorte no destructivo (no modifica el archivo). -->
+            <div class="clip-trim">
+              <div class="reward-row">
+                <label class="field">
+                  <span>Inicio (s)</span>
+                  <div class="trim-inline">
+                    <input type="number" min="0" step="0.1" placeholder="0" x-model.number="clipDetail.trimStart" />
+                    <button type="button" @click="useClipTime('start')">Desde el reproductor</button>
+                  </div>
+                </label>
+                <label class="field">
+                  <span>Fin (s)</span>
+                  <div class="trim-inline">
+                    <input type="number" min="0" step="0.1" placeholder="final" x-model.number="clipDetail.trimEnd" />
+                    <button type="button" @click="useClipTime('end')">Desde el reproductor</button>
+                  </div>
+                </label>
+              </div>
+              <p class="hint">
+                Duración resultante: <strong x-text="clipResultDuration()"></strong>
+                <button type="button" class="ghost small" @click="resetClipTrim()">Restablecer</button>
+              </p>
+            </div>
+
+            <dl class="clip-facts">
+              <div>
+                <dt>Origen</dt>
+                <dd x-text="clipDetail.sourceUrl || 'archivo local'"></dd>
+              </div>
+              <div>
+                <dt>Tamaño</dt>
+                <dd x-text="formatSize(clipDetail.sizeBytes)"></dd>
+              </div>
+              <div>
+                <dt>Duración</dt>
+                <dd x-text="formatDuration(clipDetail.durationSec)"></dd>
+              </div>
+            </dl>
+
+            <p class="ok" x-show="clipDetail.saved">Guardado.</p>
+            <p class="error" x-show="clipDetail.error" x-text="clipDetail.error"></p>
+          </div>
+
+          <div class="modal-foot">
+            <button
+              class="danger ghost"
+              @click="askDeleteClip()"
+              :title="clipDetail.isLocal ? 'Los archivos locales no se pueden recuperar' : ''"
+            >
+              Borrar
+            </button>
+            <span class="modal-foot-right">
+              <button class="ghost" @click="testClipDetail()">Probar alerta</button>
+              <button @click="closeClip()">Cancelar</button>
+              <button class="primary" @click="saveClipDetail()">Guardar</button>
+            </span>
+          </div>
+        </div>
+      </div>
+      </template>
+
+      <!-- ================= Confirmar borrado del clip (Etapa 3A) ================= -->
+      <template x-if="clipDelete">
+      <div class="modal" x-cloak @click="cancelClipDelete()">
+        <div class="modal-window modal-small" role="dialog" aria-modal="true" aria-label="Borrar clip" @click.stop>
+          <div class="modal-head">
+            <h2>Borrar clip</h2>
+          </div>
+          <div class="modal-body">
+            <template x-if="clipDelete.using.length === 0">
+              <div>
+                <p>¿Borrar el clip <strong x-text="clipDelete.clip.title"></strong>?</p>
+                <p class="warn" x-show="clipDelete.clip.isLocal">
+                  Es un archivo local: no se puede recuperar.
+                </p>
+              </div>
+            </template>
+            <template x-if="clipDelete.using.length > 0">
+              <div>
+                <p class="error">
+                  No se puede borrar el clip: lo usa<span x-show="clipDelete.using.length > 1">n</span> la<span x-show="clipDelete.using.length > 1">s</span> recompensa<span x-show="clipDelete.using.length > 1">s</span>:
+                </p>
+                <ul class="pending-failed">
+                  <template x-for="reward in clipDelete.using" :key="reward.id">
+                    <li x-text="reward.title"></li>
+                  </template>
+                </ul>
+                <p class="warn">
+                  Si borrás esas recompensas, el clip se podrá borrar. El clip en sí no se borra a
+                  menos que confirmes. Los canjes pendientes de esas recompensas se rechazarán.
+                </p>
+              </div>
+            </template>
+          </div>
+          <div class="modal-foot">
+            <button @click="cancelClipDelete()">Cancelar</button>
+            <button
+              class="danger"
+              x-show="clipDelete.using.length === 0"
+              @click="confirmDeleteClip(false)"
+            >
+              Borrar
+            </button>
+            <button
+              class="danger"
+              x-show="clipDelete.using.length > 0"
+              @click="confirmDeleteClip(true)"
+            >
+              Borrar recompensas y clip
+            </button>
           </div>
         </div>
       </div>

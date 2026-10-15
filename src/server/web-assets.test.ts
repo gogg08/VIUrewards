@@ -130,3 +130,87 @@ describe("overlay (Browser Source)", () => {
     expect(html).toMatch(/params\.audioOnly\)\s*return;\s*\n\s*if \(anim\) anim\.cancel/);
   });
 });
+
+describe("biblioteca de clips (Etapa 3A)", () => {
+  const html = read("index.html");
+  const app = read("app.js");
+
+  it("la biblioteca usa tarjetas simples (el detalle vive en la ventana)", () => {
+    // La tarjeta abre el detalle; el recorte/renombrar/borrar viven en la ventana.
+    expect(html).toMatch(/class="clip clip-card"/);
+    expect(html).toMatch(/@click="openClip\(clip\)"/);
+    // El indicador de audio de la tarjeta es una insignia, no un interruptor.
+    expect(html).toMatch(/clip-audio-badge/);
+    // El botón de probar reproduce sin abrir el detalle (stop de la propagación).
+    expect(html).toMatch(/@click\.stop="play\(clip\)"/);
+    // La tarjeta no tiene los controles que se movieron a la ventana.
+    const card = html.slice(html.indexOf("x-for=\"clip in filteredClips"), html.indexOf("Panel derecho"));
+    expect(card).not.toMatch(/role="switch"/);
+    expect(card).not.toMatch(/Renombrar/);
+    expect(card).not.toMatch(/Guardar recorte/);
+  });
+
+  it("el filtro de la biblioteca clasifica por hasVideo (video/audio)", () => {
+    // La lógica pura está en `filteredClips`.
+    expect(app).toMatch(/hasVideo !== false/);
+    expect(app).toMatch(/hasVideo === false/);
+    expect(app).toMatch(/setLibraryFilter/);
+  });
+
+  it("la ventana de detalle existe y ofrece recorte, renombrar, probar y borrar", () => {
+    expect(html).toContain("Detalle del clip");
+    expect(html).toMatch(/@click="useClipTime\('start'\)"/);
+    expect(html).toMatch(/@click="resetClipTrim\(\)"/);
+    expect(html).toMatch(/@click="saveClipDetail\(\)"/);
+    expect(html).toMatch(/@click="testClipDetail\(\)"/);
+    expect(html).toMatch(/@click="askDeleteClip\(\)"/);
+  });
+
+  it("no queda código muerto del interruptor de solo audio del clip", () => {
+    // Se quitó la antigua ruta /api/clips/:id/audio-only y su acción.
+    expect(app).not.toMatch(/audio-only/);
+    expect(app).not.toMatch(/setAudioOnly|toggleAudioOnly|saveAudioOnly/);
+  });
+});
+
+describe("archivos locales y descargas (Etapa 3B)", () => {
+  const html = read("index.html");
+  const app = read("app.js");
+  const css = read("style.css");
+
+  it("el botón + abre el selector de un archivo local", () => {
+    expect(html).toMatch(/@click="openFilePicker\(\)"/);
+    expect(html).toMatch(/x-ref="fileInput"/);
+    expect(html).toMatch(/@change="onFilePicked\(\$event\)"/);
+  });
+
+  it("arrastrar y soltar cubre la página y muestra el aviso", () => {
+    expect(html).toMatch(/@dragenter\.window="onDragEnter\(\$event\)"/);
+    expect(html).toMatch(/@dragover\.window="onDragOver\(\$event\)"/);
+    expect(html).toMatch(/@drop\.window="onDrop\(\$event\)"/);
+    expect(html).toContain("Soltá para agregar a la biblioteca");
+    // Se ignora si Ajustes está abierto.
+    expect(app).toMatch(/onDrop\(event\)\s*\{[^}]*settingsOpen/s);
+  });
+
+  it("la subida va por /api/uploads con FormData y tope de dos en paralelo", () => {
+    expect(app).toMatch(/\/api\/uploads/);
+    expect(app).toMatch(/new FormData\(\)/);
+    expect(app).toMatch(/uploadingCount\s*>=\s*2/);
+  });
+
+  it("el panel Descargas lista los trabajos con sus acciones", () => {
+    expect(html).toContain("Descargas de esta sesión");
+    expect(html).toMatch(/@click="clearFinishedJobs\(\)"/);
+    expect(html).toMatch(/@click="retryJob\(job\)"/);
+    expect(html).toMatch(/@click="cancelJob\(job\)"/);
+    expect(html).toMatch(/@click="viewJobClip\(job\)"/);
+    expect(html).toMatch(/@click="openYtdlpSettings\(\)"/);
+  });
+
+  it("el aviso de arrastrar y soltar no usa un color literal", () => {
+    expect(css).toMatch(/\.drop-overlay\s*\{/);
+    const block = css.slice(css.indexOf(".drop-overlay {"), css.indexOf(".visually-hidden"));
+    expect(block).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
+});

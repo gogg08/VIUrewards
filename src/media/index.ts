@@ -65,6 +65,10 @@ export interface Clip {
   durationSec: number;
   sizeBytes: number;
   title: string;
+  /** ¿El archivo tiene imagen? Los videos sí; los audios locales no. */
+  hasVideo?: boolean;
+  /** ¿Es un archivo local (nunca se limpia solo)? */
+  local?: boolean;
 }
 
 export type MediaResult =
@@ -241,6 +245,8 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
         durationSec: cachedMeta.durationSec,
         sizeBytes: cachedMeta.sizeBytes,
         title: cachedMeta.title,
+        hasVideo: true,
+        local: false,
       },
     };
   }
@@ -354,5 +360,5 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
   };
   writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
 
-  return { ok: true, clip: { id, path: outputPath, durationSec, sizeBytes, title } };
+  return { ok: true, clip: { id, path: outputPath, durationSec, sizeBytes, title, hasVideo: true, local: false } };
 }

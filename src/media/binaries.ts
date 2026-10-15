@@ -13,6 +13,7 @@ import { delimiter, join } from "node:path";
 export interface BinaryPaths {
   ytDlp: string;
   ffmpeg: string;
+  ffprobe: string;
 }
 
 export type BinaryDetection =
@@ -67,11 +68,16 @@ export function detectBinaries(
 
   const ytDlp = findBinary("yt-dlp", { ...options, extraDirs });
   const ffmpeg = findBinary("ffmpeg", { ...options, extraDirs });
+  // ffprobe se usa para validar archivos locales por contenido (Etapa 3B). Suele
+  // venir junto con ffmpeg; si no está, la subida de archivos locales falla con
+  // un mensaje claro en vez de intentar adivinar el tipo por la extensión.
+  const ffprobe = findBinary("ffprobe", { ...options, extraDirs });
 
-  if (ytDlp && ffmpeg) return { ok: true, binaries: { ytDlp, ffmpeg } };
+  if (ytDlp && ffmpeg && ffprobe) return { ok: true, binaries: { ytDlp, ffmpeg, ffprobe } };
 
   const missing: string[] = [];
   if (!ytDlp) missing.push("yt-dlp");
   if (!ffmpeg) missing.push("ffmpeg");
+  if (!ffprobe) missing.push("ffprobe");
   return { ok: false, missing, message: missingMessage(missing) };
 }

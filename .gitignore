@@ -10,6 +10,9 @@ node_modules/
 # Clips descargados (Fase 1 en adelante)
 /media/
 
+# Temporales de subidas de archivos locales (Etapa 3B)
+/.uploads/
+
 # Logs de procesos externos (stderr de yt-dlp/ffmpeg)
 /logs/
 

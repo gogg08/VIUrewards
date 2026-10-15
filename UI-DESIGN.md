@@ -87,6 +87,8 @@ Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Bib
 - **Arrastrar y soltar** un video o audio sobre cualquier parte de la página lo agrega a la biblioteca (varios a la vez, un progreso por archivo). Mientras se arrastra, aparece el aviso "Soltá para agregar a la biblioteca". Se ignora si Ajustes está abierto, y se evita que el navegador abra el archivo si se suelta fuera de la zona.
 - Los errores inmediatos (URL inválida, dominio no permitido, archivo de tipo no soportado) aparecen debajo del campo y no crean una tarea.
 
+**Estado:** implementado en la Etapa 3B (botón + con selector de archivo, arrastrar y soltar en toda la página con aviso, subida por `POST /api/uploads` con `@fastify/multipart`, tope de 2 subidas simultáneas en el cliente).
+
 ### Biblioteca
 - Grilla de tarjetas **simples**: miniatura, nombre, duración y botón de probar. El **ícono de parlante** aparece cuando el archivo no tiene imagen (solo audio).
 - Filtro Todos / Video / Audio.
@@ -157,6 +159,8 @@ Volumen siempre como slider con porcentaje (0 a 100 %; se guarda 0 a 1).
   - Si alguna recompensa lo usa (**incluidas las desactivadas**), el borrado se **bloquea** y se listan las recompensas, con la opción de borrarlas con una advertencia extra. Las recompensas "de otra app" aparecen en la lista pero sin opción de borrado.
   - Si es un archivo local, avisa que no se puede recuperar.
 
+**Estado:** implementado en la Etapa 3A (ventana con reproductor, recorte no destructivo, renombrar, probar y borrar con la guarda de recompensas que lo usan).
+
 ### 7.3 Ajustes
 
 Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar; puede cambiarse). Las acciones inmediatas (vincular, actualizar yt-dlp, limpiar caché) tienen su propio botón y su resultado a la vista. Valores numéricos validados con mensajes claros.
@@ -182,6 +186,8 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar
 - Si el error es por yt-dlp desactualizado, la fila lleva el atajo a Ajustes → Biblioteca y descargas.
 - El progreso es por etapas; solo se muestra porcentaje si las herramientas lo permiten (a verificar).
 
+**Estado:** implementado en la Etapa 3B. El panel refleja `GET /api/jobs` (polling cada segundo); "Cancelar" llama a `POST /api/jobs/:id/cancel`, que descarta el resultado, limpia los temporales y libera el turno (el proceso externo en curso no se aborta a mitad; se documenta como pendiente).
+
 ## 9. Archivos locales, solo audio y caché
 
 - **Archivos locales:** se copian a la carpeta de la app con un nombre generado por nosotros; el nombre original solo sirve como título por defecto (escapado y recortado). El archivo original nunca se modifica ni se borra, ni siquiera al borrar el clip.
@@ -190,6 +196,8 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar
 - **Solo audio** es una **opción de cada recompensa** (`rewards.audio_only`): el overlay reproduce el mismo archivo sin mostrar el video (o superpone el audio, en modo Superponer). No genera un archivo nuevo. La columna `clips.has_video` dice si el archivo tiene imagen; `clips.audio_only` quedó en desuso (no se lee).
 - **Subida de archivos** desde el navegador: con sesión y validación de origen. Si requiere una dependencia nueva, se pide aprobación.
 - **Limpieza de caché:** la automática solo toca lo que se puede volver a descargar (clips de link). Los archivos locales **nunca se borran solos**: se muestran y el creador decide. Nunca se borra un clip usado por una recompensa activa o desactivada, ni uno que esté en la cola.
+
+**Estado (Etapa 3B):** la ingesta valida por contenido con ffprobe (audio o video), aplica los límites de Ajustes → Biblioteca y descargas, detecta duplicados por hash de contenido, copia con un nombre generado (`<sha256>` + `.mp4`/`.m4a`) y normaliza (video a mp4, audio a m4a). El archivo original nunca se toca. `POST /api/clips/cleanup` borra solo clips de link sin recompensas y fuera de la cola. Los jobs se limitan a 2 simultáneos (el resto en cola) y se pueden cancelar.
 
 ## 10. Estados vacíos y de error
 
