@@ -161,7 +161,7 @@
             </div>
           </div>
 
-          <button class="icon-btn ghost" @click="openSettings('kick')" title="Ajustes" aria-label="Ajustes">
+          <button class="icon-btn ghost" @click="openSettings()" title="Ajustes" aria-label="Ajustes">
             <svg
               viewBox="0 0 24 24"
               width="18"
@@ -819,8 +819,8 @@
 
                 <div class="row">
                   <button class="primary" @click="saveSettings()">Guardar</button>
-                  <span class="ok" x-show="settingsSaved">Guardado</span>
-                  <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
+                  <span class="ok" x-show="tabSaved('alerts')">Guardado</span>
+                  <span class="error" x-show="tabMessage('alerts')" x-text="tabMessage('alerts')"></span>
                 </div>
               </section>
 
@@ -849,8 +849,8 @@
                 </label>
                 <div class="row">
                   <button class="primary" @click="saveSettings()">Guardar</button>
-                  <span class="ok" x-show="settingsSaved">Guardado</span>
-                  <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
+                  <span class="ok" x-show="tabSaved('library')">Guardado</span>
+                  <span class="error" x-show="tabMessage('library')" x-text="tabMessage('library')"></span>
                 </div>
                 <div class="stack">
                   <h4>Miniaturas</h4>
@@ -989,8 +989,8 @@
                 </p>
                 <div class="row">
                   <button class="primary" @click="saveSettings()">Guardar</button>
-                  <span class="ok" x-show="settingsSaved">Guardado</span>
-                  <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
+                  <span class="ok" x-show="tabSaved('advanced')">Guardado</span>
+                  <span class="error" x-show="tabMessage('advanced')" x-text="tabMessage('advanced')"></span>
                 </div>
 
                 <hr class="divider" />
@@ -1092,6 +1092,47 @@
           </div>
         </div>
       </div>
+
+      <!-- Cierre de Ajustes con cambios pendientes (por pestaña). -->
+      <template x-if="settingsCloseConfirm">
+      <div class="modal" x-cloak @click="cancelCloseSettings()">
+        <div class="modal-window modal-small" role="dialog" aria-modal="true" aria-label="Cambios sin guardar" @click.stop>
+          <div class="modal-head">
+            <h2>Cambios sin guardar</h2>
+          </div>
+          <div class="modal-body">
+            <p>Hay cambios sin guardar en:</p>
+            <ul class="pending-failed">
+              <template x-for="name in settingsCloseConfirm.tabs" :key="name">
+                <li x-text="name"></li>
+              </template>
+            </ul>
+            <template x-if="settingsCloseConfirm.pendingActions.length > 0">
+              <div>
+                <p>Además, estas pestañas tienen un campo escrito y sin aplicar:</p>
+                <ul class="pending-failed">
+                  <template x-for="name in settingsCloseConfirm.pendingActions" :key="name">
+                    <li x-text="name"></li>
+                  </template>
+                </ul>
+              </div>
+            </template>
+            <p class="muted">
+              "Guardar todo" solo guarda las pestañas con botón Guardar (Alertas, Biblioteca y descargas,
+              Avanzado). Kick, Overlay y Seguridad se guardan con sus propias acciones.
+            </p>
+            <p class="muted">Si cerrás sin guardar, esos cambios se pierden.</p>
+          </div>
+          <div class="modal-foot">
+            <button class="ghost" @click="cancelCloseSettings()">Seguir editando</button>
+            <div class="modal-foot-right">
+              <button class="danger" @click="confirmDiscardSettings()">Descartar</button>
+              <button class="primary" @click="saveAllSettings()">Guardar todo</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      </template>
 
       <!-- ================= Ventana de recompensa (crear/editar) ================= -->
       <!-- x-if (no x-show): el contenido sólo existe con el formulario abierto, así

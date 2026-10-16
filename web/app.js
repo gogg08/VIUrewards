@@ -21,6 +21,30 @@ function parseRoles(text) {
     .filter(Boolean);
 }
 
+// Pestaña de Ajustes abierta la última vez, guardada en ESTE navegador para que
+// sobreviva a una recarga. Si localStorage no está disponible o el valor no es
+// válido, se ignora (Kick por defecto).
+const SETTINGS_TABS = ["kick", "overlay", "alerts", "library", "security", "appearance", "advanced"];
+const SETTINGS_TAB_KEY = "viurewards.settingsTab";
+
+function readSettingsTab() {
+  try {
+    const value = window.localStorage.getItem(SETTINGS_TAB_KEY);
+    return SETTINGS_TABS.indexOf(value) !== -1 ? value : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+function writeSettingsTab(tab) {
+  if (SETTINGS_TABS.indexOf(tab) === -1) return;
+  try {
+    window.localStorage.setItem(SETTINGS_TAB_KEY, tab);
+  } catch (error) {
+    // No poder guardar no debe romper la app.
+  }
+}
+
 async function api(path, options) {
   const response = await fetch(path, options);
   if (response.status === 401) {
@@ -98,9 +122,14 @@ function dashboardApp() {
       redemptionsOldAction: "ignore",
     },
     settingsForm: { maxVideoMb: 100, domainsText: "" },
-    settingsMessage: "",
-    settingsSaved: false,
+    // Resultado del guardado POR PESTAÑA: guardar una no limpia el aviso de otra.
+    settingsMessages: {},
+    settingsSavedTabs: {},
     settingsRestart: false,
+    // Errores de validación por campo de la pestaña actual (Etapa 5, Parte A).
+    settingsFieldErrors: {},
+    // Confirmación al cerrar Ajustes con cambios pendientes (null = cerrada).
+    settingsCloseConfirm: null,
     // Generación de miniaturas faltantes (sección 2.4): progreso del lote en curso.
     thumbsMessage: "",
     thumbsRunning: false,
@@ -340,18 +369,63 @@ function dashboardApp() {
     // --- Ajustes (ventana flotante) ------------------------------------------
 
     openSettings(tab) {
+      // Sin pestaña explícita (el engranaje) se abre la última usada; si no hay
+      // ninguna válida guardada, Kick.
       if (tab) this.settingsTab = tab;
+      else this.settingsTab = readSettingsTab() ?? this.settingsTab;
       this.settingsOpen = true;
       this.downloadsOpen = false;
+      writeSettingsTab(this.settingsTab);
     },
 
     closeSettings() {
-      if (this.hasUnsavedTabs) {
-        const names = this.dirtyTabNames.join(", ");
-        if (!window.confirm("Hay cambios sin guardar en: " + names + ". ¿Cerrar igual?")) return;
+      // Cerrar con cambios pendientes avisa y NOMBRA las pestañas afectadas.
+      // El estado de cada pestaña se conserva mientras la ventana está abierta.
+      const pendingActions = this.pendingActionTabs();
+      if (this.hasUnsavedTabs || pendingActions.length > 0) {
+        this.settingsCloseConfirm = { tabs: this.dirtyTabNames.slice(), pendingActions };
+        return;
       }
       this.settingsOpen = false;
+    },
+
+    // Pestañas sin botón Guardar (Kick, Overlay, Seguridad, Apariencia) que tienen
+    // un campo escrito y sin aplicar: se guardan con sus propias acciones, así que
+    // el diálogo de cierre las menciona aparte.
+    pendingActionTabs() {
+      const items = [];
+      if ((this.platformForm.clientId || "").trim() || this.platformForm.clientSecret) {
+        items.push("Kick: tiene el Client ID sin guardar");
+      }
+      if (this.passwordForm.current || this.passwordForm.next || this.passwordForm.repeat) {
+        items.push("Seguridad: tiene una contraseña sin cambiar");
+      }
+      return items;
+    },
+
+    // "Descartar": cierra y pierde los cambios pendientes.
+    confirmDiscardSettings() {
+      this.settingsCloseConfirm = null;
       this.dirtyTabs = {};
+      this.settingsOpen = false;
+    },
+
+    // "Seguir editando": vuelve a la ventana sin cerrar.
+    cancelCloseSettings() {
+      this.settingsCloseConfirm = null;
+    },
+
+    // "Guardar todo": guarda las pestañas con cambios (una por una).
+    async saveAllSettings() {
+      const tabs = Object.keys(this.dirtyTabs).filter((tab) => this.dirtyTabs[tab]);
+      this.settingsCloseConfirm = null;
+      for (const tab of tabs) {
+        this.settingsTab = tab;
+        // Solo las pestañas con botón Guardar se pueden guardar en bloque.
+        if (tab === "alerts" || tab === "library" || tab === "advanced") {
+          await this.saveSettings();
+        }
+      }
     },
 
     closeIfBackdrop($event) {
@@ -360,6 +434,7 @@ function dashboardApp() {
 
     setSettingsTab(tab) {
       this.settingsTab = tab;
+      writeSettingsTab(tab);
     },
 
     // Modo del logo: se guarda en este navegador y se aplica al instante.
@@ -392,9 +467,33 @@ function dashboardApp() {
       return this.dirtyTabs[tab] === true;
     },
 
+    // Resultado del guardado de una pestaña (éxito o error), cerca de su botón.
+    tabMessage(tab) {
+      return this.settingsMessages[tab] ?? "";
+    },
+
+    tabSaved(tab) {
+      return this.settingsSavedTabs[tab] === true;
+    },
+
+    // Error de validación de un campo de la pestaña actual.
+    fieldError(name) {
+      return this.settingsFieldErrors[name] ?? "";
+    },
+
+    clearTabFeedback(tab) {
+      this.settingsMessages[tab] = "";
+      this.settingsSavedTabs[tab] = false;
+      this.settingsFieldErrors = {};
+    },
+
     // Esc cierra lo que esté abierto arriba de todo (ventanas de recompensa,
     // desplegable y luego Ajustes).
     onEscape() {
+      if (this.settingsCloseConfirm) {
+        this.cancelCloseSettings();
+        return;
+      }
       if (this.rewardPending) {
         this.cancelRewardPending();
         return;
@@ -416,6 +515,7 @@ function dashboardApp() {
 
     async init() {
       this.logoMode = VIULogo.readMode();
+      this.settingsTab = readSettingsTab() ?? this.settingsTab;
       await Promise.all([
         this.loadClips(),
         this.loadOverlay(),
@@ -1066,30 +1166,123 @@ function dashboardApp() {
     },
 
     async saveSettings() {
-      this.settingsMessage = "";
-      this.settingsSaved = false;
+      this.clearTabFeedback(this.settingsTab);
       this.settingsRestart = false;
 
-      const domains = this.settingsForm.domainsText
-        .split(/[\s,]+/)
-        .map((domain) => domain.trim())
-        .filter(Boolean);
+      // Valida en el CLIENTE solo los campos de la pestaña actual (el servidor
+      // vuelve a validar con los mismos rangos).
+      const tab = this.settingsTab;
+      const payload = {};
 
-      const payload = {
-        globalVolume: Number(this.settings.globalVolume),
-        defaultMaxDurationSec: Number(this.settings.defaultMaxDurationSec),
-        watchdogMarginSec: Number(this.settings.watchdogMarginSec),
-        maxVideoDurationSec: Number(this.settings.maxVideoDurationSec),
-        maxAudioVoices: Number(this.settings.maxAudioVoices),
-        maxVideoBytes: Math.round(Number(this.settingsForm.maxVideoMb) * BYTES_PER_MB),
-        allowedDomains: domains,
-        port: Number(this.settings.port),
-        eventHistoryMax: Number(this.settings.eventHistoryMax),
-        redemptionsPollIntervalMs: Number(this.settings.redemptionsPollIntervalMs),
-        redemptionsOnSkip: this.settings.redemptionsOnSkip,
-        redemptionsOldMinutes: Number(this.settings.redemptionsOldMinutes),
-        redemptionsOldAction: this.settings.redemptionsOldAction,
+      const intInRange = (key, value, min, max, label) => {
+        const number = Number(value);
+        if (!Number.isInteger(number) || number < min || number > max) {
+          this.settingsFieldErrors[key] = `${label} debe ser un número entero entre ${min} y ${max}.`;
+          return null;
+        }
+        return number;
       };
+
+      if (tab === "alerts") {
+        const globalVolume = intInRange("globalVolume", this.settings.globalVolume, 0, 100, "El volumen global");
+        const defaultMaxDurationSec = intInRange(
+          "defaultMaxDurationSec",
+          this.settings.defaultMaxDurationSec,
+          1,
+          600,
+          "La duración máxima",
+        );
+        const maxAudioVoices = intInRange(
+          "maxAudioVoices",
+          this.settings.maxAudioVoices,
+          1,
+          20,
+          "Los audios simultáneos",
+        );
+        const redemptionsOldMinutes = intInRange(
+          "redemptionsOldMinutes",
+          this.settings.redemptionsOldMinutes,
+          0,
+          1440,
+          "La antigüedad de los canjes",
+        );
+        if (Object.keys(this.settingsFieldErrors).length > 0) {
+          this.settingsMessages[tab] = "Revisá los valores marcados.";
+          return;
+        }
+        Object.assign(payload, {
+          globalVolume,
+          defaultMaxDurationSec,
+          maxAudioVoices,
+          redemptionsOldMinutes,
+          redemptionsOnSkip: this.settings.redemptionsOnSkip,
+          redemptionsOldAction: this.settings.redemptionsOldAction,
+        });
+      } else if (tab === "library") {
+        const maxVideoDurationSec = intInRange(
+          "maxVideoDurationSec",
+          this.settings.maxVideoDurationSec,
+          1,
+          3600,
+          "La duración máxima del video",
+        );
+        const maxVideoMb = Number(this.settingsForm.maxVideoMb);
+        if (!Number.isFinite(maxVideoMb) || maxVideoMb < 1) {
+          this.settingsFieldErrors.maxVideoBytes = "El tamaño máximo debe ser de 1 MB o más.";
+        }
+        const domains = this.settingsForm.domainsText
+          .split(/[\s,]+/)
+          .map((domain) => domain.trim())
+          .filter(Boolean);
+        if (domains.length === 0) {
+          this.settingsFieldErrors.allowedDomains = "Agregá al menos un dominio permitido.";
+        }
+        if (Object.keys(this.settingsFieldErrors).length > 0) {
+          this.settingsMessages[tab] = "Revisá los valores marcados.";
+          return;
+        }
+        Object.assign(payload, {
+          maxVideoDurationSec,
+          maxVideoBytes: Math.round(maxVideoMb * BYTES_PER_MB),
+          allowedDomains: domains,
+        });
+      } else if (tab === "advanced") {
+        const watchdogMarginSec = intInRange(
+          "watchdogMarginSec",
+          this.settings.watchdogMarginSec,
+          1,
+          120,
+          "El margen del watchdog",
+        );
+        const port = intInRange("port", this.settings.port, 1024, 65535, "El puerto");
+        const eventHistoryMax = intInRange(
+          "eventHistoryMax",
+          this.settings.eventHistoryMax,
+          10,
+          5000,
+          "El máximo de eventos",
+        );
+        const redemptionsPollIntervalMs = intInRange(
+          "redemptionsPollIntervalMs",
+          this.settings.redemptionsPollIntervalMs,
+          1000,
+          60000,
+          "El intervalo de polling",
+        );
+        if (Object.keys(this.settingsFieldErrors).length > 0) {
+          this.settingsMessages[tab] = "Revisá los valores marcados.";
+          return;
+        }
+        Object.assign(payload, {
+          watchdogMarginSec,
+          port,
+          eventHistoryMax,
+          redemptionsPollIntervalMs,
+        });
+      } else {
+        // Pestañas sin botón Guardar (Kick, Overlay, Seguridad, Apariencia).
+        return;
+      }
 
       const response = await api("/api/settings", {
         method: "POST",
@@ -1098,7 +1291,7 @@ function dashboardApp() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        this.settingsMessage = data.message || "No se pudo guardar la configuración.";
+        this.settingsMessages[tab] = data.message || "No se pudo guardar la configuración.";
         return;
       }
 
@@ -1106,10 +1299,10 @@ function dashboardApp() {
       this.settingsForm.maxVideoMb = Math.round(data.settings.maxVideoBytes / BYTES_PER_MB);
       this.settingsForm.domainsText = (data.settings.allowedDomains || []).join("\n");
       this.settingsRestart = Boolean(data.restartRequired);
-      this.settingsSaved = true;
+      this.settingsSavedTabs[tab] = true;
       // Solo se limpia el aviso de la pestaña que se guardó.
-      this.dirtyTabs[this.settingsTab] = false;
-      setTimeout(() => (this.settingsSaved = false), 2000);
+      this.dirtyTabs[tab] = false;
+      setTimeout(() => (this.settingsSavedTabs[tab] = false), 2000);
     },
 
     async changePassword() {

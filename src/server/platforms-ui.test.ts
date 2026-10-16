@@ -87,6 +87,7 @@ const NULLABLE_STATE = [
   "rewardPending",
   "diagnostics",
   "activePlatform",
+  "settingsCloseConfirm",
 ];
 
 /**
@@ -463,5 +464,54 @@ describe("UI del dashboard (plataformas)", () => {
     expect(html).toMatch(/x-show="[^"]*params[^"]*audioOnly"/);
     const css = read("style.css");
     expect(css).toMatch(/\.queue-item-name\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  });
+
+  it("cada indicador del encabezado abre Ajustes en su pestaña", () => {
+    // Overlay → pestaña overlay, Kick → pestaña kick.
+    expect(html).toMatch(/@click="openSettings\('overlay'\)"/);
+    expect(html).toMatch(/@click="openSettings\('kick'\)"/);
+    // El engranaje abre Ajustes sin forzar una pestaña.
+    expect(html).toMatch(/@click="openSettings\(\)"/);
+    expect(defines(app, "openSettings")).toBe(true);
+  });
+
+  it("el cierre de Ajustes avisa por pestaña y ofrece Descartar/Seguir editando/Guardar todo", () => {
+    expect(html).toMatch(/<template x-if="settingsCloseConfirm">/);
+    expect(html).toContain("Seguir editando");
+    expect(html).toContain("Descartar");
+    expect(html).toContain("Guardar todo");
+    for (const name of ["confirmDiscardSettings", "cancelCloseSettings", "saveAllSettings"]) {
+      expect(defines(app, name), `app.js no define ${name}()`).toBe(true);
+    }
+  });
+
+  it("el diálogo aclara que Guardar todo solo toca las pestañas con Guardar", () => {
+    expect(html).toMatch(/solo guarda las pestañas con botón Guardar/);
+    expect(defines(app, "pendingActionTabs")).toBe(true);
+    // Menciona aparte las pestañas que se guardan con sus propias acciones.
+    expect(html).toMatch(/pendingActions\.length > 0/);
+    expect(app).toContain("Kick: tiene el Client ID sin guardar");
+  });
+
+  it("la última pestaña de Ajustes se recuerda en localStorage", () => {
+    expect(app).toContain("viurewards.settingsTab");
+    expect(defines(app, "openSettings")).toBe(true);
+    // Lectura con try/catch y lista de pestañas válidas; valor inválido se ignora.
+    expect(app).toMatch(/function readSettingsTab\(\)/);
+    expect(app).toMatch(/SETTINGS_TABS\.indexOf\(value\) !== -1/);
+  });
+
+  it("el resultado del guardado es por pestaña (no un solo mensaje global)", () => {
+    expect(defines(app, "tabMessage")).toBe(true);
+    expect(defines(app, "tabSaved")).toBe(true);
+    expect(defines(app, "fieldError")).toBe(true);
+    // Ya no hay un settingsMessage/settingsSaved global en la vista.
+    expect(html).not.toMatch(/x-text="settingsMessage"/);
+    expect(html).not.toContain('x-show="settingsSaved"');
+    // Cada pestaña con Guardar usa su propio tabSaved/tabMessage.
+    for (const tab of ["alerts", "library", "advanced"]) {
+      expect(html).toContain(`tabSaved('${tab}')`);
+      expect(html).toContain(`tabMessage('${tab}')`);
+    }
   });
 });

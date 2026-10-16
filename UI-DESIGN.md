@@ -167,7 +167,9 @@ Volumen siempre como slider con porcentaje (0 a 100 %; se guarda 0 a 1).
 
 ### 7.3 Ajustes
 
-Ventana con pestañas a la izquierda y **botón Guardar por pestaña** (a probar; puede cambiarse). Las acciones inmediatas (vincular, actualizar yt-dlp, limpiar caché) tienen su propio botón y su resultado a la vista. Valores numéricos validados con mensajes claros.
+Ventana con pestañas a la izquierda y **botón Guardar por pestaña**. Las acciones inmediatas (vincular, actualizar yt-dlp, limpiar caché) tienen su propio botón y su resultado a la vista. Valores numéricos validados con mensajes claros (en el cliente y en el servidor, con el rango permitido).
+
+**Cambios sin guardar (por pestaña):** cada pestaña con Guardar lleva su propio indicador de cambios pendientes y su propio mensaje de resultado (éxito o error), cerca del botón. Guardar una pestaña **no** limpia el aviso de otra. Cambiar de pestaña **no** pierde lo escrito (el estado se conserva mientras la ventana está abierta). Cerrar Ajustes con cambios pendientes abre un diálogo que **nombra las pestañas afectadas** y ofrece **Descartar**, **Seguir editando** y **Guardar todo**. Al abrir Ajustes desde un indicador del encabezado (Overlay o Kick), la ventana arranca en la pestaña correspondiente; el engranaje abre en la última pestaña usada.
 
 1. **Kick:** estado; Client ID (visible) y Client Secret (solo escritura, nunca se devuelve); vincular, desvincular y borrar credenciales; **redirect URI calculada desde el puerto actual con botón de copiar**; errores de vínculo explicados en español (por ejemplo, "invalid authorization request" casi siempre es una redirect URI que no coincide exactamente: `http://localhost:<puerto>/callback`, sin barra final, `http` y no `https`, `localhost` y no `127.0.0.1`); "Probar conexión".
 2. **Overlay y OBS:** URL con la clave enmascarada, Mostrar y Copiar, aviso de no mostrarla en stream; estado de conexión; regenerar clave (con confirmación y aviso de actualizar OBS); medidas recomendadas (1920×1080); alerta de prueba.
