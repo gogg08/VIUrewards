@@ -52,6 +52,12 @@
     </div>
 
     <script>
+      // El servidor reemplaza este marcador por la versión del overlay (un hash
+      // corto). Si la página quedó cacheada en OBS, el WebSocket manda una
+      // versión distinta y el overlay se recarga solo.
+      window.__OVERLAY_VERSION__ = /*__OVERLAY_VERSION__*/ "";
+    </script>
+    <script>
       /*
        * Máquina de estados del overlay: idle -> loading -> playing <-> paused.
        * Invariante: todo mensaje (play, stop, pause, resume, error, reconexión)
@@ -66,14 +72,14 @@
       // la cookie del dashboard.
       const overlayKey = new URLSearchParams(location.search).get("key") || "";
       /**
-       * URL de reproducción de un clip. El servidor la resuelve (mp4 o m4a,
-       * según el archivo) y la manda en el mensaje `play`. Cuando no viene
-       * (por ejemplo el `state` que se envía al reconectar), se asume mp4: el
-       * servidor informará el error de carga si el archivo no existe.
+       * URL de reproducción de un clip. El servidor SIEMPRE la resuelve (mp4 o
+       * m4a, según el archivo) y la manda en el mensaje (`play` y `state`). El
+       * overlay no debe adivinarla: un `.mp4` fijo dejaba sin reproducir los
+       * clips de audio. Si no viene URL, se devuelve `null` y la reproducción
+       * falla de forma visible en vez de pedir un archivo inexistente.
        */
-      function mediaUrl(clipId, explicitUrl) {
-        if (explicitUrl) return explicitUrl;
-        return "/media/" + encodeURIComponent(clipId) + ".mp4?key=" + encodeURIComponent(overlayKey);
+      function mediaUrl(explicitUrl) {
+        return typeof explicitUrl === "string" && explicitUrl ? explicitUrl : null;
       }
 
       /** Keyframes de entrada; la salida es la misma animación al revés. */
@@ -111,6 +117,91 @@
       let reconnectTimer = null;
       let reconnectDelay = MIN_RECONNECT_MS;
       let ws = null;
+
+      // --- Versión del overlay y recarga automática ---------------------------
+      // El servidor embebe la versión en la página y la manda en el primer
+      // mensaje del WebSocket. Si difieren, esta página quedó vieja (caché de OBS
+      // o del navegador) y se recarga sola, con protección contra bucles.
+      const overlayVersion = window.__OVERLAY_VERSION__ || "";
+      const RELOAD_MIN_INTERVAL_MS = 10000;
+      let lastReloadAt = 0;
+      let reloadAttempted = false;
+
+      function checkVersion(serverVersion) {
+        if (!serverVersion || !overlayVersion || serverVersion === overlayVersion) return;
+        if (reloadAttempted) {
+          // Ya se recargó una vez y sigue distinto: no insistir para no
+          // entrar en un bucle de recargas.
+          console.error(
+            `[overlay] versión del servidor (${serverVersion}) distinta tras recargar ` +
+              `(página ${overlayVersion}); se deja de intentar.`,
+          );
+          return;
+        }
+        const now = Date.now();
+        if (now - lastReloadAt < RELOAD_MIN_INTERVAL_MS) return;
+        lastReloadAt = now;
+        reloadAttempted = true;
+        console.warn(`[overlay] recargando por versión (${overlayVersion} -> ${serverVersion})`);
+        location.reload();
+      }
+
+      // --- Diagnóstico (nivel debug) ------------------------------------------
+      // Sin la clave del overlay: la URL se manda sin `?key=`. Se registra en el
+      // servidor solo con CZERO_DEBUG.
+      function urlWithoutKey(url) {
+        return String(url || "").split("?")[0];
+      }
+
+      function sendConnectionDiag() {
+        send({
+          type: "diag",
+          diag: {
+            kind: "connection",
+            version: overlayVersion,
+            userAgent: navigator.userAgent,
+            canPlay: {
+              'audio/mp4; codecs="mp4a.40.2"': video.canPlayType('audio/mp4; codecs="mp4a.40.2"'),
+              'video/mp4; codecs="avc1.42E01E, mp4a.40.2"': video.canPlayType(
+                'video/mp4; codecs="avc1.42E01E, mp4a.40.2"',
+              ),
+              "audio/x-m4a": video.canPlayType("audio/x-m4a"),
+            },
+          },
+        });
+      }
+
+      // Marca el momento de cada evento del reproductor para el diagnóstico de
+      // la reproducción en curso.
+      let playbackDiag = null;
+      function trackPlayback(itemId, url) {
+        playbackDiag = { itemId: itemId, url: urlWithoutKey(url), events: {} };
+      }
+      for (const evt of ["loadedmetadata", "canplay", "playing", "ended", "error"]) {
+        video.addEventListener(evt, () => {
+          if (!playbackDiag) return;
+          if (playbackDiag.events[evt] === undefined) playbackDiag.events[evt] = Math.round(performance.now());
+        });
+      }
+
+      function sendPlaybackDiag() {
+        const diag = playbackDiag;
+        if (!diag) return;
+        const err = video.error;
+        send({
+          type: "diag",
+          diag: {
+            kind: "playback",
+            version: overlayVersion,
+            url: diag.url,
+            readyState: video.readyState,
+            networkState: video.networkState,
+            errorCode: err ? err.code : null,
+            errorMessage: err ? err.message : null,
+            events: diag.events,
+          },
+        });
+      }
 
       function send(message) {
         if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(message));
@@ -205,6 +296,7 @@
         const finishedId = itemId;
         const exitAnimation = current.params.exitAnimation;
         const wasAudioOnly = current.params.audioOnly === true;
+        sendPlaybackDiag();
         current = null;
         mode = "idle";
         clearTimers();
@@ -277,8 +369,14 @@
         remainingMs = effectiveSec(item) * 1000;
         place(item);
 
-        const url = mediaUrl(item.clipId, explicitUrl);
+        const url = mediaUrl(explicitUrl);
+        if (!url) {
+          // Sin URL no se pide nada: se reporta y se libera el turno.
+          finish(item.id, "el servidor no envió la URL del medio");
+          return;
+        }
         if (video.getAttribute("src") !== url) video.setAttribute("src", url);
+        trackPlayback(item.id, url);
 
         const start = Math.max(0, Number(item.params.trimStart) || 0);
         const begin = () => {
@@ -314,7 +412,11 @@
         remainingMs = effectiveSec(item) * 1000;
         place(item);
 
-        const url = mediaUrl(item.clipId, explicitUrl);
+        const url = mediaUrl(explicitUrl);
+        if (!url) {
+          finish(item.id, "el servidor no envió la URL del medio");
+          return;
+        }
         if (video.getAttribute("src") !== url) video.setAttribute("src", url);
 
         const start = Math.max(0, Number(item.params.trimStart) || 0);
@@ -475,14 +577,15 @@
         switch (message.type) {
           case "state": {
             const st = message.state || {};
+            if (typeof message.version === "string") checkVersion(message.version);
             if (st.status === "paused" && st.current) {
               // En pausa: cargar el clip y dejarlo detenido.
-              if (!current || current.id !== st.current.id) hold(st.current);
+              if (!current || current.id !== st.current.id) hold(st.current, message.url);
               else pause();
             } else if (st.status === "playing" && st.current) {
               // Al (re)conectar se reinicia el clip en curso desde el principio
               // (decisión documentada en docs/dashboard.md).
-              play(st.current);
+              play(st.current, message.url);
             } else {
               stop();
             }
@@ -514,6 +617,7 @@
         ws.addEventListener("open", () => {
           reconnectDelay = MIN_RECONNECT_MS;
           send({ type: "ready" });
+          sendConnectionDiag();
         });
         ws.addEventListener("message", (event) => {
           try {

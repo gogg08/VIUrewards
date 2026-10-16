@@ -430,13 +430,29 @@
                     @keydown.enter.prevent="openClip(clip)"
                     @keydown.space.prevent="openClip(clip)"
                   >
-                    <span class="clip-thumb">
+                    <span class="clip-thumb" :class="{ 'clip-thumb-audio': clip.hasVideo === false }">
+                      <!-- Clip sin imagen: ícono de audio grande y centrado. -->
                       <template x-if="clip.hasVideo === false">
-                        <span class="clip-audio-badge" title="Solo audio" aria-label="Solo audio">
-                          <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
-                            <path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z" />
-                          </svg>
-                        </span>
+                        <svg
+                          class="clip-audio-icon"
+                          viewBox="0 0 24 24"
+                          fill="currentColor"
+                          role="img"
+                          aria-label="Clip de audio"
+                        >
+                          <path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z" />
+                        </svg>
+                      </template>
+                      <!-- Clip con imagen: miniatura real; si falla, queda el fondo neutro. -->
+                      <template x-if="clip.hasVideo !== false">
+                        <img
+                          class="clip-thumb-img"
+                          loading="lazy"
+                          alt=""
+                          :src="clip.thumbUrl || ''"
+                          x-show="clip.thumbUrl"
+                          @error="$el.style.display = 'none'"
+                        />
                       </template>
                       <!-- Botón de probar: reproduce el clip solo (siempre con imagen) sin abrir el detalle. -->
                       <button
@@ -457,6 +473,10 @@
                         <span x-text="formatDuration(clip.durationSec)"></span> ·
                         <span x-text="formatSize(clip.sizeBytes)"></span>
                       </span>
+                      <!-- El archivo ya no está en /media: la fila se conserva y se avisa. -->
+                      <template x-if="clip.missing === true">
+                        <span class="badge warn">Falta el archivo</span>
+                      </template>
                     </span>
                   </div>
                 </template>
@@ -816,6 +836,20 @@
                   <button class="primary" @click="saveSettings()">Guardar</button>
                   <span class="ok" x-show="settingsSaved">Guardado</span>
                   <span class="error" x-show="settingsMessage" x-text="settingsMessage"></span>
+                </div>
+                <div class="stack">
+                  <h4>Miniaturas</h4>
+                  <p class="hint">
+                    Las miniaturas se generan solas al agregar un clip nuevo. Si alguna falta (por ejemplo, de
+                    clips agregados antes), generalas acá: se procesan de a una en segundo plano y nunca se toca
+                    el clip.
+                  </p>
+                  <div class="row">
+                    <button class="secondary sm" @click="generateThumbs()" :disabled="thumbsRunning">
+                      Generar miniaturas faltantes
+                    </button>
+                    <span class="hint" x-show="thumbsMessage" x-text="thumbsMessage"></span>
+                  </div>
                 </div>
               </section>
 

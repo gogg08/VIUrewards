@@ -9,7 +9,7 @@
  *  - audio -> m4a (hasVideo false) y video -> mp4 (hasVideo true).
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -43,8 +43,11 @@ const binarySearch = {
 
 interface ProbeJson {
   streams: Array<{ codec_type: string }>;
-  format: { duration: string };
+  format: { duration: string; format_name?: string };
 }
+
+/** `format_name` que ffprobe devuelve para mp4/m4a, aceptado por `isAllowedFormat`. */
+const MP4_FORMAT = "mov,mp4,m4a,3gp,3g2,mj2";
 
 /** Ejecutor falso: responde ffprobe con un JSON fijo y ffmpeg creando la salida. */
 function fakeRun(probe: ProbeJson): { run: RunProcess; calls: string[][] } {
@@ -71,7 +74,10 @@ describe("ingestLocalFile", () => {
   it("acepta un video y lo normaliza a mp4 con hasVideo en verdadero", async () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "grabacion.MP4", "video-bytes");
-    const { run } = fakeRun({ streams: [{ codec_type: "video" }], format: { duration: "12.4" } });
+    const { run } = fakeRun({
+      streams: [{ codec_type: "video" }],
+      format: { duration: "12.4", format_name: MP4_FORMAT },
+    });
 
     const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
 
@@ -89,7 +95,10 @@ describe("ingestLocalFile", () => {
   it("acepta un audio y lo normaliza a m4a con hasVideo en falso", async () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "cancion.mp3", "audio-bytes");
-    const { run } = fakeRun({ streams: [{ codec_type: "audio" }], format: { duration: "30" } });
+    const { run } = fakeRun({
+      streams: [{ codec_type: "audio" }],
+      format: { duration: "30", format_name: "mp3" },
+    });
 
     const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
 
@@ -102,13 +111,29 @@ describe("ingestLocalFile", () => {
   it("valida por contenido: un archivo con extensión de video pero sin streams se rechaza", async () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "trampa.mp4", "no-es-media");
-    const { run } = fakeRun({ streams: [], format: { duration: "0" } });
+    const { run } = fakeRun({ streams: [], format: { duration: "0", format_name: MP4_FORMAT } });
 
     const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
 
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reason).toBe("NOT_MEDIA");
+  });
+
+  it("rechaza un contenedor fuera de la lista de formatos permitidos", async () => {
+    const { mediaDir, logsDir, parent } = makeDirs();
+    const source = writeSource(parent, "playlist.m3u8", "#EXTM3U");
+    const { run } = fakeRun({
+      streams: [{ codec_type: "video" }],
+      format: { duration: "10", format_name: "hls" },
+    });
+
+    const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("NOT_MEDIA");
+    expect(result.message).toContain("formato");
   });
 
   it("rechaza un archivo que ffprobe no puede leer", async () => {
@@ -126,7 +151,10 @@ describe("ingestLocalFile", () => {
   it("respeta el límite de tamaño antes de gastar procesos", async () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "grande.mp4", "x".repeat(2048));
-    const { run, calls } = fakeRun({ streams: [{ codec_type: "video" }], format: { duration: "5" } });
+    const { run, calls } = fakeRun({
+      streams: [{ codec_type: "video" }],
+      format: { duration: "5", format_name: MP4_FORMAT },
+    });
 
     const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run, maxBytes: 100 });
 
@@ -139,7 +167,10 @@ describe("ingestLocalFile", () => {
   it("respeta el límite de duración", async () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "largo.mp4", "x".repeat(10));
-    const { run } = fakeRun({ streams: [{ codec_type: "video" }], format: { duration: "600" } });
+    const { run } = fakeRun({
+      streams: [{ codec_type: "video" }],
+      format: { duration: "600", format_name: MP4_FORMAT },
+    });
 
     const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run, maxDurationSec: 60 });
 
@@ -152,7 +183,10 @@ describe("ingestLocalFile", () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "uno.mp4", "mismo-contenido");
     const other = writeSource(parent, "dos.mp4", "mismo-contenido");
-    const { run } = fakeRun({ streams: [{ codec_type: "video" }], format: { duration: "8" } });
+    const { run } = fakeRun({
+      streams: [{ codec_type: "video" }],
+      format: { duration: "8", format_name: MP4_FORMAT },
+    });
 
     const first = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
     const second = await ingestLocalFile(other, { mediaDir, logsDir, binarySearch, run });
@@ -167,7 +201,10 @@ describe("ingestLocalFile", () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "original.mp4", "contenido-original");
     const before = readFileSync(source, "utf8");
-    const { run } = fakeRun({ streams: [{ codec_type: "video" }], format: { duration: "5" } });
+    const { run } = fakeRun({
+      streams: [{ codec_type: "video" }],
+      format: { duration: "5", format_name: MP4_FORMAT },
+    });
 
     await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
 
@@ -177,7 +214,10 @@ describe("ingestLocalFile", () => {
   it("el nombre del archivo en disco es el id generado, no el original", async () => {
     const { mediaDir, logsDir, parent } = makeDirs();
     const source = writeSource(parent, "con espacios raros .mp4", "contenido-x");
-    const { run } = fakeRun({ streams: [{ codec_type: "video" }], format: { duration: "5" } });
+    const { run } = fakeRun({
+      streams: [{ codec_type: "video" }],
+      format: { duration: "5", format_name: MP4_FORMAT },
+    });
 
     const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
 
@@ -185,6 +225,45 @@ describe("ingestLocalFile", () => {
     if (!result.ok) return;
     expect(result.clip.path).not.toContain("espacios");
     expect(basename(result.clip.path)).toMatch(/^[0-9a-f]{32}\.mp4$/);
+  });
+
+  it("importa el clip aunque falle la miniatura (sección 2.4)", async () => {
+    const { mediaDir, logsDir, parent } = makeDirs();
+    const source = writeSource(parent, "clip.mp4", "contenido-video");
+    // ffprobe ok; la conversión ok; la miniatura (segundo ffmpeg) falla.
+    let ffmpegCalls = 0;
+    const calls: string[][] = [];
+    const run: RunProcess = async (command, args) => {
+      calls.push([command, ...args]);
+      if (command.includes("ffprobe")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            streams: [{ codec_type: "video" }],
+            format: { duration: "8", format_name: MP4_FORMAT },
+          }),
+          stderr: "",
+          timedOut: false,
+        };
+      }
+      ffmpegCalls += 1;
+      if (ffmpegCalls === 1) {
+        // Normalización del clip: crea la salida.
+        writeFileSync(args[args.length - 1], "salida");
+        return { code: 0, stdout: "", stderr: "", timedOut: false };
+      }
+      // Miniatura: falla.
+      return { code: 1, stdout: "", stderr: "boom", timedOut: false };
+    };
+
+    const result = await ingestLocalFile(source, { mediaDir, logsDir, binarySearch, run });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.clip.hasVideo).toBe(true);
+    expect(existsSync(result.clip.path)).toBe(true);
+    // La miniatura no quedó (falló), pero el clip sí.
+    expect(existsSync(join(mediaDir, "thumbs", `${result.clip.id}.jpg`))).toBe(false);
   });
 });
 

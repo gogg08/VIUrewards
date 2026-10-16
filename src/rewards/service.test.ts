@@ -238,6 +238,7 @@ function setup(clip = true): { db: SqliteDatabase; fake: FakeControls; service: 
       trimStart: null,
       trimEnd: null,
       hasVideo: true,
+      missing: false,
     });
   }
   const fake = fakeIntegration();

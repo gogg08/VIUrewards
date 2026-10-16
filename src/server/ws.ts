@@ -20,7 +20,8 @@ import { WebSocket, WebSocketServer } from "ws";
 
 import { effectiveDurationSec, type AlertQueue, type QueueItem, type QueueState } from "../queue/index.ts";
 import { safeEqual } from "./auth.ts";
-import { clipUrl, parseOverlayMessage, type AudioPlayback, type ServerMessage } from "./protocol.ts";
+import { parseOverlayMessage, type AudioPlayback, type OverlayDiag, type ServerMessage } from "./protocol.ts";
+import { urlWithoutKey } from "./protocol-diag.ts";
 
 export interface WebSocketHub {
   broadcast(message: ServerMessage): void;
@@ -44,9 +45,13 @@ export interface WebSocketOptions {
   onClientsChanged?: (count: number) => void;
   /**
    * Devuelve la URL de reproducción de un clip (mp4 o m4a) con la clave del
-   * overlay. Si falta, se usa `clipUrl` (mp4) como antes.
+   * overlay. Es obligatorio: el servidor siempre conoce la extensión real del
+   * archivo y el overlay no debe adivinarla (un `.mp4` fijo dejaba sin
+   * reproducir los clips de audio).
    */
-  resolveClipUrl?: (clipId: string) => string;
+  resolveClipUrl: (clipId: string) => string;
+  /** Versión del overlay; viaja en el mensaje `state` para que el overlay se recargue si quedó viejo. */
+  overlayVersion?: string;
 }
 
 const WS_PATH = "/ws";
@@ -60,6 +65,28 @@ function debug(...args: unknown[]): void {
   if (DEBUG) console.log("[ws]", ...args);
 }
 
+/** Registra el diagnóstico del overlay (nivel debug). La URL va sin la clave. */
+function logDiag(diag: OverlayDiag): void {
+  if (!DEBUG) return;
+  if (diag.kind === "connection") {
+    debug(
+      `diag conexión: overlay ${diag.version}; ua="${diag.userAgent ?? "?"}"; ` +
+        `canPlay=${JSON.stringify(diag.canPlay ?? {})}`,
+    );
+    return;
+  }
+  const events = diag.events
+    ? Object.entries(diag.events)
+        .map(([name, at]) => `${name}@${at}ms`)
+        .join(" ")
+    : "";
+  debug(
+    `diag reproducción: ${diag.url ? urlWithoutKey(diag.url) : "?"}; ` +
+      `readyState=${diag.readyState ?? "?"} networkState=${diag.networkState ?? "?"} ` +
+      `error=${diag.errorCode ?? "-"}${diag.errorMessage ? ` (${diag.errorMessage})` : ""}; ${events}`,
+  );
+}
+
 function queryKey(url: string | undefined): string | null {
   if (!url) return null;
   const query = url.split("?")[1];
@@ -70,7 +97,7 @@ function queryKey(url: string | undefined): string | null {
 export function attachWebSocket(
   server: HttpServer,
   queue: AlertQueue,
-  options: WebSocketOptions = {},
+  options: WebSocketOptions,
 ): WebSocketHub {
   const wss = new WebSocketServer({ noServer: true });
   const clients = new Map<WebSocket, { alive: boolean }>();
@@ -156,9 +183,7 @@ export function attachWebSocket(
         const sent = sendToAll({
           type: "play",
           item: state.current,
-          url: options.resolveClipUrl
-            ? options.resolveClipUrl(state.current.clipId)
-            : clipUrl(state.current.clipId),
+          url: options.resolveClipUrl(state.current.clipId),
         });
         debug(`play "${state.current.clipId}" (${state.current.id}) a ${sent} overlay(s)`);
         armWatchdog(state.current);
@@ -199,6 +224,17 @@ export function attachWebSocket(
     wss.handleUpgrade(request, socket, head, (ws) => wss.emit("connection", ws, request));
   });
 
+  /** Arma el mensaje `state` con la URL resuelta del ítem actual (o `null`). */
+  const stateMessage = (): ServerMessage => {
+    const state = queue.getState();
+    return {
+      type: "state",
+      state,
+      url: state.current ? options.resolveClipUrl(state.current.clipId) : null,
+      version: options.overlayVersion,
+    };
+  };
+
   wss.on("connection", (ws: WebSocket) => {
     clients.set(ws, { alive: true });
     debug(`overlay conectado (total ${clients.size})`);
@@ -206,7 +242,7 @@ export function attachWebSocket(
     // Primero el estado actual (para ponerse al día), y recién después se avisa
     // que cambió la cantidad de overlays: si eso arranca un pendiente, el nuevo
     // overlay ya recibió su `state` y recibe luego el `play`.
-    ws.send(JSON.stringify({ type: "state", state: queue.getState() } satisfies ServerMessage));
+    ws.send(JSON.stringify(stateMessage()));
     notifyClients();
 
     ws.on("pong", () => {
@@ -221,10 +257,12 @@ export function attachWebSocket(
         return;
       }
       if (message.type === "ready") {
-        ws.send(JSON.stringify({ type: "state", state: queue.getState() } satisfies ServerMessage));
+        ws.send(JSON.stringify(stateMessage()));
       } else if (message.type === "ended") {
         debug(`overlay avisó fin de "${message.itemId}"${message.reason ? ` (${message.reason})` : ""}`);
         queue.complete(message.itemId);
+      } else if (message.type === "diag") {
+        logDiag(message.diag);
       } else if (message.type === "error") {
         // El overlay reintenta y avisa el fin por su cuenta; el watchdog cubre
         // cualquier fallo silencioso.

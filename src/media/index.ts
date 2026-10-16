@@ -25,6 +25,7 @@ import { buildFfmpegArgs, buildYtdlpArgs } from "./args.ts";
 import { detectBinaries, type FindBinaryOptions } from "./binaries.ts";
 import { writeProcessLog } from "./logs.ts";
 import { runProcess, type ProcessResult, type RunProcess } from "./run-process.ts";
+import { generateThumbnail } from "./thumbs.ts";
 import {
   validateUrl,
   DEFAULT_ALLOWED_DOMAINS,
@@ -359,6 +360,17 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     createdAt: new Date().toISOString(),
   };
   writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+
+  // Miniatura real (sección 2.4). Un video descargado por link siempre tiene
+  // imagen. Si falla, el clip queda igual y sin miniatura.
+  await generateThumbnail(outputPath, id, {
+    mediaDir,
+    durationSec,
+    logsDir,
+    binarySearch: options.binarySearch,
+    run: options.run,
+    timeoutMs,
+  });
 
   return { ok: true, clip: { id, path: outputPath, durationSec, sizeBytes, title, hasVideo: true, local: false } };
 }

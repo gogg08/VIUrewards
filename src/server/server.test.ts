@@ -33,17 +33,19 @@ afterEach(async () => {
 interface Ctx {
   server: AppServer;
   mediaDir: string;
+  /** Carpeta contenedora de mediaDir (para probar escapes con ../). */
+  parent: string;
   cookie: string;
 }
 
 async function withServer(): Promise<Ctx> {
-  const { mediaDir } = makeMediaDir();
+  const { mediaDir, parent } = makeMediaDir();
   const server = await createServer({ mediaDir, db: openMemoryDatabase(), requireOverlay: false });
   created.push(server);
   await server.app.ready();
   await server.auth.setPassword(PASSWORD);
   const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
-  return { server, mediaDir, cookie };
+  return { server, mediaDir, parent, cookie };
 }
 
 describe("GET /overlay con token", () => {
@@ -62,6 +64,27 @@ describe("GET /overlay con token", () => {
     expect(response.statusCode).toBe(200);
     expect(response.headers["content-type"]).toContain("text/html");
     expect(response.body).toContain("<video");
+  });
+
+  it("se sirve sin caché (no-store) y con la versión embebida", async () => {
+    const { server } = await withServer();
+    const response = await server.app.inject({
+      method: "GET",
+      url: `/overlay?key=${encodeURIComponent(server.getOverlayKey())}`,
+    });
+    expect(response.headers["cache-control"]).toBe("no-store");
+    // El marcador del código fue reemplazado por la versión (hash corto).
+    expect(response.body).toContain('window.__OVERLAY_VERSION__ = "');
+    expect(response.body).not.toContain("/*__OVERLAY_VERSION__*/");
+  });
+});
+
+describe("caché de los estáticos", () => {
+  it("/web se sirve con no-cache (revalida en cada carga)", async () => {
+    const { server } = await withServer();
+    const real = await server.app.inject({ method: "GET", url: "/web/style.css" });
+    expect(real.statusCode).toBe(200);
+    expect(real.headers["cache-control"]).toBe("no-cache");
   });
 });
 
@@ -135,6 +158,73 @@ describe("/media - solo lectura, sin traversal y protegido", () => {
   });
 });
 
+describe("/media/thumbs - miniaturas de clips (sección 2.4)", () => {
+  async function withThumbServer(): Promise<Ctx> {
+    const { mediaDir, parent } = makeMediaDir();
+    mkdirSync(join(mediaDir, "thumbs"), { recursive: true });
+    const server = await createServer({ mediaDir, db: openMemoryDatabase(), requireOverlay: false });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+    return { server, mediaDir, parent, cookie };
+  }
+
+  it("exige sesión o clave (401 sin autenticación)", async () => {
+    const { server, mediaDir } = await withThumbServer();
+    writeFileSync(join(mediaDir, "thumbs", "abc.jpg"), "jpg-bytes", "utf8");
+
+    const withoutAuth = await server.app.inject({ method: "GET", url: "/media/thumbs/abc.jpg" });
+    expect(withoutAuth.statusCode).toBe(401);
+  });
+
+  it("sirve la miniatura con sesión y con la clave del overlay", async () => {
+    const { server, mediaDir, cookie } = await withThumbServer();
+    writeFileSync(join(mediaDir, "thumbs", "abc.jpg"), "jpg-bytes", "utf8");
+
+    const withSession = await server.app.inject({
+      method: "GET",
+      url: "/media/thumbs/abc.jpg",
+      headers: { cookie },
+    });
+    expect(withSession.statusCode).toBe(200);
+    expect(withSession.body).toBe("jpg-bytes");
+
+    const withKey = await server.app.inject({
+      method: "GET",
+      url: `/media/thumbs/abc.jpg?key=${encodeURIComponent(server.getOverlayKey())}`,
+    });
+    expect(withKey.statusCode).toBe(200);
+  });
+
+  it("no sirve archivos que no sean .jpg", async () => {
+    const { server, mediaDir, cookie } = await withThumbServer();
+    writeFileSync(join(mediaDir, "thumbs", "notes.txt"), "no soy una miniatura", "utf8");
+    const response = await server.app.inject({
+      method: "GET",
+      url: "/media/thumbs/notes.txt",
+      headers: { cookie },
+    });
+    expect(response.statusCode).not.toBe(200);
+  });
+
+  it("no escapa de la carpeta thumbs con ../", async () => {
+    const { server, mediaDir, parent, cookie } = await withThumbServer();
+    const SECRET = "secreto-thumbs";
+    writeFileSync(join(parent, "secret.txt"), SECRET, "utf8");
+    for (const url of [
+      "/media/thumbs/../secret.txt",
+      "/media/thumbs/..%2fsecret.txt",
+      "/media/thumbs/%2e%2e/secret.txt",
+      "/media/thumbs/../../secret.txt",
+    ]) {
+      const response = await server.app.inject({ method: "GET", url, headers: { cookie } });
+      expect(response.statusCode).not.toBe(200);
+      expect(response.body).not.toContain(SECRET);
+    }
+  });
+});
+
 /** Arma un cuerpo multipart/form-data simple con un solo archivo. */
 function multipartBody(
   filename: string,
@@ -159,7 +249,10 @@ describe("subidas de archivos locales (Etapa 3B)", () => {
       if (command.includes("ffprobe")) {
         return {
           code: 0,
-          stdout: JSON.stringify({ streams: [{ codec_type: "audio" }], format: { duration: "9" } }),
+          stdout: JSON.stringify({
+            streams: [{ codec_type: "audio" }],
+            format: { duration: "9", format_name: "mp3" },
+          }),
           stderr: "",
           timedOut: false,
         };
@@ -177,7 +270,7 @@ describe("subidas de archivos locales (Etapa 3B)", () => {
   };
 
   async function withUploadServer(): Promise<Ctx> {
-    const { mediaDir } = makeMediaDir();
+    const { mediaDir, parent } = makeMediaDir();
     const server = await createServer({
       mediaDir,
       db: openMemoryDatabase(),
@@ -189,7 +282,7 @@ describe("subidas de archivos locales (Etapa 3B)", () => {
     await server.app.ready();
     await server.auth.setPassword(PASSWORD);
     const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
-    return { server, mediaDir, cookie };
+    return { server, mediaDir, parent, cookie };
   }
 
   async function waitForJob(server: AppServer, id: string, cookie: string): Promise<Record<string, unknown>> {
@@ -245,7 +338,12 @@ describe("subidas de archivos locales (Etapa 3B)", () => {
       media: { binarySearch },
       run: async (command: string) => {
         if (command.includes("ffprobe")) {
-          return { code: 0, stdout: JSON.stringify({ streams: [], format: {} }), stderr: "", timedOut: false };
+          return {
+            code: 0,
+            stdout: JSON.stringify({ streams: [], format: { format_name: "mp4" } }),
+            stderr: "",
+            timedOut: false,
+          };
         }
         return { code: 0, stdout: "", stderr: "", timedOut: false };
       },
@@ -306,6 +404,220 @@ describe("subidas de archivos locales (Etapa 3B)", () => {
       headers: { cookie },
     });
     expect(missing.statusCode).toBe(404);
+  });
+
+  it("DELETE /api/jobs/:id quita una tarea terminada y no la vuelve a listar", async () => {
+    const { server, cookie } = await withUploadServer();
+    const { body, contentType } = multipartBody("x.mp3", Buffer.from("a"));
+    const created = await server.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { cookie, "content-type": contentType },
+      payload: body,
+    });
+    const id = created.json().job.id;
+    await waitForJob(server, id, cookie);
+
+    const removed = await server.app.inject({ method: "DELETE", url: `/api/jobs/${id}`, headers: { cookie } });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json().jobs.some((job: { id: string }) => job.id === id)).toBe(false);
+
+    const list = await server.app.inject({ method: "GET", url: "/api/jobs", headers: { cookie } });
+    expect(list.json().jobs.some((job: { id: string }) => job.id === id)).toBe(false);
+
+    // Quitar de nuevo: ya no existe.
+    const again = await server.app.inject({ method: "DELETE", url: `/api/jobs/${id}`, headers: { cookie } });
+    expect(again.statusCode).toBe(404);
+  });
+
+  it("DELETE /api/jobs/:id rechaza una tarea en curso con 409", async () => {
+    const { mediaDir } = makeMediaDir();
+    // Ejecutor que retiene la conversión para que el trabajo siga activo.
+    let release: (() => void) | null = null;
+    const run = async (command: string, args: string[]) => {
+      if (command.includes("ffprobe")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            streams: [{ codec_type: "audio" }],
+            format: { duration: "9", format_name: "mp3" },
+          }),
+          stderr: "",
+          timedOut: false,
+        };
+      }
+      await new Promise<void>((resolve) => (release = resolve));
+      writeFileSync(args[args.length - 1], "m4a-out", "utf8");
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    };
+    const server = await createServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      requireOverlay: false,
+      media: { binarySearch },
+      run,
+    });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+
+    const { body, contentType } = multipartBody("x.mp3", Buffer.from("a"));
+    const createdJob = await server.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { cookie, "content-type": contentType },
+      payload: body,
+    });
+    const id = createdJob.json().job.id;
+    // Sigue activo (la conversión está retenida).
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const rejected = await server.app.inject({ method: "DELETE", url: `/api/jobs/${id}`, headers: { cookie } });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json().reason).toBe("ACTIVE");
+    if (release) (release as () => void)();
+  });
+
+  it("POST /api/jobs/clear-finished deja las tareas activas", async () => {
+    const { server, cookie } = await withUploadServer();
+    const { body, contentType } = multipartBody("x.mp3", Buffer.from("a"));
+    const created = await server.app.inject({
+      method: "POST",
+      url: "/api/uploads",
+      headers: { cookie, "content-type": contentType },
+      payload: body,
+    });
+    await waitForJob(server, created.json().job.id, cookie);
+
+    const cleared = await server.app.inject({
+      method: "POST",
+      url: "/api/jobs/clear-finished",
+      headers: { cookie },
+    });
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json().removed).toBeGreaterThanOrEqual(1);
+    expect(cleared.json().jobs).toEqual([]);
+  });
+});
+
+describe("miniaturas faltantes (sección 2.4)", () => {
+  function insertClip(server: AppServer, id: string, options: { hasVideo?: boolean } = {}): void {
+    const hasVideo = options.hasVideo === false ? 0 : 1;
+    const file = hasVideo ? `${id}.mp4` : `${id}.m4a`;
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, has_video, created_at)
+         VALUES (?, 'https://x/y', 'Clip', 20, 4, ?, ?, '2026-01-01T00:00:00.000Z')`,
+      )
+      .run(id, file, hasVideo);
+  }
+
+  /** Ejecutor falso: ffmpeg crea la salida (último argumento). */
+  function fakeRun() {
+    return async (command: string, args: string[]) => {
+      if (command.includes("ffprobe")) {
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            streams: [{ codec_type: "video" }],
+            format: { duration: "20", format_name: "mp4" },
+          }),
+          stderr: "",
+          timedOut: false,
+        };
+      }
+      writeFileSync(args[args.length - 1], "jpg-out", "utf8");
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    };
+  }
+
+  async function withThumbsServer(): Promise<Ctx> {
+    const { mediaDir, parent } = makeMediaDir();
+    mkdirSync(join(mediaDir, "thumbs"), { recursive: true });
+    const binarySearch = {
+      pathEnv: "/fake/bin",
+      extraDirs: [] as string[],
+      platform: "linux" as NodeJS.Platform,
+      exists: () => true,
+    };
+    const server = await createServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      requireOverlay: false,
+      media: { binarySearch },
+      run: fakeRun(),
+    });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+    return { server, mediaDir, parent, cookie };
+  }
+
+  it("thumbUrl es null sin miniatura y apunta a /media/thumbs con la miniatura", async () => {
+    const { server, cookie } = await withThumbsServer();
+    insertClip(server, "v1");
+
+    const before = await server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie } });
+    expect(before.json().clips[0].thumbUrl).toBeNull();
+
+    const generated = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/thumbs/backfill",
+      headers: { cookie },
+    });
+    expect(generated.statusCode).toBe(200);
+    expect(generated.json().job.kind).toBe("thumbs");
+    expect(generated.json().remaining).toBe(1);
+
+    // Espera a que el lote termine.
+    const id = generated.json().job.id;
+    const deadline = Date.now() + 3000;
+    let job: Record<string, unknown> | null = null;
+    while (Date.now() < deadline) {
+      const response = await server.app.inject({ method: "GET", url: `/api/jobs/${id}`, headers: { cookie } });
+      job = response.json().job;
+      if (job && (job.status === "ready" || job.status === "error")) break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(job?.status).toBe("ready");
+    expect(job?.processed).toBe(1);
+
+    const after = await server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie } });
+    expect(after.json().clips[0].thumbUrl).toBe("/media/thumbs/v1.jpg");
+  });
+
+  it("no genera miniaturas para clips sin imagen ni cuando ya existen", async () => {
+    const { server, cookie } = await withThumbsServer();
+    insertClip(server, "audio1", { hasVideo: false });
+
+    const generated = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/thumbs/backfill",
+      headers: { cookie },
+    });
+    // No hay clips con imagen sin miniatura: no se crea ninguna tarea.
+    expect(generated.json().job).toBeNull();
+    expect(generated.json().remaining).toBe(0);
+  });
+
+  it("borrar un clip borra también su miniatura", async () => {
+    const { server, mediaDir, cookie } = await withThumbsServer();
+    insertClip(server, "v1");
+    writeFileSync(join(mediaDir, "v1.mp4"), "mp4", "utf8");
+    writeFileSync(join(mediaDir, "thumbs", "v1.jpg"), "jpg", "utf8");
+
+    const response = await server.app.inject({
+      method: "DELETE",
+      url: "/api/clips/v1",
+      headers: { cookie, "content-type": "application/json" },
+      payload: {},
+    });
+    expect(response.statusCode).toBe(200);
+
+    const after = await server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie } });
+    expect(after.json().clips).toEqual([]);
   });
 });
 
@@ -434,6 +746,38 @@ describe("autenticación", () => {
       headers: { cookie, origin: "http://127.0.0.1:8787" },
     });
     expect(response.statusCode).toBe(200);
+  });
+
+  it("las rutas nuevas exigen sesión y validan el origen (sección 3.2)", async () => {
+    const { server, cookie } = await withServer();
+    // Rutas protegidas por sesión: sin cookie => 401.
+    const noSession: Array<{ method: "POST" | "DELETE"; url: string }> = [
+      { method: "POST", url: "/api/uploads" },
+      { method: "DELETE", url: "/api/jobs/whatever" },
+      { method: "POST", url: "/api/jobs/clear-finished" },
+      { method: "POST", url: "/api/clips/thumbs/backfill" },
+      { method: "POST", url: "/api/clips/cleanup" },
+    ];
+    for (const { method, url } of noSession) {
+      const response = await server.app.inject({ method, url });
+      expect(response.statusCode, `${method} ${url} sin sesión`).toBe(401);
+    }
+
+    // Con sesión pero Origin ajeno: 403 (CSRF), antes de tocar nada.
+    const badOrigin: Array<{ method: "POST" | "DELETE"; url: string }> = [
+      { method: "DELETE", url: "/api/jobs/whatever" },
+      { method: "POST", url: "/api/jobs/clear-finished" },
+      { method: "POST", url: "/api/clips/thumbs/backfill" },
+    ];
+    for (const { method, url } of badOrigin) {
+      const response = await server.app.inject({
+        method,
+        url,
+        headers: { cookie, origin: "http://evil.example.com" },
+      });
+      expect(response.statusCode, `${method} ${url} con Origin ajeno`).toBe(403);
+      expect(response.json().reason).toBe("BAD_ORIGIN");
+    }
   });
 });
 
@@ -662,7 +1006,7 @@ describe("borrado de clip con recompensas que lo usan (Etapa 3A)", () => {
   }
 
   async function withKick(): Promise<Ctx & { deleted: string[] }> {
-    const { mediaDir } = makeMediaDir();
+    const { mediaDir, parent } = makeMediaDir();
     const { integration, deleted } = fakeIntegration();
     const server = await createServer({
       mediaDir,
@@ -674,7 +1018,7 @@ describe("borrado de clip con recompensas que lo usan (Etapa 3A)", () => {
     await server.app.ready();
     await server.auth.setPassword(PASSWORD);
     const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
-    return { server, mediaDir, cookie, deleted };
+    return { server, mediaDir, parent, cookie, deleted };
   }
 
   it("GET /api/clips/:id/usage lista las recompensas que lo usan (también desactivadas)", async () => {
@@ -1005,6 +1349,19 @@ describe("WebSocket /ws del overlay", () => {
 
     client.close();
   });
+
+  it("al arrancar con el puerto ocupado, da un error claro en español", async () => {
+    const { mediaDir } = makeMediaDir();
+    const first = await createServer({ mediaDir, db: openMemoryDatabase(), port: 0 });
+    created.push(first);
+    const info = await first.start();
+
+    // Segunda instancia en el mismo puerto: debe fallar con un mensaje claro.
+    const second = await createServer({ mediaDir, db: openMemoryDatabase(), port: info.port });
+    created.push(second);
+    await expect(second.start()).rejects.toThrow(/puerto .* ya está en uso/i);
+    await expect(second.start()).rejects.toThrow(/otra copia de VIUrewards/i);
+  });
 });
 
 describe("nombre del clip en la cola (camino de canje real)", () => {
@@ -1074,7 +1431,7 @@ describe("nombre del clip en la cola (camino de canje real)", () => {
   }
 
   async function setup(): Promise<Ctx> {
-    const { mediaDir } = makeMediaDir();
+    const { mediaDir, parent } = makeMediaDir();
     const server = await createServer({
       mediaDir,
       db: openMemoryDatabase(),
@@ -1114,7 +1471,7 @@ describe("nombre del clip en la cola (camino de canje real)", () => {
       .run();
     // El motor lee las reglas de la base al arrancar: replicamos ese paso.
     server.engine.setRules(listRules(server.db).map(toRule));
-    return { server, mediaDir, cookie };
+    return { server, mediaDir, parent, cookie };
   }
 
   it("un canje real llega a /api/state con el nombre del clip", async () => {
@@ -1175,8 +1532,8 @@ describe("nombre del clip en la cola (camino de canje real)", () => {
 
 describe("audioOnly en todos los caminos que encolan", () => {
   async function withServer2(): Promise<Ctx> {
-    const { server, mediaDir, cookie } = await withServer();
-    return { server, mediaDir, cookie };
+    const ctx = await withServer();
+    return ctx;
   }
 
   it("la acción del motor (canje real/simulador) propaga audioOnly a params", async () => {

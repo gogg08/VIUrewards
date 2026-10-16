@@ -12,7 +12,22 @@ npm start
 La consola muestra la URL del dashboard (por defecto `http://127.0.0.1:8787/`).
 Podés cambiar el puerto con `--port=...`, la variable de entorno `PORT`, o desde
 la **Configuración** del panel (requiere reiniciar). El script toma el puerto en
-ese orden.
+eso orden.
+
+Si el puerto ya está en uso, la app no arranca y muestra un mensaje claro en
+español: probablemente **ya hay otra copia de VIUrewards corriendo** (quizá en
+otra terminal). Cerrá esa copia o elegí otro puerto. Si el puerto lo ocupa un
+programa ajeno, el mensaje también lo aclara.
+
+### Diagnóstico del overlay
+
+Con `CZERO_DEBUG=1` el servidor registra, además de lo habitual, el diagnóstico
+que manda el overlay: **no incluye la clave del overlay**. Al conectarse reporta
+su **versión**, el `userAgent` y el resultado de `canPlayType` para `audio/mp4`
+(AAC), `video/mp4` (H.264 + AAC) y `audio/x-m4a`; en cada reproducción reporta la
+URL del medio **sin la clave**, `readyState`, `networkState`, el código y mensaje
+de error del elemento, y el momento en que se disparó cada evento
+(`loadedmetadata`, `canplay`, `playing`, `ended`, `error`).
 
 ## Primer uso
 
@@ -72,9 +87,14 @@ literales, así los temas futuros (OLED, noche, día) son otro juego de valores.
   **en segundo plano** con estado consultable
   (`en cola → descargando → convirtiendo → listo / error`). No es una request que
   queda esperando.
-- **Biblioteca**: lista de clips con **preview**, duración, tamaño, **renombrar**,
-  **borrar** (con confirmación, elimina archivo y registro) y **Probar alerta**
-  (lo encola y lo reproduce el overlay).
+- **Biblioteca**: grilla de tarjetas con **miniatura real** (`.jpg` extraída con
+  ffmpeg al agregar el clip), duración, tamaño, **renombrar**, **borrar** (con
+  confirmación, elimina archivo, registro y miniatura) y **Probar alerta** (lo
+  encola y lo reproduce el overlay). El clic abre la ventana de detalle con
+  reproductor grande, recorte, renombrar y borrado. Los clips **sin imagen**
+  muestran un ícono de audio grande; si una miniatura falta, Ajustes →
+  Biblioteca y descargas tiene **"Generar miniaturas faltantes"** (de a una en
+  segundo plano, sin regrabar el clip).
 - **Recorte por clip (no destructivo)**: dos campos numéricos (inicio/fin en
   segundos), botón **"Desde el video"** (toma el tiempo actual del preview) y
   **Restablecer**. No recodifica ni modifica el mp4: el overlay hace *seek* al
@@ -139,14 +159,54 @@ Guía de alta paso a paso: `docs/kick-setup.md`.
 
 - `data/app.db`: SQLite local (tablas `clips`, `settings`, `rules` y
   `event_history`). Ignorado en git.
-- `media/`: clips `.mp4` y un sidecar `.json` por clip. Ignorado en git.
+- `media/`: clips `.mp4` (video) y `.m4a` (audio local), con un sidecar `.json`
+  por clip y las miniaturas en `media/thumbs/<id>.jpg`. Ignorado en git.
 - `logs/`: salida cruda de yt-dlp/ffmpeg. Ignorado en git.
 
 La tabla `clips` incluye `trim_start` y `trim_end` (segundos, opcionales; `null`
-= sin recorte), agregadas por una migración. Al iniciar, la tabla se
-**reconcilia** con los `.mp4` de `media/`: agrega los que falten (leyendo el
-sidecar) y quita los registros cuyo archivo ya no está. Reprocesar una URL de la
-caché **no pisa** el título ni el recorte que haya puesto el usuario.
+= sin recorte), `has_video` (si el archivo tiene imagen) y `missing` (si el
+archivo ya no está en `media/`), agregadas por migraciones. Reprocesar una URL de
+la caché **no pisa** el título ni el recorte que haya puesto el usuario.
+
+## Reconciliación de la biblioteca al arrancar
+
+Al iniciar, la app pone la tabla `clips` de acuerdo con lo que hay en `media/`
+(`reconcileClips`, en `src/db/clips.ts`). Reglas (nunca borra en silencio):
+
+**Qué lee**
+
+- Los nombres de archivo de `media/`, reconociendo **todos los formatos
+  permitidos** por la lista única compartida (`src/media/formats.ts`: hoy
+  `.mp4` y `.m4a`), no una extensión fija.
+- El sidecar `<id>.json` de cada clip (título, duración, tamaño, `hasVideo`).
+- Las filas de la tabla `clips`.
+
+**Qué escribe**
+
+- **Agrega** la fila de un archivo que está en `media/` y no tiene fila: desde
+  el sidecar si existe; si no, reconstruye con **ffprobe** (`createClipRebuilder`,
+  en `src/media/rebuild.ts`, con `-protocol_whitelist file` y la lista corta de
+  `format_name`), con título derivado (`Audio <id corto>` / `Clip <id corto>`).
+  El **id y el nombre de archivo nunca cambian**.
+- **Marca** `missing = 1` en un clip cuyo archivo ya no está (no lo borra): la
+  biblioteca muestra "Falta el archivo" y se puede borrar a mano.
+- **Desmarca** `missing` si el archivo reaparece.
+
+**Qué nunca hace**
+
+- **No borra filas** de clips.
+- **No toca** un clip usado por una recompensa (ni activa ni desactivada).
+- **No modifica nada** si la carpeta `media/` no existe, no es una carpeta, no
+  se puede leer o está **vacía** (se interpreta como una unidad sin montar):
+  aborta y avisa, sin marcar todos los clips como ausentes.
+- **No modifica** el archivo de un clip ni su sidecar.
+
+Cada cambio automático se registra en el log (con los ids y el motivo) y el
+arranque imprime un resumen (`+N recuperados`, `N sin archivo`, etc.).
+
+Esta reconciliación nació de un bug real: solo reconocía `.mp4`, así que un
+audio local `.m4a` quedaba invisible y su fila se borraba al reiniciar (el
+archivo seguía en `media/`, pero desaparecía de la biblioteca).
 
 ## Seguridad
 
@@ -160,7 +220,9 @@ caché **no pisa** el título ni el recorte que haya puesto el usuario.
   la cookie (el Browser Source de OBS tiene su propia sesión). Se protegen con un
   **token secreto en la URL** (`?key=...`), generado la primera vez y regenerable
   desde el dashboard. Sin token válido no se entrega nada. `/media` además acepta
-  la cookie de sesión, para que el dashboard pueda previsualizar los clips.
+  la cookie de sesión, para que el dashboard pueda previsualizar los clips. Las
+  **miniaturas** (`/media/thumbs/<id>.jpg`) usan la misma autenticación, son de
+  solo lectura (solo `.jpg`) y no permiten path traversal.
 - **Whitelist de dominios**: al editarla se rechazan IPs (y por lo tanto rangos
   privados), `localhost`, nombres sin punto, caracteres inválidos y labels mal
   formados. Nunca puede usarse para apuntar a servicios internos.

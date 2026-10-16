@@ -71,6 +71,9 @@ import { ANIMATION_NAMES, RewardService, suggestedTitle } from "../rewards/index
 import { httpStatusForPlatformReason, registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
 import { registerRewardApiRoutes } from "./rewards-routes.ts";
 import { clipUrl } from "./protocol.ts";
+import { computeOverlayVersion } from "./build-version.ts";
+import { removeThumb, thumbExists, thumbsDir } from "../media/thumbs.ts";
+import { hasMediaExtension, mediaExtensionOf } from "../media/formats.ts";
 import { RewardDispatcher } from "./reward-dispatch.ts";
 import { attachWebSocket } from "./ws.ts";
 
@@ -78,9 +81,13 @@ export type { MediaPassthroughOptions } from "./jobs.ts";
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL("../../web", import.meta.url));
 const DEFAULT_OVERLAY_HTML = fileURLToPath(new URL("../../overlay/index.html", import.meta.url));
+const OVERLAY_DIR = fileURLToPath(new URL("../../overlay", import.meta.url));
 
 export const DEFAULT_SERVER_PORT = DEFAULT_PORT;
 export const SESSION_TTL_SEC = 7 * 24 * 60 * 60;
+
+/** Fecha de inicio del proceso: entra en el hash de la versión del overlay. */
+const processStartMs = Date.now();
 
 export interface ServerOptions {
   /** Carpeta desde donde se sirven los clips en /media. */
@@ -96,6 +103,8 @@ export interface ServerOptions {
   media?: MediaPassthroughOptions;
   webDir?: string;
   overlayHtml?: string;
+  /** Sobreescribe la versión del overlay (tests). Por defecto se calcula del contenido. */
+  overlayVersion?: string;
   auth?: AuthOptions;
   /** Clave del overlay; si no se pasa, se genera y guarda la primera vez. */
   overlayKey?: string;
@@ -327,6 +336,15 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   const mediaDir = resolve(options.mediaDir);
   const webDir = resolve(options.webDir ?? DEFAULT_WEB_DIR);
   const overlayHtmlPath = options.overlayHtml ?? DEFAULT_OVERLAY_HTML;
+  // Versión del overlay: hash del contenido de sus archivos + fecha de inicio.
+  // Cambia al reiniciar la app o al editar el overlay, y fuerza la recarga del
+  // Browser Source sin tocar la fuente en OBS. En tests se puede inyectar.
+  const overlayVersion =
+    options.overlayVersion ??
+    computeOverlayVersion({
+      paths: options.overlayHtml ? [options.overlayHtml] : [OVERLAY_DIR],
+      seed: String(processStartMs),
+    });
   const mediaOptions: MediaPassthroughOptions = options.media ?? {};
   const db = options.db ?? openMemoryDatabase();
   // Temporales de las subidas de archivos locales. Viven fuera de /media para no
@@ -381,6 +399,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         trimStart: null,
         trimEnd: null,
         hasVideo,
+        missing: false,
       });
     },
   });
@@ -393,7 +412,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   // informará el error de carga).
   const mediaUrlWithKey = (clipId: string): string => {
     const clip = getClip(db, clipId);
-    const ext = clip?.file.toLowerCase().endsWith(".m4a") ? "m4a" : "mp4";
+    const ext: "mp4" | "m4a" = clip && mediaExtensionOf(clip.file) === ".m4a" ? "m4a" : "mp4";
     return `${clipUrl(clipId, ext)}?key=${encodeURIComponent(overlayKey)}`;
   };
 
@@ -404,6 +423,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     getKey: () => overlayKey,
     resolveWatchdogMarginMs: () => readSettings(db).watchdogMarginSec * 1000,
     resolveClipUrl: (clipId) => mediaUrlWithKey(clipId),
+    overlayVersion,
     onClientsChanged: (count) => {
       if (requireOverlay) queue.setPlayerReady(count > 0);
     },
@@ -605,26 +625,43 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   // --- Estáticos ------------------------------------------------------------
 
   // /web: assets del dashboard (HTML, Alpine local, CSS/JS). Son públicos; los
-  // datos salen por /api, que sí está protegida.
+  // datos salen por /api, que sí está protegida. `no-cache` (con ETag): el
+  // navegador revalida en cada carga, así una actualización de la app no exige
+  // Ctrl+F5, pero sin re-descargar lo que no cambió.
   await app.register(fastifyStatic, {
     root: webDir,
     prefix: "/web/",
     index: false,
     list: false,
     decorateReply: false,
+    setHeaders: (reply) => {
+      reply.header("cache-control", "no-cache");
+    },
+  });
+
+  // Miniaturas de los clips (sección 2.4). Viven en `<mediaDir>/thumbs` y se
+  // sirven ANTES que /media para que su prefijo no las capture. Solo .jpg: el
+  // resto de la carpeta (que no tiene nada más) queda fuera. La misma
+  // autenticación que /media la aplica el hook global (`/media/` incluye este
+  // prefijo).
+  await app.register(fastifyStatic, {
+    root: thumbsDir(mediaDir),
+    prefix: "/media/thumbs/",
+    index: false,
+    list: false,
+    allowedPath: (pathname: string) => pathname.toLowerCase().endsWith(".jpg"),
+    decorateReply: false,
   });
 
   // /media es solo lectura y solo sirve archivos dentro de la carpeta media.
-  // Además de los mp4 (videos), se sirven los m4a (audios locales, Etapa 3B).
+  // Sirve cualquier extensión de clip permitida (mp4 y m4a hoy), desde la lista
+  // compartida: no hay extensiones fijas acá.
   await app.register(fastifyStatic, {
     root: mediaDir,
     prefix: "/media/",
     index: false,
     list: false,
-    allowedPath: (pathname: string) => {
-      const lower = pathname.toLowerCase();
-      return lower.endsWith(".mp4") || lower.endsWith(".m4a");
-    },
+    allowedPath: (pathname: string) => hasMediaExtension(pathname),
     decorateReply: false,
   });
 
@@ -644,7 +681,10 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   // --- Páginas --------------------------------------------------------------
 
   const sendHtml = (reply: FastifyReply, path: string): FastifyReply =>
-    reply.type("text/html; charset=utf-8").send(readFileSync(path, "utf8"));
+    reply
+      .type("text/html; charset=utf-8")
+      .header("cache-control", "no-store")
+      .send(readFileSync(path, "utf8"));
 
   app.get("/login", async (_request, reply) => sendHtml(reply, join(webDir, "login.html")));
 
@@ -653,7 +693,16 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     return reply.code(302).header("location", "/login").send();
   });
 
-  app.get("/overlay", async (_request, reply) => sendHtml(reply, overlayHtmlPath));
+  // El overlay se sirve SIN caché (es un Browser Source de OBS: siempre debe
+  // ejecutar el código actual) y con la versión embebida, para que el propio
+  // overlay detecte que quedó viejo y se recargue.
+  app.get("/overlay", async (_request, reply) => {
+    const html = readFileSync(overlayHtmlPath, "utf8").replace(
+      "/*__OVERLAY_VERSION__*/",
+      JSON.stringify(overlayVersion),
+    );
+    return reply.type("text/html; charset=utf-8").header("cache-control", "no-store").send(html);
+  });
 
   // Callback OAuth de plataformas (Fase 4B). Es público a propósito: la
   // navegación desde la plataforma no lleva la cookie de sesión; se valida solo
@@ -941,11 +990,57 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       return { ok: true };
     });
 
+    // Quita un trabajo TERMINADO de la lista (listo o con error). Un trabajo en
+    // curso o en cola no se quita: se rechaza con 409 y se usa Cancelar.
+    api.delete<{ Params: { id: string } }>("/api/jobs/:id", async (request, reply) => {
+      const result = jobs.remove(request.params.id);
+      if (result === "missing") return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+      if (result === "active") {
+        return reply.code(409).send({
+          ok: false,
+          reason: "ACTIVE",
+          message: "Esa tarea todavía está en curso. Usá Cancelar para detenerla.",
+        });
+      }
+      return { ok: true, jobs: jobs.list() };
+    });
+
+    // Quita TODOS los trabajos terminados. Devuelve cuántos quitó y la lista vigente.
+    api.post("/api/jobs/clear-finished", async () => ({
+      ok: true,
+      removed: jobs.clearFinished(),
+      jobs: jobs.list(),
+    }));
+
     api.get("/api/clips", async () => ({
       // `suggestedTitle` es un nombre propuesto a partir del título del clip, para
       // el formulario de recompensas (rediseño, Etapa 4A).
-      clips: listClips(db).map((clip) => ({ ...clip, suggestedTitle: suggestedTitle(clip.title) })),
+      // `thumbUrl` es la miniatura real del clip (sección 2.4); viene `null` si
+      // todavía no se generó (la tarjeta muestra el respaldo).
+      clips: listClips(db).map((clip) => ({
+        ...clip,
+        suggestedTitle: suggestedTitle(clip.title),
+        thumbUrl: thumbExists(mediaDir, clip.id) ? `/media/thumbs/${clip.id}.jpg` : null,
+      })),
     }));
+
+    // Genera las miniaturas faltantes de la biblioteca, de a una en segundo
+    // plano (solo por acción del usuario). No modifica ni regraba ningún clip.
+    api.post("/api/clips/thumbs/backfill", async () => {
+      const clips = listClips(db)
+        .filter((clip) => clip.hasVideo !== false && !thumbExists(mediaDir, clip.id))
+        .map((clip) => ({
+          id: clip.id,
+          file: clip.file,
+          durationSec: clip.durationSec,
+          hasVideo: clip.hasVideo !== false,
+        }));
+      if (clips.length === 0) {
+        return { ok: true, job: null, remaining: 0 };
+      }
+      const job = jobs.createThumbBackfill(clips, { tag: "thumbs" });
+      return { ok: true, job, remaining: clips.length };
+    });
 
     // Limpieza de caché (Etapa 3B, sección 9): borra SOLO los clips de link que
     // se pueden volver a descargar. Nunca toca archivos locales, ni clips usados
@@ -1052,6 +1147,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           rmSync(filePath, { force: true });
           rmSync(join(mediaDir, `${clip.id}.json`), { force: true });
         }
+        removeThumb(mediaDir, clip.id);
         deleteClipRow(db, clip.id);
         return { ok: true };
       },
@@ -1354,7 +1450,24 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     coordinator,
     getOverlayKey: () => overlayKey,
     async start() {
-      await app.listen({ port, host });
+      try {
+        await app.listen({ port, host });
+      } catch (error) {
+        // Puerto ocupado: mensaje claro en español, sin stack trace crudo. El
+        // caso más común es que ya haya otra copia de la app corriendo.
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EADDRINUSE") {
+          throw new Error(
+            `El puerto ${port} ya está en uso. Probablemente ya hay otra copia de VIUrewards ` +
+              `corriendo (quizá en otra terminal). Cerrá esa copia o elegí otro puerto. ` +
+              `Si el puerto lo ocupa otro programa ajeno, cerralo o cambiá el puerto de la app.`,
+          );
+        }
+        if (code === "EACCES") {
+          throw new Error(`No hay permisos para escuchar en el puerto ${port}. Elegí otro puerto o corré como administrador.`);
+        }
+        throw error;
+      }
 
       // Las integraciones arrancan su polling solo si la cuenta está vinculada.
       for (const integration of integrations) await integration.start();

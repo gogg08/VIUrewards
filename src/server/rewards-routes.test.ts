@@ -172,6 +172,7 @@ async function withServer() {
     trimStart: null,
     trimEnd: null,
     hasVideo: true,
+    missing: false,
   });
   await server.app.ready();
   await server.auth.setPassword("password123");

@@ -8,13 +8,15 @@
 
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
+import { join } from "node:path";
 
 import { processVideo, type Clip, type MediaOptions } from "../media/index.ts";
 import { ingestLocalFile, type IngestLocalFileOptions } from "../media/ingest.ts";
+import { generateThumbnail, thumbExists } from "../media/thumbs.ts";
 
 export type DownloadStatus = "queued" | "downloading" | "converting" | "ready" | "error";
 
-export type DownloadKind = "link" | "local";
+export type DownloadKind = "link" | "local" | "thumbs";
 
 export interface DownloadJob {
   id: string;
@@ -32,6 +34,9 @@ export interface DownloadJob {
   duplicate?: boolean;
   /** Etiqueta opcional del trabajo. */
   tag?: string;
+  /** Progreso de una tarea por lotes (miniaturas): hechas sobre el total. */
+  processed?: number;
+  total?: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -51,6 +56,14 @@ export type MediaPassthroughOptions = Partial<
     | "jsRuntime"
   >
 >;
+
+/** Clip candidato a miniaturas (lo arma el servidor con la base). */
+export interface ThumbBackfillClip {
+  id: string;
+  file: string;
+  durationSec: number;
+  hasVideo: boolean;
+}
 
 export interface DownloadJobManagerOptions {
   mediaDir: string;
@@ -162,6 +175,33 @@ export class DownloadJobManager {
     return snapshot(job);
   }
 
+  /**
+   * Genera en segundo plano las miniaturas faltantes de un lote de clips YA
+   * normalizados. Procesa de a uno (así no compite con las descargas) y reporta
+   * progreso. Nunca modifica el clip: ffmpeg solo lee.
+   */
+  createThumbBackfill(
+    clips: readonly ThumbBackfillClip[],
+    options: CreateJobOptions = {},
+  ): DownloadJob {
+    const now = Date.now();
+    const job: DownloadJob = {
+      id: randomUUID(),
+      kind: "thumbs",
+      url: "",
+      status: "queued",
+      tag: options.tag,
+      processed: 0,
+      total: clips.length,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.jobs.set(job.id, job);
+    if (options.onDone) this.onDone.set(job.id, options.onDone);
+    this.schedule(job.id, () => void this.runThumbBackfill(job, clips));
+    return snapshot(job);
+  }
+
   /** Marca un trabajo en curso como cancelado (si todavía corre) y limpia. */
   cancel(id: string): boolean {
     const job = this.jobs.get(id);
@@ -170,6 +210,33 @@ export class DownloadJobManager {
     this.cancelled.add(id);
     this.finish(job, { status: "error", message: "Cancelado." });
     return true;
+  }
+
+  /**
+   * Quita un trabajo TERMINADO (listo o con error) de la lista. Un trabajo en
+   * curso o en cola no se quita (para eso está `cancel`). Devuelve `false` si no
+   * existe; `"active"` si existe pero todavía no terminó.
+   */
+  remove(id: string): "ok" | "missing" | "active" {
+    const job = this.jobs.get(id);
+    if (!job) return "missing";
+    if (job.status !== "ready" && job.status !== "error") return "active";
+    this.jobs.delete(id);
+    this.onDone.delete(id);
+    return "ok";
+  }
+
+  /** Quita todos los trabajos terminados. Devuelve cuántos quitó. */
+  clearFinished(): number {
+    let removed = 0;
+    for (const job of [...this.jobs.values()]) {
+      if (job.status === "ready" || job.status === "error") {
+        this.jobs.delete(job.id);
+        this.onDone.delete(job.id);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   get(id: string): DownloadJob | null {
@@ -250,6 +317,46 @@ export class DownloadJobManager {
     } finally {
       // El archivo temporal se limpia siempre (el original del usuario no se toca).
       rmSync(tempPath, { force: true });
+      this.finish(job);
+    }
+  }
+
+  private async runThumbBackfill(job: DownloadJob, clips: readonly ThumbBackfillClip[]): Promise<void> {
+    const update = (patch: Partial<DownloadJob>): void => {
+      Object.assign(job, patch);
+      job.updatedAt = Date.now();
+    };
+
+    let done = 0;
+    try {
+      for (const clip of clips) {
+        if (this.cancelled.has(job.id)) return;
+        if (!clip.hasVideo || thumbExists(this.mediaDir, clip.id)) {
+          done += 1;
+          update({ processed: done });
+          continue;
+        }
+        update({ status: "converting" });
+        // Un fallo puntual no corta el lote: se registra y se sigue.
+        await generateThumbnail(join(this.mediaDir, clip.file), clip.id, {
+          mediaDir: this.mediaDir,
+          durationSec: clip.durationSec,
+          binarySearch: this.media.binarySearch,
+          logsDir: this.media.logsDir,
+          run: this.run,
+        });
+        done += 1;
+        update({ processed: done });
+      }
+      if (this.cancelled.has(job.id)) return;
+      update({ status: "ready", message: `${done} de ${clips.length} listas.` });
+    } catch (error) {
+      if (this.cancelled.has(job.id)) return;
+      update({
+        status: "error",
+        message: error instanceof Error ? error.message : "Error inesperado al generar miniaturas.",
+      });
+    } finally {
       this.finish(job);
     }
   }

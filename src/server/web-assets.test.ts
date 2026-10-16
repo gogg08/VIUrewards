@@ -113,10 +113,16 @@ describe("overlay (Browser Source)", () => {
     expect(html).toMatch(/<link\s+rel="icon"/);
   });
 
-  it("arma las URLs de /media con la clave del overlay (no sin key)", () => {
-    // Regresión del bug B3: el `play` usaba /media/<id>.mp4 sin `?key=` y /media
-    // respondía 401, así que el video nunca cargaba.
-    expect(html).toMatch(/\/media\/.*key=/);
+  it("usa la URL del mensaje (con key) y no arma /media ni fija .mp4", () => {
+    // Regresión del bug B3 / solo audio: el overlay hardcodeaba `/media/<id>.mp4`
+    // sin `?key=` (→ 401) y con extensión fija (→ 404 en clips .m4a). El servidor
+    // resuelve la URL (mp4 o m4a, con la clave) y la manda en `play` y `state`.
+    // Se comprueba sobre las cadenas literales (no sobre los comentarios).
+    expect(html).not.toMatch(/"\/media\//);
+    expect(html).not.toMatch(/\.mp4"/);
+    expect(html).toMatch(/function mediaUrl\(explicitUrl\)/);
+    expect(html).toMatch(/play\(message\.item,\s*message\.url\)/);
+    expect(html).toMatch(/play\(st\.current,\s*message\.url\)/);
   });
 
   it("el modo 'solo audio' oculta la imagen sin usar display: none ni display: none en CSS", () => {
@@ -139,8 +145,8 @@ describe("biblioteca de clips (Etapa 3A)", () => {
     // La tarjeta abre el detalle; el recorte/renombrar/borrar viven en la ventana.
     expect(html).toMatch(/class="clip clip-card"/);
     expect(html).toMatch(/@click="openClip\(clip\)"/);
-    // El indicador de audio de la tarjeta es una insignia, no un interruptor.
-    expect(html).toMatch(/clip-audio-badge/);
+    // Sin imagen: ícono de audio grande y centrado en la tarjeta.
+    expect(html).toMatch(/clip-audio-icon/);
     // El botón de probar reproduce sin abrir el detalle (stop de la propagación).
     expect(html).toMatch(/@click\.stop="play\(clip\)"/);
     // La tarjeta no tiene los controles que se movieron a la ventana.
@@ -148,6 +154,25 @@ describe("biblioteca de clips (Etapa 3A)", () => {
     expect(card).not.toMatch(/role="switch"/);
     expect(card).not.toMatch(/Renombrar/);
     expect(card).not.toMatch(/Guardar recorte/);
+  });
+
+  it("la tarjeta muestra la miniatura real con loading lazy y respaldo", () => {
+    const card = html.slice(html.indexOf("x-for=\"clip in filteredClips"), html.indexOf("Panel derecho"));
+    // La miniatura es una imagen real servida por la app.
+    expect(card).toMatch(/clip-thumb-img/);
+    expect(card).toMatch(/loading="lazy"/);
+    expect(card).toMatch(/:src="clip\.thumbUrl/);
+    // Respaldo: si la imagen falla, se oculta y queda el fondo neutro.
+    expect(card).toMatch(/@error=/);
+    // Los clips sin imagen no llevan miniatura: ícono de audio.
+    expect(card).toMatch(/clip\.hasVideo === false/);
+    // Ancho/alto los define el CSS (aspect-ratio) para no saltar el layout.
+    const css = read("style.css");
+    expect(css).toMatch(/\.clip-thumb-img/);
+    expect(css).toMatch(/\.clip-thumb[\s\S]*aspect-ratio/);
+    // El ícono de audio grande reemplaza a la insignia chica de la esquina.
+    expect(css).toMatch(/\.clip-audio-icon[\s\S]*width:/);
+    expect(css).not.toMatch(/\.clip-audio-badge/);
   });
 
   it("el filtro de la biblioteca clasifica por hasVideo (video/audio)", () => {
@@ -170,6 +195,14 @@ describe("biblioteca de clips (Etapa 3A)", () => {
     // Se quitó la antigua ruta /api/clips/:id/audio-only y su acción.
     expect(app).not.toMatch(/audio-only/);
     expect(app).not.toMatch(/setAudioOnly|toggleAudioOnly|saveAudioOnly/);
+  });
+
+  it("la tarjeta avisa si falta el archivo del clip (missing)", () => {
+    // La reconciliación marca `missing` en vez de borrar la fila; la tarjeta lo
+    // muestra con un aviso y el clip se puede borrar a mano.
+    const card = html.slice(html.indexOf("x-for=\"clip in filteredClips"), html.indexOf("Panel derecho"));
+    expect(card).toMatch(/clip\.missing === true/);
+    expect(card).toContain("Falta el archivo");
   });
 });
 
@@ -196,7 +229,9 @@ describe("archivos locales y descargas (Etapa 3B)", () => {
   it("la subida va por /api/uploads con FormData y tope de dos en paralelo", () => {
     expect(app).toMatch(/\/api\/uploads/);
     expect(app).toMatch(/new FormData\(\)/);
-    expect(app).toMatch(/uploadingCount\s*>=\s*2/);
+    // Tope de dos subidas a la vez; el resto queda en cola (uploadQueue).
+    expect(app).toMatch(/uploadingCount \+ this\.uploadQueue\.length >= UPLOAD_MAX_CONCURRENT/);
+    expect(app).toContain("UPLOAD_MAX_CONCURRENT = 2");
   });
 
   it("el panel Descargas lista los trabajos con sus acciones", () => {

@@ -14,7 +14,7 @@ import Database from "better-sqlite3";
 export type SqliteDatabase = Database.Database;
 
 /** Cantidad de migraciones aplicadas; equivale al `user_version` esperado. */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 interface LegacyRuleRow {
   id: string;
@@ -334,6 +334,12 @@ const MIGRATIONS: ReadonlyArray<(db: SqliteDatabase) => void> = [
        WHERE repetition = 'overlap'
           OR (clip_id IS NOT NULL AND clip_id IN (SELECT id FROM clips WHERE audio_only = 1));
     `);
+  },
+  // Reconciliación sin borrados silenciosos: `clips.missing` marca un clip cuyo
+  // archivo ya no está en /media. La fila NO se borra (se muestra "Falta el
+  // archivo" y se puede borrar a mano). Genérico: no menciona ninguna plataforma.
+  (db) => {
+    db.exec(`ALTER TABLE clips ADD COLUMN missing INTEGER NOT NULL DEFAULT 0;`);
   },
 ];
 

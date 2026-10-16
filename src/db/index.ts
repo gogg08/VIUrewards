@@ -25,9 +25,14 @@ export {
   listClips,
   reconcileClips,
   renameClip,
+  scanMediaDir,
+  setClipMissing,
   setClipTrim,
   upsertClip,
   type ClipRecord,
+  type MediaScan,
+  type RebuiltClip,
+  type ReconcileOptions,
   type ReconcileResult,
 } from "./clips.ts";
 

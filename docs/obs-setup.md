@@ -62,6 +62,22 @@ autenticarse.
 - **Animación** de entrada y salida (fade, slide-up, slide-down, zoom, none).
 - **Reconexión automática**: si se corta el WebSocket, se vuelve a conectar solo.
 
+## Actualizaciones sin tocar OBS
+
+El overlay se sirve **sin caché** (`Cache-Control: no-store`) y con un número de
+**versión** embebido en la página. El servidor manda esa misma versión en el
+primer mensaje del WebSocket; si la página quedó vieja (por ejemplo OBS guardó una
+copia en caché), el overlay **se recarga solo**. Con la fuente ya configurada, no
+hace falta volver a cargar la página ni recrear la fuente:
+
+- Al **reiniciar la app** la versión cambia (incluye la fecha de inicio), así que
+  el overlay se pone al día en unos segundos.
+- El overlay nunca entra en un bucle: se recarga como máximo una vez cada 10
+  segundos y, si sigue distinto después de recargar, lo registra en la consola y
+  deja de intentarlo (ahí sí conviene recargar la fuente a mano).
+- El dashboard (`/web`) se sirve con `no-cache`: se revalida en cada carga, así una
+  actualización de la app no exige `Ctrl+F5`.
+
 > La **posición X/Y** de la recompensa ya no la aplica el overlay: el lugar de la
 > alerta se controla moviendo la fuente en OBS. El dato se conserva en la base y
 > en la API, reservado para más adelante.

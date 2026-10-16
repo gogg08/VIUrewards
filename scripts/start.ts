@@ -13,6 +13,7 @@
 import { join } from "node:path";
 
 import { openDatabase, reconcileClips, type SqliteDatabase } from "../src/db/index.ts";
+import { createClipRebuilder } from "../src/media/rebuild.ts";
 import { createServer } from "../src/server/server.ts";
 import { readSettings } from "../src/server/settings.ts";
 
@@ -32,11 +33,30 @@ async function main(): Promise<void> {
   const dataDir = join(root, "data");
 
   const db = openDatabase(join(dataDir, "app.db"));
-  const reconciled = reconcileClips(db, mediaDir);
-  if (reconciled.added.length > 0 || reconciled.removed.length > 0) {
-    console.log(
-      `Biblioteca sincronizada con /media: +${reconciled.added.length} agregados, -${reconciled.removed.length} quitados.`,
-    );
+
+  // Reconciliación de arranque: pone la biblioteca de acuerdo con /media. Nunca
+  // borra clips en silencio: agrega los que falten (sidecar o ffprobe), MARCA
+  // los que perdieron su archivo y aborta sin tocar nada si la carpeta no se
+  // puede leer. El id y el nombre de archivo nunca cambian.
+  const result = await reconcileClips(db, mediaDir, {
+    rebuild: createClipRebuilder({ mediaDir }),
+    log: (message) => console.log(message),
+  });
+
+  if (result.aborted) {
+    console.warn(`Aviso: ${result.message ?? "no se pudo revisar la carpeta de medios."}`);
+  } else if (
+    result.added.length > 0 ||
+    result.missing.length > 0 ||
+    result.restored.length > 0 ||
+    result.skipped.length > 0
+  ) {
+    const parts: string[] = [];
+    if (result.added.length > 0) parts.push(`+${result.added.length} recuperados`);
+    if (result.missing.length > 0) parts.push(`${result.missing.length} sin archivo (marcados, no borrados)`);
+    if (result.restored.length > 0) parts.push(`${result.restored.length} reaparecidos`);
+    if (result.skipped.length > 0) parts.push(`${result.skipped.length} omitidos`);
+    console.log(`Biblioteca sincronizada con /media: ${parts.join(", ")}.`);
   }
 
   const server = await createServer({ mediaDir, db, port: resolvePort(process.argv.slice(2), db) });

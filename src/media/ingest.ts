@@ -23,12 +23,14 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { basename, extname, join } from "node:path";
+import { basename, join } from "node:path";
 
 import { buildAudioFfmpegArgs, buildFfmpegArgs, buildFfprobeArgs } from "./args.ts";
 import { detectBinaries, type FindBinaryOptions } from "./binaries.ts";
+import { hasMediaExtension } from "./formats.ts";
 import { writeProcessLog } from "./logs.ts";
 import { runProcess, type ProcessResult, type RunProcess } from "./run-process.ts";
+import { generateThumbnail } from "./thumbs.ts";
 import type { Clip } from "./index.ts";
 import type { MediaErrorCode } from "./validate-url.ts";
 
@@ -118,6 +120,40 @@ export type ProbeResult =
   | { ok: true; media: ProbedMedia }
   | { ok: false; message: string };
 
+/**
+ * Formatos aceptados (por `format_name` de ffprobe). Es una lista corta y
+ * explícita: un contenedor fuera de ella se rechaza aunque `ffprobe` lo lea, para
+ * no normalizar listas de reproducción, concat ni formatos exóticos. `format_name`
+ * puede traer varios nombres separados por coma (p. ej. "mov,mp4,m4a,3gp,3g2,mj2").
+ */
+const ALLOWED_FORMATS = new Set([
+  "mov",
+  "mp4",
+  "m4a",
+  "3gp",
+  "3g2",
+  "mj2",
+  "matroska",
+  "webm",
+  "mpeg",
+  "mpegts",
+  "ogg",
+  "wav",
+  "flac",
+  "mp3",
+  "aac",
+  "ipod",
+]);
+
+/** ¿El `format_name` (posible lista separada por coma) está dentro de la lista permitida? */
+export function isAllowedFormat(formatName: string | undefined): boolean {
+  if (!formatName) return false;
+  return formatName
+    .split(",")
+    .map((name) => name.trim().toLowerCase())
+    .some((name) => ALLOWED_FORMATS.has(name));
+}
+
 /** Analiza un archivo con ffprobe. El tipo sale del contenido, no de la extensión. */
 export async function probeMedia(
   ffprobeBin: string,
@@ -139,6 +175,9 @@ export async function probeMedia(
     return { ok: false, message: "El archivo no es un audio o video válido." };
   }
   const streams = parsed.streams ?? [];
+  if (!isAllowedFormat(parsed.format?.format_name)) {
+    return { ok: false, message: "El archivo usa un formato no soportado." };
+  }
   const hasVideo = streams.some((s) => s.codec_type === "video");
   const hasAudio = streams.some((s) => s.codec_type === "audio");
   const duration = Number(parsed.format?.duration);
@@ -286,6 +325,20 @@ export async function ingestLocalFile(
     local: true,
   };
   writeFileSync(join(mediaDir, `${id}.json`), JSON.stringify(meta, null, 2), "utf8");
+
+  // Miniatura real (sección 2.4): solo para clips CON imagen. Si falla, el clip
+  // se importa igual, sin miniatura (queda el respaldo en la tarjeta).
+  if (hasVideo) {
+    await generateThumbnail(outputPath, id, {
+      mediaDir,
+      durationSec: probe.media.durationSec,
+      logsDir,
+      binarySearch: options.binarySearch,
+      run: options.run,
+      timeoutMs,
+    });
+  }
+
   options.onStage?.("ready");
 
   return {
@@ -329,8 +382,7 @@ function findClipByFingerprint(
   if (!existsSync(mediaDir)) return null;
   for (const name of readdirSync(mediaDir)) {
     if (!name.startsWith(`${fingerprint}.`)) continue;
-    const ext = extname(name).toLowerCase();
-    if (ext !== ".mp4" && ext !== ".m4a") continue;
+    if (!hasMediaExtension(name)) continue;
     return { id: fingerprint, file: name };
   }
   return null;

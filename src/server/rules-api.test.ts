@@ -120,6 +120,7 @@ function clipRecord(id: string, hasVideo = true): ClipRecord {
     trimStart: null,
     trimEnd: null,
     hasVideo,
+    missing: false,
   };
 }
 
@@ -300,6 +301,7 @@ describe("API de clips", () => {
       trimStart: null,
       trimEnd: null,
       hasVideo: true,
+      missing: false,
     });
     const clips = (await ctx.server.app.inject({ method: "GET", url: "/api/clips", headers: { cookie: ctx.cookie } })).json();
     expect(clips.clips[0].id).toBe("clip-x");

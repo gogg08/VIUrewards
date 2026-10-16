@@ -90,10 +90,14 @@ Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Bib
 **Estado:** implementado en la Etapa 3B (botón + con selector de archivo, arrastrar y soltar en toda la página con aviso, subida por `POST /api/uploads` con `@fastify/multipart`, tope de 2 subidas simultáneas en el cliente).
 
 ### Biblioteca
-- Grilla de tarjetas **simples**: miniatura, nombre, duración y botón de probar. El **ícono de parlante** aparece cuando el archivo no tiene imagen (solo audio).
+- Grilla de tarjetas **simples**: miniatura, nombre, duración y botón de probar.
+- **Miniatura real (corrección 2.4):** la tarjeta muestra una miniatura `.jpg` extraída del clip con ffmpeg (un cuadro al ~10 % de la duración, ancho máx. 480 px, guardada en `media/thumbs/<id>.jpg`). Se carga con `loading="lazy"` y el ancho/alto los fija el CSS (`aspect-ratio: 16/9`), así no hay saltos de layout. Si la imagen no carga, se oculta y queda el **fondo neutro** de la tarjeta (respaldo). El servidor la expone como `thumbUrl` en `GET /api/clips` (`null` si todavía no existe).
+- Clips **sin imagen**: en lugar de una miniatura, un **ícono de audio grande y centrado** (SVG inline), no el parlantito chico en una esquina.
+- Servido por `/media/thumbs/<id>.jpg`, de solo lectura, con la **misma autenticación que `/media`** (clave del overlay o sesión) y sin path traversal. La miniatura se borra junto con el clip y la limpieza de caché la trata igual que a su clip.
 - Filtro Todos / Video / Audio.
 - Clic en una tarjeta abre la ventana de detalle (sección 7.2).
 - **"Solo audio" ya no es una marca del clip**: se quitó el interruptor de las tarjetas. Ahora es una opción de cada recompensa (sección 7.1); el archivo de un clip sin imagen se recuerda en el clip (`has_video`), pero el creador no lo cambia desde la biblioteca.
+- **Miniaturas faltantes:** Ajustes → Biblioteca y descargas tiene **"Generar miniaturas faltantes"** (solo por acción del usuario). Genera de a una en segundo plano las miniaturas de los clips con imagen que no la tengan, con progreso, y **nunca modifica ni regraba el clip**. Si ffmpeg falla, el clip queda igual (sin miniatura) y el fallo se registra en el log.
 
 ## 6. Panel derecho: Cola e Historial
 

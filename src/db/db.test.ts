@@ -47,6 +47,7 @@ function sampleClip(overrides: Partial<ClipRecord> = {}): ClipRecord {
     trimStart: null,
     trimEnd: null,
     hasVideo: true,
+    missing: false,
     ...overrides,
   };
 }
@@ -215,7 +216,7 @@ describe("clips", () => {
 });
 
 describe("reconcileClips", () => {
-  it("agrega los mp4 del disco que faltan y quita registros sin archivo", () => {
+  it("agrega los clips del disco que faltan (sidecar) y marca los registros sin archivo", async () => {
     const mediaDir = makeMediaDir();
     writeFileSync(join(mediaDir, "nuevo.mp4"), "mp4");
     writeFileSync(
@@ -226,24 +227,41 @@ describe("reconcileClips", () => {
     const db = openMemoryDatabase();
     upsertClip(db, sampleClip({ id: "fantasma", file: "fantasma.mp4" }));
 
-    const result = reconcileClips(db, mediaDir);
+    const result = await reconcileClips(db, mediaDir);
     expect(result.added).toEqual(["nuevo"]);
-    expect(result.removed).toEqual(["fantasma"]);
+    // El clip sin archivo se MARCA, no se borra.
+    expect(result.missing).toEqual(["fantasma"]);
 
     const clips = listClips(db);
-    expect(clips).toHaveLength(1);
-    expect(clips[0].id).toBe("nuevo");
-    expect(clips[0].title).toBe("Del sidecar");
-    expect(clips[0].durationSec).toBe(5);
+    expect(clips).toHaveLength(2);
+    const nuevo = getClip(db, "nuevo");
+    expect(nuevo?.title).toBe("Del sidecar");
+    expect(nuevo?.durationSec).toBe(5);
+    expect(nuevo?.missing).toBe(false);
+    expect(getClip(db, "fantasma")?.missing).toBe(true);
   });
 
-  it("es idempotente", () => {
+  it("es idempotente", async () => {
     const mediaDir = makeMediaDir();
     writeFileSync(join(mediaDir, "a.mp4"), "mp4");
+    writeFileSync(
+      join(mediaDir, "a.json"),
+      JSON.stringify({ title: "A", durationSec: 3, sourceUrl: "https://x/y" }),
+    );
     const db = openMemoryDatabase();
 
-    expect(reconcileClips(db, mediaDir).added).toEqual(["a"]);
-    expect(reconcileClips(db, mediaDir).added).toEqual([]);
+    expect((await reconcileClips(db, mediaDir)).added).toEqual(["a"]);
+    expect((await reconcileClips(db, mediaDir)).added).toEqual([]);
     expect(listClips(db)).toHaveLength(1);
+  });
+
+  it("aborta sin tocar nada si la carpeta de medios no existe", async () => {
+    const db = openMemoryDatabase();
+    upsertClip(db, sampleClip({ id: "abc", file: "abc.mp4" }));
+
+    const result = await reconcileClips(db, join(tmpdir(), "no-existe-media-xyz"));
+    expect(result.aborted).toBe(true);
+    expect(result.missing).toEqual([]);
+    expect(getClip(db, "abc")?.missing).toBe(false);
   });
 });

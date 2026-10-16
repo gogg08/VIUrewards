@@ -187,4 +187,96 @@ describe("DownloadJobManager", () => {
     expect(manager.get(c.id)?.status).not.toBe("queued");
     holders.forEach((release) => release());
   });
+
+  it("remove quita un trabajo terminado y no lo vuelve a listar", async () => {
+    const { mediaDir } = makeDirs();
+    const manager = new DownloadJobManager({ mediaDir, media: { binarySearch }, run: successRun() });
+    const job = manager.create("https://www.youtube.com/watch?v=aaaaaaaaaaa");
+    const done = await new Promise<DownloadJob>((resolve) => {
+      manager.create("https://www.youtube.com/watch?v=bbbbbbbbbbb", { onDone: () => {} });
+      const check = setInterval(() => {
+        const current = manager.get(job.id);
+        if (current && (current.status === "ready" || current.status === "error")) {
+          clearInterval(check);
+          resolve(current);
+        }
+      }, 5);
+    });
+    expect(done.status).toBe("ready");
+
+    expect(manager.remove(job.id)).toBe("ok");
+    expect(manager.get(job.id)).toBeNull();
+    expect(manager.list().some((item) => item.id === job.id)).toBe(false);
+  });
+
+  it("remove rechaza una tarea en curso o en cola", async () => {
+    const { mediaDir } = makeDirs();
+    const holders: Array<() => void> = [];
+    const run: RunProcess = async (command, args) => {
+      if (command.includes("yt-dlp")) {
+        await new Promise<void>((resolve) => holders.push(resolve));
+        const template = args[args.indexOf("-o") + 1];
+        const source = template.replace("%(ext)s", "mp4");
+        writeFileSync(source, "v");
+        writeFileSync(
+          source.replace(/\.src\.mp4$/, ".src.info.json"),
+          JSON.stringify({ title: "t", duration: 3, vcodec: "avc1", acodec: "mp4a" }),
+        );
+      } else {
+        writeFileSync(args[args.length - 1], "mp4");
+      }
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    };
+    const manager = new DownloadJobManager({ mediaDir, media: { binarySearch }, run, maxConcurrent: 1 });
+
+    const active = manager.create("https://www.youtube.com/watch?v=aaaaaaaaaaa");
+    const waiting = manager.create("https://www.youtube.com/watch?v=bbbbbbbbbbb");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.remove(waiting.id)).toBe("active");
+    expect(manager.remove(active.id)).toBe("active");
+    expect(manager.remove("no-existe")).toBe("missing");
+    holders.forEach((release) => release());
+  });
+
+  it("clearFinished quita solo los terminados y deja las activas", async () => {
+    const { mediaDir } = makeDirs();
+    let holdNext = false;
+    const holders: Array<() => void> = [];
+    const run: RunProcess = async (command, args) => {
+      if (command.includes("yt-dlp")) {
+        if (holdNext) await new Promise<void>((resolve) => holders.push(resolve));
+        const template = args[args.indexOf("-o") + 1];
+        const source = template.replace("%(ext)s", "mp4");
+        writeFileSync(source, "v");
+        writeFileSync(
+          source.replace(/\.src\.mp4$/, ".src.info.json"),
+          JSON.stringify({ title: "t", duration: 3, vcodec: "avc1", acodec: "mp4a" }),
+        );
+      } else {
+        writeFileSync(args[args.length - 1], "mp4");
+      }
+      return { code: 0, stdout: "", stderr: "", timedOut: false };
+    };
+    const manager = new DownloadJobManager({ mediaDir, media: { binarySearch }, run, maxConcurrent: 2 });
+
+    // El primero termina; el segundo queda activo (retenido).
+    const finished = manager.create("https://www.youtube.com/watch?v=aaaaaaaaaaa");
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (manager.get(finished.id)?.status === "ready") {
+          clearInterval(check);
+          resolve();
+        }
+      }, 5);
+    });
+    holdNext = true;
+    const active = manager.create("https://www.youtube.com/watch?v=bbbbbbbbbbb");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(manager.clearFinished()).toBe(1);
+    expect(manager.get(finished.id)).toBeNull();
+    expect(manager.get(active.id)?.status).not.toBe("ready");
+    holders.forEach((release) => release());
+  });
 });

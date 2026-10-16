@@ -261,14 +261,33 @@ describe("UI del dashboard (plataformas)", () => {
     expect(overlay).not.toMatch(/anchor\.style\.left/);
   });
 
-  it("el overlay usa la URL del mensaje play (resuelve mp4 o m4a) en vez de fijar .mp4", () => {
+  it("el overlay usa la URL del mensaje (resuelve mp4 o m4a) en vez de fijar .mp4", () => {
     const overlay = readFileSync(join(overlayDir, "index.html"), "utf8");
-    // La reproducción pasa la URL explícita del servidor; el respaldo solo
-    // aplica cuando no viene (por ejemplo el `state` al reconectar).
+    // La reproducción pasa la URL explícita del servidor (play y state); el
+    // overlay nunca la arma ni fija una extensión.
     expect(overlay).toMatch(/play\(message\.item,\s*message\.url\)/);
-    expect(overlay).toMatch(/function mediaUrl\(clipId,\s*explicitUrl\)/);
-    expect(overlay).toMatch(/if \(explicitUrl\) return explicitUrl;/);
-    expect(overlay).toMatch(/const url = mediaUrl\(item\.clipId,\s*explicitUrl\);/);
+    expect(overlay).toMatch(/play\(st\.current,\s*message\.url\)/);
+    expect(overlay).toMatch(/function mediaUrl\(explicitUrl\)/);
+    expect(overlay).not.toMatch(/\.mp4"/);
+  });
+
+  it("el panel Descargas quitar/limpiar usa el servidor y un contador de secuencia", () => {
+    // Bug: "Quitar" y "Limpiar terminados" solo filtraban la lista en el
+    // navegador y el polling de 1 s la reponía. Ahora son operaciones del
+    // servidor y las respuestas viejas del polling se descartan con jobsSeq.
+    expect(app).toContain("jobsAppliedSeq");
+    expect(app).toMatch(/DELETE/);
+    expect(app).toContain("/api/jobs/clear-finished");
+    expect(app).toMatch(/async removeJob\b/);
+    expect(app).toMatch(/async clearFinishedJobs\b/);
+    expect(app).toContain("applyJobsResult");
+  });
+
+  it("la cola de subidas en espera arranca sola (no pide subir luego)", () => {
+    expect(app).toContain("En cola: empieza cuando termine otra tarea");
+    expect(app).not.toContain("esperá a que terminen");
+    expect(app).toMatch(/pumpUploadQueue/);
+    expect(app).toContain("UPLOAD_MAX_CONCURRENT");
   });
 
   it("el desplegable de clip del modal reafirma su valor tras renderizar las opciones", () => {

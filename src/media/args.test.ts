@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { buildAudioFfmpegArgs, buildFfmpegArgs, buildFfprobeArgs, buildYtdlpArgs } from "./args.ts";
+import {
+  buildAudioFfmpegArgs,
+  buildFfmpegArgs,
+  buildFfprobeArgs,
+  buildThumbFfmpegArgs,
+  buildYtdlpArgs,
+} from "./args.ts";
 
 const TEMPLATE = "/media/abc.%(ext)s";
 
@@ -91,6 +97,30 @@ describe("buildFfmpegArgs", () => {
     const args = buildFfmpegArgs("/a", "/b", { maxHeight: 720 });
     const scaleIndex = args.indexOf("-vf");
     expect(args[scaleIndex + 1]).toContain("720");
+  });
+});
+
+describe("restricción de protocolos a archivos locales (sección 3.1)", () => {
+  // Un archivo disfrazado (playlist, concat, HLS) no debe poder leer otros
+  // archivos ni abrir conexiones: `-protocol_whitelist file` antes de `-i`.
+  function whitelistIndex(args: string[]): number {
+    return args.indexOf("-protocol_whitelist");
+  }
+
+  it("ffprobe y ffmpeg limitan la entrada a `file` antes del input", () => {
+    const cases: string[][] = [
+      buildFfprobeArgs("/tmp/a.bin"),
+      buildFfmpegArgs("/tmp/a.bin", "/media/a.mp4", { maxHeight: 1080 }),
+      buildAudioFfmpegArgs("/tmp/a.bin", "/media/a.m4a"),
+      buildThumbFfmpegArgs("/media/a.mp4", "/media/thumbs/a.jpg", { atSec: 1, maxWidth: 480 }),
+    ];
+    for (const args of cases) {
+      const index = whitelistIndex(args);
+      expect(index).toBeGreaterThan(-1);
+      expect(args[index + 1]).toBe("file");
+      // Debe ir ANTES de `-i` para que aplique a la entrada.
+      expect(index).toBeLessThan(args.indexOf("-i"));
+    }
   });
 });
 

@@ -62,6 +62,7 @@ export function buildFfmpegArgs(
     "error",
     "-nostdin",
     "-y",
+    ...localProtocolArgs(),
     "-i",
     inputPath,
     "-vf",
@@ -89,6 +90,59 @@ export function buildFfmpegArgs(
 }
 
 /**
+ * Args de ffmpeg para extraer UN cuadro (miniatura) de un clip con imagen. Se
+ * toma un instante (`atSec`), se limita el ancho (`maxWidth`) y se codifica jpg.
+ * Nunca se usa para modificar el clip: solo lee.
+ */
+export interface ThumbFfmpegArgsOptions {
+  /** Instante del cuadro, en segundos (0 = primer cuadro). */
+  atSec: number;
+  /** Ancho máximo de la miniatura; la altura se calcula por aspecto. */
+  maxWidth: number;
+}
+
+export function buildThumbFfmpegArgs(
+  inputPath: string,
+  outputPath: string,
+  options: ThumbFfmpegArgsOptions,
+): string[] {
+  // `-ss` antes de `-i` busca rápido; `-frames:v 1` corta en el primer cuadro.
+  // `scale='min(<w>,iw)':-2` no agranda imágenes más chicas que el límite.
+  const scale = `scale='min(${options.maxWidth},iw)':-2`;
+  return [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    "-y",
+    ...localProtocolArgs(),
+    "-ss",
+    String(Math.max(0, options.atSec)),
+    "-i",
+    inputPath,
+    "-frames:v",
+    "1",
+    "-vf",
+    scale,
+    "-q:v",
+    "3",
+    "-f",
+    "mjpeg",
+    outputPath,
+  ];
+}
+
+/**
+ * Argumentos que RESTRINGEN las entradas a archivos locales (robustez, sección
+ * 3.1): impide que un archivo disfrazado (lista de reproducción, concat, HLS) lea
+ * otros archivos o abra conexiones de red. `file` cubre archivos y, con
+ * `-f concat`/HLS, los subprotocolos quedan fuera de la whitelist.
+ */
+export function localProtocolArgs(): string[] {
+  return ["-protocol_whitelist", "file"];
+}
+
+/**
  * Args de ffprobe para inspeccionar un archivo local por CONTENIDO (Etapa 3B).
  * Devuelve un JSON con los streams y el formato; la extensión del archivo no se
  * usa para decidir el tipo. `-show_error` deja el error legible si el archivo no
@@ -99,6 +153,7 @@ export function buildFfprobeArgs(inputPath: string): string[] {
     "-hide_banner",
     "-loglevel",
     "error",
+    ...localProtocolArgs(),
     "-print_format",
     "json",
     "-show_format",
@@ -129,6 +184,7 @@ export function buildAudioFfmpegArgs(
     "error",
     "-nostdin",
     "-y",
+    ...localProtocolArgs(),
     "-i",
     inputPath,
     "-vn",

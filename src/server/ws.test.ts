@@ -65,10 +65,15 @@ interface HubCtx {
   port: number;
 }
 
-async function withHub(options: WebSocketOptions = {}): Promise<HubCtx> {
+async function withHub(options: Partial<WebSocketOptions> = {}): Promise<HubCtx> {
   const queue = new AlertQueue();
   const http = httpCreateServer();
-  const hub = attachWebSocket(http, queue, { getKey: () => KEY, pingIntervalMs: 40, ...options });
+  const hub = attachWebSocket(http, queue, {
+    getKey: () => KEY,
+    pingIntervalMs: 40,
+    resolveClipUrl: (clipId) => `/media/${clipId}.mp4?key=${KEY}`,
+    ...options,
+  });
   await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", () => resolve()));
   const address = http.address();
   const port = typeof address === "object" && address !== null ? address.port : 0;
@@ -406,6 +411,65 @@ describe("audioOnly viaja en el mensaje play (camino de canje real)", () => {
     const play = messages.find((m) => m.type === "play") as { url: string };
     expect(play.url).toContain("/media/clip-1.m4a");
     expect(play.url).toContain("key=");
+    ws.close();
+  });
+
+  it("al reconectar, el mensaje state trae la URL real del clip .m4a", async () => {
+    // Sin esto, el overlay que se reconecta no tiene URL y (con el respaldo .mp4
+    // ya eliminado) no sabría qué pedir. El `state` debe resolverla igual que el `play`.
+    const { server, port } = await withQueueServer();
+    seedClipAndReward(server, true, "clip-1.m4a");
+
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    const event = createEvent({
+      id: "c1",
+      platform: "kick",
+      type: "reward_redeemed",
+      user: { id: "u1", name: "Ana", roles: [] },
+      payload: { rewardId: "rw-1", rewardTitle: "test123", userInput: "" },
+    });
+    await server.coordinator.receive(event);
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    ws.close();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // El overlay se reconecta: el primer mensaje es `state` con el clip actual.
+    const { ws: againWs, messages: againMessages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => againMessages.some((m) => m.type === "state" && (m as { url?: string }).url));
+    const state = againMessages.find((m) => m.type === "state") as { url: string };
+    expect(state.url).toContain("/media/clip-1.m4a");
+    expect(state.url).toContain("key=");
+    againWs.close();
+  });
+
+  it("el mensaje state lleva la versión del overlay para forzar la recarga", async () => {
+    const { server, port } = await withQueueServer();
+    seedClipAndReward(server, false);
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "state"));
+    const state = messages.find((m) => m.type === "state") as { version?: string };
+    expect(typeof state.version).toBe("string");
+    expect(state.version).toMatch(/^[0-9a-f]{12}$/);
+    ws.close();
+  });
+
+  it("acepta el mensaje diag del overlay sin romper la conexión", async () => {
+    const { server, port } = await withQueueServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    ws.send(
+      JSON.stringify({
+        type: "diag",
+        diag: {
+          kind: "connection",
+          version: "abc123",
+          userAgent: "test",
+          canPlay: { "audio/mp4; codecs=\"mp4a.40.2\"": "probably" },
+        },
+      }),
+    );
+    // El servidor sigue vivo: la cola arranca normalmente al encolar.
+    server.queue.enqueue({ clipId: "clip-1" });
+    await waitFor(() => messages.some((m) => m.type === "play"));
     ws.close();
   });
 });

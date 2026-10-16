@@ -2,6 +2,10 @@
 
 const BYTES_PER_MB = 1024 * 1024;
 
+// Subidas simultáneas permitidas en el navegador; el resto queda en espera y
+// arranca solo. El servidor, además, encola el procesamiento de cada archivo.
+const UPLOAD_MAX_CONCURRENT = 2;
+
 // Evita que un campo numérico vacío viaje como "" al servidor.
 function numberOrNull(value) {
   if (value === "" || value === null || value === undefined) return null;
@@ -35,10 +39,17 @@ function dashboardApp() {
     // Trabajos de descarga/subida de esta sesión (los últimos 20 se muestran en
     // el panel Descargas). El estado se refresca con polling de /api/jobs.
     jobs: [],
+    // Contadores de secuencia del polling de trabajos: descartan respuestas que
+    // se pidieron antes de una operación (quitar/limpiar), para que no repongan
+    // filas ya quitadas.
+    jobsSeq: 0,
+    jobsAppliedSeq: 0,
     message: "",
     copied: false,
     // Archivos subiéndose ahora mismo (para el tope de subidas simultáneas).
     uploadingCount: 0,
+    // Archivos esperando un lugar de subida (arrancan solos al liberarse uno).
+    uploadQueue: [],
     // Arrastrando archivos sobre la página (aviso "Soltá para agregar...").
     dragActive: false,
     dragDepth: 0,
@@ -86,6 +97,9 @@ function dashboardApp() {
     settingsMessage: "",
     settingsSaved: false,
     settingsRestart: false,
+    // Generación de miniaturas faltantes (sección 2.4): progreso del lote en curso.
+    thumbsMessage: "",
+    thumbsRunning: false,
 
     passwordForm: { current: "", next: "", repeat: "" },
     passwordMessage: "",
@@ -464,11 +478,18 @@ function dashboardApp() {
     // --- Descargas y archivos locales (Etapa 3B) -------------------------------
 
     // Refresca la lista de trabajos desde el servidor y recarga la biblioteca si
-    // cambió la cantidad de clips listos.
+    // cambió la cantidad de clips listos. Un contador de secuencia descarta las
+    // respuestas de polling que se pidieron ANTES de una operación (quitar o
+    // limpiar), para que no repongan filas ya quitadas.
     async refreshJobs() {
+      const seq = ++this.jobsSeq;
       const response = await api("/api/jobs");
       if (!response.ok) return;
       const data = await response.json();
+      // Llegó una respuesta vieja (hubo una operación o un refresh más nuevo):
+      // se ignora para no pisar el estado.
+      if (seq < this.jobsAppliedSeq) return;
+      this.jobsAppliedSeq = seq;
       const previousReady = new Set(
         this.jobs.filter((job) => job.status === "ready").map((job) => job.id),
       );
@@ -479,9 +500,64 @@ function dashboardApp() {
       if (newlyReady) await this.loadClips();
     },
 
+    // Aplica la lista que devuelve una operación del servidor (quitar/limpiar) y
+    // avanza la secuencia para invalidar respuestas de polling en vuelo.
+    applyJobsResult(list) {
+      if (!Array.isArray(list)) return;
+      this.jobsAppliedSeq = ++this.jobsSeq;
+      this.jobs = list;
+    },
+
     startJobsPolling() {
       if (this.jobsTimer !== null) clearInterval(this.jobsTimer);
       this.jobsTimer = setInterval(() => void this.refreshJobs(), 1000);
+    },
+
+    // Genera las miniaturas faltantes de la biblioteca (sección 2.4). Solo por
+    // acción del usuario: el servidor las procesa de a una en segundo plano. Se
+    // sigue el progreso con el mismo panel de Descargas.
+    async generateThumbs() {
+      this.thumbsMessage = "";
+      try {
+        const response = await api("/api/clips/thumbs/backfill", { method: "POST" });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          this.thumbsMessage = data.message || "No se pudieron generar las miniaturas.";
+          return;
+        }
+        if (!data.job) {
+          this.thumbsMessage = "No falta ninguna miniatura.";
+          return;
+        }
+        this.thumbsRunning = true;
+        await this.refreshJobs();
+        this.watchThumbsJob(data.job.id);
+      } catch {
+        this.thumbsMessage = "No se pudieron generar las miniaturas.";
+      }
+    },
+
+    // Sigue un lote de miniaturas hasta que termina, refrescando la biblioteca.
+    watchThumbsJob(id) {
+      const timer = setInterval(async () => {
+        try {
+          const response = await api("/api/jobs/" + encodeURIComponent(id));
+          const data = await response.json().catch(() => ({}));
+          const job = data.job;
+          if (!job) return;
+          if (job.status === "ready" || job.status === "error") {
+            clearInterval(timer);
+            this.thumbsRunning = false;
+            this.thumbsMessage =
+              job.status === "error" ? job.message || "Falló la generación." : job.message || "Listo.";
+            await this.loadClips();
+            await this.refreshJobs();
+          }
+        } catch {
+          clearInterval(timer);
+          this.thumbsRunning = false;
+        }
+      }, 1000);
     },
 
     // Aviso breve al agregar algo a descargas (no abre el panel).
@@ -489,16 +565,39 @@ function dashboardApp() {
       this.message = "";
     },
 
-    // Sube un archivo local (input o arrastrado). Respeta el tope de subidas.
+    // Sube archivos locales (input o arrastrados). Máximo dos a la vez; el resto
+    // queda en una cola que se destraba sola al liberarse un lugar (no hay que
+    // volver a arrastrarlos).
     async uploadFiles(fileList) {
       const files = Array.from(fileList || []);
       if (files.length === 0) return;
       for (const file of files) {
-        if (this.uploadingCount >= 2) {
-          this.message = "Hay dos archivos subiéndose; esperá a que terminen.";
-          break;
+        if (this.uploadingCount + this.uploadQueue.length >= UPLOAD_MAX_CONCURRENT) {
+          // En espera: arranca solo cuando termine otra. (El servidor también
+          // encola su procesamiento, pero acá se evita saturar la subida.)
+          this.uploadQueue.push(file);
+        } else {
+          void this.uploadOne(file);
         }
-        void this.uploadOne(file);
+      }
+      this.updateUploadQueueMessage();
+    },
+
+    // Texto del aviso de cola: cuántos archivos esperan su turno.
+    updateUploadQueueMessage() {
+      if (this.uploadQueue.length > 0) {
+        this.message = "En cola: empieza cuando termine otra tarea";
+      }
+    },
+
+    // Toma el próximo archivo en espera, si hay lugar.
+    pumpUploadQueue() {
+      while (
+        this.uploadQueue.length > 0 &&
+        this.uploadingCount < UPLOAD_MAX_CONCURRENT
+      ) {
+        const next = this.uploadQueue.shift();
+        if (next) void this.uploadOne(next);
       }
     },
 
@@ -517,6 +616,7 @@ function dashboardApp() {
         await this.refreshJobs();
       } finally {
         this.uploadingCount = Math.max(0, this.uploadingCount - 1);
+        this.pumpUploadQueue();
       }
     },
 
@@ -616,13 +716,43 @@ function dashboardApp() {
       await this.refreshJobs();
     },
 
-    removeJob(job) {
-      if (!job) return;
+    async removeJob(job) {
+      if (!job || (job.status !== "ready" && job.status !== "error")) return;
+      // Ocultado optimista: se saca de la lista al instante. Si el servidor
+      // falla, se restaura (la próxima lista del servidor la repone).
+      const previous = this.jobs;
       this.jobs = this.jobs.filter((item) => item.id !== job.id);
+      try {
+        const response = await api("/api/jobs/" + encodeURIComponent(job.id), { method: "DELETE" });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          this.jobs = previous;
+          this.message = data.message || "No se pudo quitar la tarea.";
+          return;
+        }
+        this.applyJobsResult(data.jobs);
+      } catch {
+        this.jobs = previous;
+        this.message = "No se pudo quitar la tarea.";
+      }
     },
 
-    clearFinishedJobs() {
-      this.jobs = this.jobs.filter((job) => job.status !== "ready" && job.status !== "error");
+    async clearFinishedJobs() {
+      const previous = this.jobs;
+      this.jobs = this.jobs.filter((item) => item.status !== "ready" && item.status !== "error");
+      try {
+        const response = await api("/api/jobs/clear-finished", { method: "POST" });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          this.jobs = previous;
+          this.message = data.message || "No se pudieron limpiar las tareas terminadas.";
+          return;
+        }
+        this.applyJobsResult(data.jobs);
+      } catch {
+        this.jobs = previous;
+        this.message = "No se pudieron limpiar las tareas terminadas.";
+      }
     },
 
     async viewJobClip(job) {
@@ -820,12 +950,13 @@ function dashboardApp() {
       this.clipDelete = null;
       this.clipDetail = null;
       await this.loadClips();
-      // Si el borrado también se llevó recompensas que usaban el clip, el panel
-      // izquierdo queda desactualizado: se recarga para que desaparezcan. Un
-      // segundo después se repite por si la baja de recompensas demoró en asentar.
+      // Si el borrado también se llevó recompensas que usaban el clip, hay que
+      // recargar el panel izquierdo. El servidor ESPERA a terminar todo el
+      // trabajo (rechazo de canjes pendientes y baja en Kick) antes de responder
+      // (ver DELETE /api/clips/:id), así que con un único refresco alcanza: no
+      // hace falta un segundo por demora.
       if (alsoRewards === true) {
         await this.loadRewards(this.activePlatform);
-        setTimeout(() => void this.loadRewards(this.activePlatform), 1000);
       }
     },
 

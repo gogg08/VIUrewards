@@ -32,6 +32,7 @@ function addClip(db: SqliteDatabase, id: string, hasVideo = true): void {
     trimStart: null,
     trimEnd: null,
     hasVideo,
+    missing: false,
   });
 }
 
