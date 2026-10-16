@@ -164,6 +164,24 @@ describe("hub WebSocket - reproducción", () => {
     expect(sent).toBe(0);
   });
 
+  it("testAlert manda un cartel a los overlays y devuelve el número de destinatarios", async () => {
+    const { hub, port } = await withHub();
+    const { ws, messages } = await connectAndCollect(port);
+
+    const sent = hub.testAlert("Alerta de prueba");
+    expect(sent).toBe(1);
+    await waitFor(() => messages.some((m) => m.type === "test"));
+    const message = messages.find((m) => m.type === "test") as { text: string };
+    expect(message.text).toBe("Alerta de prueba");
+
+    ws.close();
+  });
+
+  it("testAlert devuelve 0 cuando no hay overlays conectados", async () => {
+    const { hub } = await withHub();
+    expect(hub.testAlert("Alerta de prueba")).toBe(0);
+  });
+
   it("el watchdog da por terminado un clip que nunca avisa el fin", async () => {
     const { queue, port } = await withHub({ resolveWatchdogMarginMs: () => 50 });
     const { ws, messages } = await connectAndCollect(port);

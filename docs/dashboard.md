@@ -250,6 +250,15 @@ Fase 4B + Etapa 4A: `GET /api/platforms`, `POST/DELETE /api/platforms/:id/creden
 `GET /callback` es **pública** (no usa cookie): valida solo `state` + PKCE y
 redirige al dashboard.
 
+Etapa 3B (archivos locales y Descargas): `POST /api/uploads`,
+`POST /api/jobs/:id/cancel`, `DELETE /api/jobs/:id`, `POST /api/jobs/clear-finished`,
+`POST /api/clips/cleanup`, `POST /api/clips/thumbs/backfill`.
+
+Etapa 5 (Ajustes completos, Parte B): `GET /api/clips/cleanup-preview` (vista previa de
+la limpieza), `POST /api/clips/reconcile` (reconciliación a demanda),
+`GET /api/library/usage` (espacio ocupado y versiones de las herramientas),
+`POST /api/tools/ytdlp/update` y `POST /api/overlay/test` (alerta de prueba).
+
 ## Robustez de la cola y el overlay (fix de atascos)
 
 Dos síntomas reportados: (A) la cola quedaba "En espera (1)" con "No hay nada

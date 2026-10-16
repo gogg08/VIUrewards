@@ -7,6 +7,10 @@
     <!-- Evita el 404 de /favicon.ico dentro del Browser Source. -->
     <link rel="icon" href="data:," />
     <style>
+      :root {
+        --toast-bg: rgba(0, 0, 0, 0.8);
+        --toast-ink: #ffffff;
+      }
       /* Fondo transparente: es un Browser Source que se compone sobre el video. */
       html,
       body {
@@ -40,6 +44,24 @@
         object-fit: contain;
         background: transparent;
       }
+      /* Cartel de la alerta de prueba (Ajustes → Overlay y OBS). */
+      #toast {
+        display: none;
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        transform: translate(-50%, -50%);
+        padding: 1rem 1.5rem;
+        border-radius: 12px;
+        background: var(--toast-bg);
+        color: var(--toast-ink);
+        font-family: system-ui, sans-serif;
+        font-size: 32px;
+        text-align: center;
+      }
+      #toast.show {
+        display: block;
+      }
     </style>
   </head>
   <body>
@@ -49,6 +71,8 @@
       </div>
       <!-- Pool de audios superpuestos (modo overlap): son <video> ocultos, ver nota. -->
       <div id="voices"></div>
+      <!-- Cartel de la alerta de prueba. -->
+      <div id="toast"></div>
     </div>
 
     <script>
@@ -66,6 +90,20 @@
        */
       const video = document.getElementById("clip");
       const voicesHost = document.getElementById("voices");
+      const toast = document.getElementById("toast");
+      let toastTimer = null;
+
+      // Muestra un cartel breve (alerta de prueba). No lo lee nadie más y no
+      // afecta a la reproducción en curso.
+      function showToast(text) {
+        toast.textContent = text;
+        toast.classList.add("show");
+        if (toastTimer !== null) clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => {
+          toast.classList.remove("show");
+          toastTimer = null;
+        }, 2500);
+      }
 
       // Clave del overlay: viaja en la URL de esta página (?key=...) y se reenvía
       // al WebSocket y a los clips, porque el Browser Source de OBS no comparte
@@ -608,6 +646,9 @@
             break;
           case "stopAudio":
             releaseAllVoices();
+            break;
+          case "test":
+            showToast(typeof message.text === "string" ? message.text : "Alerta de prueba");
             break;
         }
       }

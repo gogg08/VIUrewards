@@ -514,4 +514,62 @@ describe("UI del dashboard (plataformas)", () => {
       expect(html).toContain(`tabMessage('${tab}')`);
     }
   });
+
+  // --- Etapa 5, Parte B: contenido de las pestañas ---------------------------
+
+  it("Overlay y OBS: alerta de prueba y versión del overlay", () => {
+    expect(html).toMatch(/@click="testOverlayAlert\(\)"/);
+    expect(defines(app, "testOverlayAlert")).toBe(true);
+    // Muestra la versión del overlay conectado.
+    expect(html).toMatch(/overlay\.version/);
+    // La URL se enmascara y hay aviso de no mostrarla en stream.
+    expect(html).toContain("No muestres esta URL en pantalla durante un stream");
+  });
+
+  it("Alertas: audios simultáneos máximos (1–20) con su explicación", () => {
+    expect(html).toContain("Audios simultáneos máximos");
+    expect(html).toMatch(/min="1"\s+max="20"/);
+    expect(html).toContain("Si se supera, se corta el audio más antiguo");
+  });
+
+  it("Biblioteca y descargas: yt-dlp, espacio, limpieza con vista previa y revisar archivos", () => {
+    // yt-dlp: versión + botón Actualizar (acción explícita).
+    expect(defines(app, "updateYtdlp")).toBe(true);
+    expect(html).toMatch(/@click="updateYtdlp\(\)"/);
+    expect(html).toContain("Actualizar yt-dlp");
+    // Espacio ocupado y formateo de bytes.
+    expect(defines(app, "formatBytes")).toBe(true);
+    expect(defines(app, "loadLibraryUsage")).toBe(true);
+    // Limpieza de caché con vista previa previa y confirmación.
+    expect(defines(app, "openCleanupPreview")).toBe(true);
+    expect(defines(app, "confirmCleanup")).toBe(true);
+    expect(defines(app, "cancelCleanup")).toBe(true);
+    expect(html).toMatch(/<template x-if="cleanupPreview">/);
+    expect(html).toContain("Los archivos locales y los clips");
+    // Revisión de archivos a demanda.
+    expect(defines(app, "reconcileNow")).toBe(true);
+    expect(html).toMatch(/@click="reconcileNow\(\)"/);
+    // Se reutiliza "Generar miniaturas faltantes".
+    expect(html).toContain("Generar miniaturas faltantes");
+  });
+
+  it("Avanzado queda marcado como para casos puntuales y puerto avisa del reinicio", () => {
+    expect(html).toContain("para casos puntuales");
+    expect(html).toContain("actualizá la redirect URI en la app de Kick");
+  });
+
+  it("la biblioteca de Ajustes se refresca al abrir la pestaña", () => {
+    expect(defines(app, "refreshTabData")).toBe(true);
+    expect(app).toMatch(/tab === "library"\) this\.loadLibraryUsage\(\)/);
+  });
+
+  it("las herramientas faltantes se explican con el qué hacer, no con un texto interno", () => {
+    expect(defines(app, "toolsMissingMessage")).toBe(true);
+    expect(html).toMatch(/x-text="toolsMissingMessage\(\)"/);
+    // Nunca se muestra el texto interno del ejecutor.
+    expect(html).not.toContain("ejecutor de procesos");
+    expect(app).not.toContain("ejecutor de procesos");
+    // Menciona la carpeta bin/ como alternativa.
+    expect(app).toContain("carpeta bin/");
+  });
 });

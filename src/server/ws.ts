@@ -29,6 +29,8 @@ export interface WebSocketHub {
   broadcastAudio(audio: AudioPlayback): number;
   /** Corta todas las voces superpuestas de todos los overlays. */
   stopAudio(): void;
+  /** Alerta de prueba: devuelve a cuántos overlays llegó (0 = ninguno). */
+  testAlert(text: string): number;
   /** Cantidad de overlays conectados ahora mismo. */
   clientCount(): number;
   close(): Promise<void>;
@@ -306,6 +308,7 @@ export function attachWebSocket(
     stopAudio: () => {
       broadcast({ type: "stopAudio" });
     },
+    testAlert: (text) => sendToAll({ type: "test", text }),
     clientCount: () => clients.size,
     close: () =>
       new Promise<void>((resolve) => {

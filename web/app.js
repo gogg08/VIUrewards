@@ -62,8 +62,18 @@ function dashboardApp() {
     // creador ya lo descartó en esta sesión.
     libraryNotice: null,
     libraryNoticeDismissed: false,
-    overlay: { key: "", url: "" },
+    overlay: { key: "", url: "", version: "", connected: false, clients: 0 },
     overlayRevealed: false,
+    // Resultado de la última "Alerta de prueba" (vacío = sin mensaje).
+    overlayTestMessage: "",
+    // Uso de la biblioteca (espacio) y versiones de las herramientas externas.
+    libraryUsage: null,
+    toolsInfo: null,
+    toolsMessage: "",
+    toolsBusy: false,
+    // Vista previa de la limpieza de caché (null = cerrada).
+    cleanupPreview: null,
+    cleanupMessage: "",
     // Trabajos de descarga/subida de esta sesión (los últimos 20 se muestran en
     // el panel Descargas). El estado se refresca con polling de /api/jobs.
     jobs: [],
@@ -160,6 +170,7 @@ function dashboardApp() {
     platformForm: { clientId: "", clientSecret: "" },
     platformMessage: "",
     platformNotice: "",
+    redirectCopied: false,
     // --- Recompensas (rediseño, Etapa 4B) ------------------------------------
     rewards: [],
     // Vista unificada: estado del vínculo y de la consulta a la plataforma.
@@ -376,6 +387,12 @@ function dashboardApp() {
       this.settingsOpen = true;
       this.downloadsOpen = false;
       writeSettingsTab(this.settingsTab);
+      this.refreshTabData(this.settingsTab);
+    },
+
+    // Datos que cada pestaña necesita al abrirse (herramientas, uso, etc.).
+    refreshTabData(tab) {
+      if (tab === "library") this.loadLibraryUsage();
     },
 
     closeSettings() {
@@ -435,6 +452,7 @@ function dashboardApp() {
     setSettingsTab(tab) {
       this.settingsTab = tab;
       writeSettingsTab(tab);
+      this.refreshTabData(tab);
     },
 
     // Modo del logo: se guarda en este navegador y se aplica al instante.
@@ -557,14 +575,18 @@ function dashboardApp() {
       this.libraryNotice = null;
     },
 
-    get libraryNoticeText() {
-      const notice = this.libraryNotice;
+    // Texto del aviso de biblioteca a partir de un objeto {recovered, missing, restored}.
+    libraryNoticeFrom(notice) {
       if (!notice) return "";
       const parts = [];
       if (notice.recovered > 0) parts.push(`Se recuperaron ${notice.recovered} clips`);
       if (notice.missing > 0) parts.push(`${notice.missing} clips sin archivo`);
       if (parts.length === 0 && notice.restored > 0) parts.push(`${notice.restored} clips volvieron a aparecer`);
       return parts.join(" · ");
+    },
+
+    get libraryNoticeText() {
+      return this.libraryNoticeFrom(this.libraryNotice);
     },
 
     async loadOverlay() {
@@ -1154,6 +1176,136 @@ function dashboardApp() {
       }
     },
 
+    // Manda un cartel de prueba a los overlays conectados (Ajustes → Overlay y OBS).
+    async testOverlayAlert() {
+      this.overlayTestMessage = "";
+      try {
+        const response = await api("/api/overlay/test", { method: "POST" });
+        const data = await response.json().catch(() => ({}));
+        this.overlayTestMessage = data.ok
+          ? `Aviso enviado a ${data.sent} overlay(s).`
+          : data.message || "No se pudo enviar el aviso.";
+      } catch {
+        this.overlayTestMessage = "No se pudo enviar el aviso.";
+      }
+    },
+
+    // Espacio que ocupa la biblioteca y versiones de las herramientas externas.
+    async loadLibraryUsage() {
+      try {
+        const response = await api("/api/library/usage");
+        const data = await response.json().catch(() => ({}));
+        if (!data.ok) return;
+        this.libraryUsage = data.usage;
+        this.toolsInfo = { binariesOk: data.binariesOk, missing: data.missing, tools: data.tools };
+      } catch {
+        /* el uso es informativo: un fallo no bloquea la pestaña */
+      }
+    },
+
+    // Explica qué falta cuando las herramientas externas no se detectan, con el
+    // qué hacer (no un texto interno). Vacío si están todas.
+    toolsMissingMessage() {
+      const info = this.toolsInfo;
+      if (!info || info.binariesOk) return "";
+      const missing = Array.isArray(info.missing) ? info.missing : [];
+      if (missing.length === 0) return "";
+      return `No se encontraron: ${missing.join(", ")}. Instalalas y volvé a intentar, o poné los ejecutables en la carpeta bin/ del proyecto.`;
+    },
+
+    // Formatea bytes para mostrarlos (KB/MB/GB).
+    formatBytes(bytes) {
+      const value = Number(bytes) || 0;
+      if (value < 1024) return `${value} B`;
+      const units = ["KB", "MB", "GB", "TB"];
+      let size = value / 1024;
+      let index = 0;
+      while (size >= 1024 && index < units.length - 1) {
+        size /= 1024;
+        index += 1;
+      }
+      return `${size.toFixed(size >= 10 ? 0 : 1)} ${units[index]}`;
+    },
+
+    // Actualiza yt-dlp (solo por acción explícita). Muestra el resultado a la vista.
+    async updateYtdlp() {
+      if (!window.confirm("Se va a actualizar yt-dlp, la herramienta que descarga los videos. ¿Seguir?")) {
+        return;
+      }
+      this.toolsBusy = true;
+      this.toolsMessage = "Actualizando yt-dlp…";
+      try {
+        const response = await api("/api/tools/ytdlp/update", { method: "POST" });
+        const data = await response.json().catch(() => ({}));
+        this.toolsMessage = data.message || (data.ok ? "yt-dlp actualizado." : "No se pudo actualizar yt-dlp.");
+        await this.loadLibraryUsage();
+      } catch {
+        this.toolsMessage = "No se pudo actualizar yt-dlp.";
+      } finally {
+        this.toolsBusy = false;
+      }
+    },
+
+    // Pide la vista previa de la limpieza de caché (no borra nada todavía).
+    async openCleanupPreview() {
+      this.cleanupMessage = "";
+      try {
+        const response = await api("/api/clips/cleanup-preview");
+        const data = await response.json().catch(() => ({}));
+        if (!data.ok) {
+          this.cleanupMessage = "No se pudo calcular qué se borraría.";
+          return;
+        }
+        this.cleanupPreview = { count: data.count, bytes: data.bytes, clips: data.clips || [] };
+        if (data.count === 0) this.cleanupPreview.empty = true;
+      } catch {
+        this.cleanupMessage = "No se pudo calcular qué se borraría.";
+      }
+    },
+
+    cancelCleanup() {
+      this.cleanupPreview = null;
+    },
+
+    // Borra la caché (solo clips de link que se pueden volver a descargar).
+    async confirmCleanup() {
+      this.cleanupMessage = "";
+      try {
+        const response = await api("/api/clips/cleanup", { method: "POST" });
+        const data = await response.json().catch(() => ({}));
+        if (!data.ok) {
+          this.cleanupMessage = "No se pudo limpiar la caché.";
+          return;
+        }
+        this.cleanupPreview = null;
+        this.cleanupMessage = `Se borraron ${data.removed.length} clip(s) de la caché.`;
+        await this.loadClips();
+        await this.loadLibraryUsage();
+      } catch {
+        this.cleanupMessage = "No se pudo limpiar la caché.";
+      }
+    },
+
+    // Revisa la biblioteca a demanda (misma reconciliación del arranque).
+    async reconcileNow() {
+      this.cleanupMessage = "Revisando archivos…";
+      try {
+        const response = await api("/api/clips/reconcile", { method: "POST" });
+        const data = await response.json().catch(() => ({}));
+        if (!data.ok) {
+          this.cleanupMessage = data.message || "No se pudo revisar la biblioteca.";
+          return;
+        }
+        this.cleanupMessage = data.aborted
+          ? data.message || "No se revisó nada."
+          : this.libraryNoticeFrom(data.notice) || "No hubo cambios.";
+        await this.loadClips();
+        await this.loadLibraryUsage();
+      } catch {
+        this.cleanupMessage = "No se pudo revisar la biblioteca.";
+      }
+    },
+
     // --- Configuración ---------------------------------------------------------
 
     async loadSettings() {
@@ -1450,6 +1602,42 @@ function dashboardApp() {
       if (platform.state === "connected") return "ok";
       if (platform.state === "requires_relink") return "error";
       return "off";
+    },
+
+    // Redirect URI calculada desde el puerto actual del navegador. Tiene que
+    // coincidir EXACTAMENTE con la registrada en la app de Kick.
+    get redirectUri() {
+      return "http://localhost:" + window.location.port + "/callback";
+    },
+
+    async copyRedirect() {
+      try {
+        await navigator.clipboard.writeText(this.redirectUri);
+      } catch {
+        const input = this.$refs.redirectInput;
+        if (input) {
+          input.focus();
+          input.select();
+          document.execCommand("copy");
+        }
+      }
+      this.redirectCopied = true;
+      setTimeout(() => (this.redirectCopied = false), 2000);
+    },
+
+    // Explica el error del vínculo en español. "invalid authorization request"
+    // casi siempre es una redirect URI que no coincide exactamente.
+    kickLinkError(platform) {
+      const raw = String((platform && platform.lastError) || "");
+      const lower = raw.toLowerCase();
+      if (lower.includes("invalid authorization request") || lower.includes("redirect")) {
+        return (
+          "Kick rechazó la solicitud de autorización. Casi siempre es la redirect URI: tiene que ser " +
+          this.redirectUri +
+          " (http, localhost, sin barra final) y estar registrada igual en tu app de Kick."
+        );
+      }
+      return raw || "No se pudo vincular la cuenta.";
     },
 
     async saveCredentials(platform) {

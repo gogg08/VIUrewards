@@ -34,6 +34,7 @@ import {
   listRewardsUsingClip,
   listRules,
   openMemoryDatabase,
+  reconcileClips,
   renameClip,
   setClipTrim,
   setSetting,
@@ -73,6 +74,10 @@ import { registerRewardApiRoutes } from "./rewards-routes.ts";
 import { clipUrl } from "./protocol.ts";
 import { computeOverlayVersion } from "./build-version.ts";
 import { removeThumb, thumbExists, thumbsDir } from "../media/thumbs.ts";
+import { createClipRebuilder } from "../media/rebuild.ts";
+import { detectBinaries } from "../media/binaries.ts";
+import { runProcess } from "../media/run-process.ts";
+import { candidatesBytes, cleanupCandidates, libraryUsage, readToolVersions, updateYtdlp } from "./tools.ts";
 import { hasMediaExtension, mediaExtensionOf } from "../media/formats.ts";
 import { RewardDispatcher } from "./reward-dispatch.ts";
 import { attachWebSocket } from "./ws.ts";
@@ -144,6 +149,10 @@ export interface LibraryNotice {
 export interface OverlayInfo {
   key: string;
   url: string;
+  /** Versión del build del overlay (hash + arranque); la usa Ajustes → Overlay. */
+  version?: string;
+  connected?: boolean;
+  clients?: number;
 }
 
 export interface AppServer {
@@ -362,6 +371,12 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       seed: String(processStartMs),
     });
   const mediaOptions: MediaPassthroughOptions = options.media ?? {};
+  // Ejecutor de procesos real por defecto (spawn con argumentos en array). En
+  // tests se inyecta uno falso con `options.run`. Toda ruta del servidor que
+  // ejecute un binario DEBE usar `run`, no `options.run`, para no quedar
+  // desconectada del ejecutor real en producción (misma clase de bug que el
+  // `.m4a`/rebuild de antes).
+  const run = options.run ?? runProcess;
   const db = options.db ?? openMemoryDatabase();
   // Temporales de las subidas de archivos locales. Viven fuera de /media para no
   // servirse ni aparecer en la biblioteca; cada trabajo los borra al terminar.
@@ -388,7 +403,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         allowedDomains: settings.allowedDomains,
       };
     },
-    run: options.run,
+    run,
     localResolve: () => {
       const settings = readSettings(db);
       return {
@@ -1061,30 +1076,104 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       return { ok: true, job, remaining: clips.length };
     });
 
-    // Limpieza de caché (Etapa 3B, sección 9): borra SOLO los clips de link que
-    // se pueden volver a descargar. Nunca toca archivos locales, ni clips usados
-    // por una recompensa (activa o desactivada), ni clips en la cola.
-    api.post("/api/clips/cleanup", async () => {
+    // Candidatos de limpieza de caché: solo clips de link que se pueden volver a
+    // descargar. Nunca toca archivos locales, ni clips usados por una recompensa
+    // (activa o desactivada), ni clips en la cola. Comparte el criterio entre la
+    // vista previa y la limpieza real.
+    const cleanupSet = (): { candidates: ReturnType<typeof cleanupCandidates> } => {
       const state = queue.getState();
       const inQueue = new Set<string>();
       if (state.current) inQueue.add(state.current.clipId);
       for (const item of state.pending) inQueue.add(item.clipId);
-
-      const removed: string[] = [];
+      const used = new Set<string>();
       for (const clip of listClips(db)) {
-        // Los archivos locales nunca se borran solos.
-        if (clip.sourceUrl === "") continue;
-        if (inQueue.has(clip.id)) continue;
-        if (listRewardsUsingClip(db, clip.id).length > 0) continue;
+        if (listRewardsUsingClip(db, clip.id).length > 0) used.add(clip.id);
+      }
+      return { candidates: cleanupCandidates(mediaDir, listClips(db), inQueue, used) };
+    };
+
+    // Vista previa: qué se borraría y cuánto se liberaría (sin borrar nada).
+    api.get("/api/clips/cleanup-preview", async () => {
+      const { candidates } = cleanupSet();
+      return {
+        ok: true,
+        count: candidates.length,
+        bytes: candidatesBytes(candidates),
+        clips: candidates.map((clip) => ({ id: clip.id, title: clip.title, sizeBytes: clip.sizeBytes })),
+      };
+    });
+
+    // Limpieza de caché (Etapa 3B, sección 9): borra SOLO los clips de link que
+    // se pueden volver a descargar. Nunca toca archivos locales, ni clips usados
+    // por una recompensa (activa o desactivada), ni clips en la cola.
+    api.post("/api/clips/cleanup", async () => {
+      const { candidates } = cleanupSet();
+      const removed: string[] = [];
+      for (const candidate of candidates) {
+        const clip = getClip(db, candidate.id);
+        if (!clip) continue;
         const filePath = resolve(mediaDir, clip.file);
         if (filePath.startsWith(mediaDir + sep)) {
           rmSync(filePath, { force: true });
           rmSync(join(mediaDir, `${clip.id}.json`), { force: true });
         }
+        removeThumb(mediaDir, clip.id);
         deleteClipRow(db, clip.id);
         removed.push(clip.id);
       }
       return { ok: true, removed };
+    });
+
+    // Revisión de la biblioteca a demanda (misma reconciliación del arranque).
+    // Devuelve el mismo aviso que el dashboard muestra al iniciar.
+    api.post("/api/clips/reconcile", async () => {
+      const result = await reconcileClips(db, mediaDir, {
+        rebuild: createClipRebuilder({ mediaDir, run, binarySearch: mediaOptions.binarySearch, logsDir: mediaOptions.logsDir }),
+        log: debug ? (message) => console.log(`[library] ${message}`) : undefined,
+      });
+      const notice = result.aborted ? null : {
+        recovered: result.added.length,
+        missing: result.missing.length,
+        restored: result.restored.length,
+      };
+      return {
+        ok: true,
+        aborted: result.aborted,
+        message: result.message ?? "",
+        added: result.added.length,
+        markedMissing: result.missing.length,
+        restored: result.restored.length,
+        skipped: result.skipped.length,
+        notice,
+      };
+    });
+
+    // Espacio que ocupa la biblioteca y las herramientas externas. Todo es de
+    // solo lectura salvo la actualización de yt-dlp, que es por acción explícita.
+    api.get("/api/library/usage", async () => {
+      const usage = libraryUsage(mediaDir, listClips(db));
+      const detection = detectBinaries(mediaOptions.binarySearch);
+      let tools: { ytDlp: string | null; ffmpeg: string | null; ffprobe: string | null } = {
+        ytDlp: null,
+        ffmpeg: null,
+        ffprobe: null,
+      };
+      if (detection.ok) {
+        tools = await readToolVersions({ run, binarySearch: mediaOptions.binarySearch });
+      }
+      return {
+        ok: true,
+        usage,
+        binariesOk: detection.ok,
+        missing: detection.ok ? [] : detection.missing,
+        tools,
+      };
+    });
+
+    // Actualiza yt-dlp (solo por acción explícita del creador).
+    api.post("/api/tools/ytdlp/update", async () => {
+      const result = await updateYtdlp({ run, binarySearch: mediaOptions.binarySearch });
+      return { ok: result.ok, message: result.message, output: result.output };
     });
 
     api.post<{ Params: { id: string }; Body: { title: string } }>(
@@ -1314,13 +1403,30 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
     api.get("/api/overlay", async (request) => ({
       ok: true,
-      overlay: { key: overlayKey, url: overlayUrlFrom(request) } satisfies OverlayInfo,
+      overlay: {
+        key: overlayKey,
+        url: overlayUrlFrom(request),
+        // Versión del build del overlay (para mostrarla en Ajustes) y si hay
+        // algún overlay conectado ahora mismo.
+        version: overlayVersion,
+        connected: hub.clientCount() > 0,
+        clients: hub.clientCount(),
+      } satisfies OverlayInfo,
     }));
 
     api.post("/api/overlay/regenerate", async (request) => {
       overlayKey = randomBytes(24).toString("base64url");
       setSetting(db, SETTING_OVERLAY_KEY, overlayKey);
       return { ok: true, overlay: { key: overlayKey, url: overlayUrlFrom(request) } satisfies OverlayInfo };
+    });
+
+    // Alerta de prueba: manda un cartel breve a los overlays conectados.
+    api.post("/api/overlay/test", async () => {
+      const sent = hub.testAlert("Alerta de prueba");
+      if (sent === 0) {
+        return { ok: false, sent, message: "No hay ningún overlay conectado. Revisá la fuente en OBS." };
+      }
+      return { ok: true, sent };
     });
 
     // --- Reglas (Fase 4A) ----------------------------------------------------

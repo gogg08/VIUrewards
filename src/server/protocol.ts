@@ -33,7 +33,10 @@ export type ServerMessage =
   | { type: "resume" }
   | { type: "playAudio"; audio: AudioPlayback }
   | { type: "stopAudio" }
-  | { type: "version"; version: string };
+  | { type: "version"; version: string }
+  // Alerta de prueba: el overlay muestra un cartel breve para comprobar que la
+  // fuente está conectada. No usa ningún clip.
+  | { type: "test"; text: string };
 
 /**
  * Diagnóstico del overlay (nivel debug). Nunca incluye la clave del overlay:

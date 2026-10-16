@@ -659,6 +659,80 @@ describe("limpieza de caché (Etapa 3B)", () => {
     const remaining = server.db.prepare("SELECT id FROM clips ORDER BY id").all() as Array<{ id: string }>;
     expect(remaining.map((row) => row.id).sort()).toEqual(["local", "usado"]);
   });
+
+  it("la vista previa no borra nada y coincide con la limpieza real", async () => {
+    const { server, mediaDir, cookie } = await withServer();
+    writeFileSync(join(mediaDir, "link.mp4"), "1234", "utf8");
+    writeFileSync(join(mediaDir, "local.m4a"), "12", "utf8");
+    insertClip(server, "link", "link.mp4", "https://youtu.be/aaaa");
+    insertClip(server, "local", "local.m4a", "");
+
+    const preview = await server.app.inject({ method: "GET", url: "/api/clips/cleanup-preview", headers: { cookie } });
+    expect(preview.statusCode).toBe(200);
+    const body = preview.json();
+    expect(body.count).toBe(1);
+    expect(body.clips.map((clip: { id: string }) => clip.id)).toEqual(["link"]);
+    expect(body.bytes).toBe(4);
+
+    // La vista previa no borra nada.
+    const count = server.db.prepare("SELECT COUNT(*) AS n FROM clips").get() as { n: number };
+    expect(count.n).toBe(2);
+  });
+});
+
+describe("Ajustes → Overlay y OBS (Etapa 5, Parte B)", () => {
+  it("expone la versión y el estado del overlay en /api/overlay", async () => {
+    const { server, cookie } = await withServer();
+    const response = await server.app.inject({ method: "GET", url: "/api/overlay", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const { overlay } = response.json();
+    expect(typeof overlay.version).toBe("string");
+    expect(overlay.connected).toBe(false);
+    expect(overlay.clients).toBe(0);
+  });
+
+  it("la alerta de prueba avisa en español si no hay overlay conectado", async () => {
+    const { server, cookie } = await withServer();
+    const response = await server.app.inject({ method: "POST", url: "/api/overlay/test", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.ok).toBe(false);
+    expect(body.sent).toBe(0);
+    expect(body.message).toContain("overlay conectado");
+  });
+});
+
+describe("ejecutor de procesos real conectado en producción (Ajustes, Parte B)", () => {
+  it("sin inyectar `run`, /api/library/usage no queda desconectado ni falla", async () => {
+    // Igual que scripts/start.ts: NO se pasa `run`. Con binarios faltantes (para
+    // no ejecutar nada real) la ruta debe responder bien, con la lista de lo que
+    // falta, en vez de caer en el texto interno "no hay ejecutor".
+    const { mediaDir } = makeMediaDir();
+    const server = await createServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      requireOverlay: false,
+      media: { binarySearch: { pathEnv: "", exists: () => false } },
+    });
+    created.push(server);
+    await server.app.ready();
+    await server.auth.setPassword(PASSWORD);
+    const cookie = `${SESSION_COOKIE}=${server.auth.createSession()}`;
+
+    const usage = await server.app.inject({ method: "GET", url: "/api/library/usage", headers: { cookie } });
+    expect(usage.statusCode).toBe(200);
+    const body = usage.json();
+    expect(body.ok).toBe(true);
+    expect(body.binariesOk).toBe(false);
+    expect(body.missing).toContain("yt-dlp");
+
+    // El update no debe ofrecer el texto interno si los binarios no están.
+    const update = await server.app.inject({ method: "POST", url: "/api/tools/ytdlp/update", headers: { cookie } });
+    expect(update.statusCode).toBe(200);
+    const updateBody = update.json();
+    expect(updateBody.ok).toBe(false);
+    expect(updateBody.message).not.toContain("ejecutor de procesos");
+  });
 });
 
 describe("autenticación", () => {
@@ -757,6 +831,9 @@ describe("autenticación", () => {
       { method: "POST", url: "/api/jobs/clear-finished" },
       { method: "POST", url: "/api/clips/thumbs/backfill" },
       { method: "POST", url: "/api/clips/cleanup" },
+      { method: "POST", url: "/api/clips/reconcile" },
+      { method: "POST", url: "/api/tools/ytdlp/update" },
+      { method: "POST", url: "/api/overlay/test" },
     ];
     for (const { method, url } of noSession) {
       const response = await server.app.inject({ method, url });
@@ -768,6 +845,9 @@ describe("autenticación", () => {
       { method: "DELETE", url: "/api/jobs/whatever" },
       { method: "POST", url: "/api/jobs/clear-finished" },
       { method: "POST", url: "/api/clips/thumbs/backfill" },
+      { method: "POST", url: "/api/clips/reconcile" },
+      { method: "POST", url: "/api/tools/ytdlp/update" },
+      { method: "POST", url: "/api/overlay/test" },
     ];
     for (const { method, url } of badOrigin) {
       const response = await server.app.inject({

@@ -671,6 +671,20 @@
                     </p>
                     <p class="error" x-show="platformMessage" x-text="platformMessage"></p>
                     <p class="ok" x-show="platformNotice" x-text="platformNotice"></p>
+                    <!-- Error del último vínculo, explicado en español (no en JSON). -->
+                    <p class="error" x-show="activePlatform.lastError && !platformMessage" x-text="kickLinkError(activePlatform)"></p>
+
+                    <label class="field">
+                      <span>Redirect URI (registrala tal cual en tu app de Kick)</span>
+                      <div class="row">
+                        <input type="text" readonly :value="redirectUri" x-ref="redirectInput" />
+                        <button @click="copyRedirect()" x-text="redirectCopied ? '¡Copiado!' : 'Copiar'"></button>
+                      </div>
+                      <span class="muted">
+                        Tiene que coincidir EXACTAMENTE: http (no https), localhost (no 127.0.0.1) y la ruta
+                        /callback, sin barra final.
+                      </span>
+                    </label>
 
                     <div class="settings-grid">
                       <label class="field">
@@ -711,7 +725,7 @@
               <section x-show="settingsTab === 'overlay'" class="stack">
                 <h3>Overlay y OBS</h3>
                 <p class="muted">
-                  Pegá esta URL como Browser Source (Navegador) en OBS, tamaño 1920x1080.
+                  Pegá esta URL como Browser Source (Navegador) en OBS. Tamaño recomendado: 1920x1080.
                 </p>
                 <p class="warn">
                   No muestres esta URL en pantalla durante un stream: incluye la clave del overlay.
@@ -725,11 +739,20 @@
                   />
                   <button @click="toggleOverlay()" x-text="overlayRevealed ? 'Ocultar' : 'Mostrar'"></button>
                   <button @click="copyOverlay()" x-text="copied ? '¡Copiado!' : 'Copiar'"></button>
-                  <button @click="regenerate()">Regenerar clave</button>
                 </div>
                 <p class="ok">
                   <span class="dot" :class="overlayStatusClass"></span>
                   <span x-text="overlayStatusLabel"></span>
+                  <span class="muted" x-show="overlay.version" x-text="' · versión ' + overlay.version"></span>
+                </p>
+                <div class="row">
+                  <button @click="testOverlayAlert()">Alerta de prueba</button>
+                  <button class="danger" @click="regenerate()">Regenerar clave</button>
+                  <span class="ok" x-show="overlayTestMessage" x-text="overlayTestMessage"></span>
+                </div>
+                <p class="hint">
+                  La alerta de prueba muestra un cartel en el overlay para comprobar que está conectado.
+                  Regenerar la clave invalida la fuente actual: vas a tener que actualizar la URL en OBS.
                 </p>
               </section>
 
@@ -860,11 +883,90 @@
                     el clip.
                   </p>
                   <div class="row">
-                    <button class="secondary sm" @click="generateThumbs()" :disabled="thumbsRunning">
+                    <button class="secondary small" @click="generateThumbs()" :disabled="thumbsRunning">
                       Generar miniaturas faltantes
                     </button>
                     <span class="hint" x-show="thumbsMessage" x-text="thumbsMessage"></span>
                   </div>
+                </div>
+
+                <hr class="divider" />
+
+                <div class="stack">
+                  <h4>Espacio en disco</h4>
+                  <p class="muted" x-show="libraryUsage">
+                    <span x-text="libraryUsage ? libraryUsage.clips + ' clips' : ''"></span> ·
+                    <span x-text="libraryUsage ? formatBytes(libraryUsage.totalBytes) : '—'"></span>
+                  </p>
+                  <p class="muted" x-show="!libraryUsage">—</p>
+                  <div class="row">
+                    <button class="secondary small" @click="openCleanupPreview()">Limpiar caché ahora</button>
+                    <span class="hint" x-show="cleanupMessage" x-text="cleanupMessage"></span>
+                  </div>
+                  <template x-if="cleanupPreview">
+                    <div class="card">
+                      <p x-show="cleanupPreview.count === 0" class="muted">
+                        No hay nada para borrar: la caché solo incluye clips de link que se pueden volver a descargar.
+                      </p>
+                      <div x-show="cleanupPreview.count > 0">
+                        <p>
+                          Se van a borrar <strong x-text="cleanupPreview.count"></strong> clip(s) de link
+                          (<span x-text="formatBytes(cleanupPreview.bytes)"></span>). Los archivos locales y los clips
+                          usados por una recompensa o en la cola no se tocan.
+                        </p>
+                        <ul class="job-list">
+                          <template x-for="item in cleanupPreview.clips.slice(0, 10)" :key="item.id">
+                            <li x-text="item.title"></li>
+                          </template>
+                        </ul>
+                        <div class="row">
+                          <button class="danger small" @click="confirmCleanup()">Borrar caché</button>
+                          <button class="secondary small" @click="cancelCleanup()">Cancelar</button>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+                </div>
+
+                <hr class="divider" />
+
+                <div class="stack">
+                  <h4>Archivos de la biblioteca</h4>
+                  <p class="hint">
+                    Revisa la carpeta de la biblioteca: recupera archivos que estaban sin registro y marca los que
+                    faltan, sin borrar nada.
+                  </p>
+                  <div class="row">
+                    <button class="secondary small" @click="reconcileNow()">Revisar archivos ahora</button>
+                  </div>
+                </div>
+
+                <hr class="divider" />
+
+                <div class="stack">
+                  <h4>yt-dlp (descarga de videos)</h4>
+                  <p class="muted">
+                    Versión:
+                    <span
+                      x-text="toolsInfo && toolsInfo.tools && toolsInfo.tools.ytDlp ? toolsInfo.tools.ytDlp : 'no detectada'"
+                    ></span>
+                  </p>
+                  <p class="error" x-show="toolsInfo && !toolsInfo.binariesOk" x-text="toolsMissingMessage()"></p>
+                  <div class="row">
+                    <button
+                      class="secondary small"
+                      @click="updateYtdlp()"
+                      :disabled="toolsBusy || (toolsInfo && !toolsInfo.binariesOk)"
+                      :title="toolsInfo && !toolsInfo.binariesOk ? toolsMissingMessage() : ''"
+                    >
+                      Actualizar yt-dlp
+                    </button>
+                    <span class="hint" x-show="toolsMessage" x-text="toolsMessage"></span>
+                  </div>
+                  <p class="hint">
+                    Actualizar no es automático: si una descarga falla porque yt-dlp está viejo, el error del panel
+                    Descargas te trae acá.
+                  </p>
                 </div>
               </section>
 
@@ -947,7 +1049,14 @@
 
               <!-- ---- Avanzado ---- -->
               <section x-show="settingsTab === 'advanced'" class="stack">
-                <h3>Avanzado</h3>
+                <h3>
+                  Avanzado
+                  <span class="badge warn">para casos puntuales</span>
+                </h3>
+                <p class="warn">
+                  Cambiá estos valores solo si sabés lo que hacés: pueden dejar la app o el overlay sin funcionar
+                  hasta que reinicies y actualices OBS o Kick.
+                </p>
                 <div class="settings-grid">
                   <label class="field">
                     <span>Margen del watchdog (s)</span>
@@ -985,7 +1094,8 @@
                   </label>
                 </div>
                 <p class="warn" x-show="settingsRestart">
-                  Cambiaste el puerto: reiniciá la app y actualizá la URL del overlay en OBS.
+                  Cambiaste el puerto: reiniciá la app, actualizá la redirect URI en la app de Kick y la URL del
+                  overlay en OBS.
                 </p>
                 <div class="row">
                   <button class="primary" @click="saveSettings()">Guardar</button>
