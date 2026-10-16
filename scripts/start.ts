@@ -59,7 +59,19 @@ async function main(): Promise<void> {
     console.log(`Biblioteca sincronizada con /media: ${parts.join(", ")}.`);
   }
 
-  const server = await createServer({ mediaDir, db, port: resolvePort(process.argv.slice(2), db) });
+  // Aviso descartable en el dashboard (además de la consola): solo si hubo
+  // recuperaciones o clips marcados sin archivo.
+  const libraryNotice =
+    result.added.length > 0 || result.missing.length > 0
+      ? { recovered: result.added.length, missing: result.missing.length, restored: result.restored.length }
+      : undefined;
+
+  const server = await createServer({
+    mediaDir,
+    db,
+    port: resolvePort(process.argv.slice(2), db),
+    libraryNotice,
+  });
   const info = await server.start();
 
   const firstRun = server.auth.isConfigured()

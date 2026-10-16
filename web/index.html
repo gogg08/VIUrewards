@@ -414,6 +414,21 @@
               </div>
             </div>
             <div class="box-body">
+              <!-- Aviso descartable de arranque: la reconciliación recuperó clips o
+                   marcó clips sin archivo. Se muestra una sola vez. -->
+              <template x-if="libraryNotice">
+                <div class="library-notice" role="status">
+                  <span x-text="libraryNoticeText"></span>
+                  <button
+                    type="button"
+                    class="notice-dismiss"
+                    aria-label="Descartar aviso"
+                    @click="dismissLibraryNotice()"
+                  >
+                    ×
+                  </button>
+                </div>
+              </template>
               <p class="empty" x-show="clips.length === 0">Todavía no hay clips. Pegá una URL arriba para empezar.</p>
               <p class="empty" x-show="clips.length > 0 && filteredClips().length === 0">
                 Ningún clip coincide con el filtro.

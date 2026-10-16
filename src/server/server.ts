@@ -123,6 +123,22 @@ export interface ServerOptions {
    * servidor de plataforma falso).
    */
   platforms?: PlatformIntegration[];
+  /**
+   * Resultado de la reconciliación de arranque, para el aviso descartable del
+   * dashboard ("Se recuperaron N clips" / "N clips sin archivo"). Lo pasa
+   * `scripts/start.ts`; en tests no se usa.
+   */
+  libraryNotice?: LibraryNotice;
+}
+
+/** Aviso de arranque sobre la biblioteca (reconciliación con /media). */
+export interface LibraryNotice {
+  /** Clips nuevos recuperados desde /media. */
+  recovered: number;
+  /** Clips marcados como "falta el archivo". */
+  missing: number;
+  /** Clips de un archivo que reapareció (se les quitó la marca). */
+  restored: number;
 }
 
 export interface OverlayInfo {
@@ -1022,6 +1038,9 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         suggestedTitle: suggestedTitle(clip.title),
         thumbUrl: thumbExists(mediaDir, clip.id) ? `/media/thumbs/${clip.id}.jpg` : null,
       })),
+      // Aviso de arranque: se recuperaron o se marcaron clips en la reconciliación
+      // con /media. Solo viene si hubo cambios; el dashboard lo muestra una vez.
+      libraryNotice: options.libraryNotice ?? null,
     }));
 
     // Genera las miniaturas faltantes de la biblioteca, de a una en segundo
@@ -1159,6 +1178,11 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       async (request, reply) => {
         const clip = getClip(db, request.params.id);
         if (!clip) return reply.code(404).send({ ok: false, reason: "NOT_FOUND" });
+        if (clip.missing) {
+          return reply
+            .code(409)
+            .send({ ok: false, reason: "CLIP_MISSING", message: "Falta el archivo del clip." });
+        }
 
         // "Probar alerta" usa el recorte del body; si no viene, cae al guardado
         // del clip. `null` explícito significa "sin recorte" (no el guardado).

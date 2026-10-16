@@ -46,6 +46,12 @@ const MODE_LABEL: Record<RewardRecord["repetition"], string> = {
   overlap: "superpuesto",
 };
 
+/** Motivo de omisión cuando el clip de la recompensa no se puede reproducir. */
+function missingClipReason(clip: ReturnType<typeof getClip>): string {
+  if (!clip) return "la recompensa no tiene clip";
+  return "falta el archivo del clip";
+}
+
 export class RewardDispatcher {
   private readonly db: SqliteDatabase;
   private readonly engine: RuleEngine;
@@ -109,6 +115,15 @@ export class RewardDispatcher {
         reason: `cooldown, faltan ${decision.remainingSec} s`,
       });
     }
+    // El clip de la recompensa debe existir y no estar marcado como ausente: si no,
+    // el overlay pediría un archivo inexistente. Se omite con un motivo claro. El
+    // cooldown se evalúa antes (es la decisión documentada del modo cola).
+    const clip = reward.clipId ? getClip(this.db, reward.clipId) : null;
+    if (!clip || clip.missing) {
+      const reason = missingClipReason(clip);
+      this.logger?.(`rewards: ${reward.id} modo=esperar turno → omitido (${reason})`);
+      return Promise.resolve({ ...base, outcome: "skipped", ruleId: reward.ruleId ?? undefined, reason });
+    }
     // Decisión + registro en el mismo tick (sin `await`): dos canjes del mismo
     // ciclo no pueden pasar los dos la comprobación.
     setRewardLastFired(this.db, reward.id, now);
@@ -125,9 +140,10 @@ export class RewardDispatcher {
     const clip = reward.clipId ? getClip(this.db, reward.clipId) : null;
     // El modo overlap siempre usa playAudio (no depende de que el clip sea "solo
     // audio"): la recompensa suena superpuesta.
-    if (!clip) {
-      this.logger?.(`rewards: ${reward.id} modo=superpuesto → omitido (sin clip)`);
-      return { ...base, outcome: "skipped", ruleId: reward.ruleId ?? undefined, reason: "sin clip" };
+    if (!clip || clip.missing) {
+      const reason = missingClipReason(clip);
+      this.logger?.(`rewards: ${reward.id} modo=superpuesto → omitido (${reason})`);
+      return { ...base, outcome: "skipped", ruleId: reward.ruleId ?? undefined, reason };
     }
 
     const audio: AudioPlayback = {

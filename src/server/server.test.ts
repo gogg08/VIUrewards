@@ -1154,6 +1154,30 @@ describe("configuración, recorte y contraseña (parte B)", () => {
     expect(reset.json().clip.trimEnd).toBeNull();
   });
 
+  it("Probar alerta rechaza un clip con archivo ausente con un mensaje en español", async () => {
+    const { server, cookie } = await withServer();
+    insertClip(server);
+    server.db.prepare("UPDATE clips SET missing = 1 WHERE id = ?").run("vid");
+
+    const play = await server.app.inject({
+      method: "POST",
+      url: "/api/clips/vid/play",
+      headers: { cookie },
+      payload: {},
+    });
+    expect(play.statusCode).toBe(409);
+    const body = play.json();
+    expect(body.reason).toBe("CLIP_MISSING");
+    expect(body.message).toBe("Falta el archivo del clip.");
+    // Nunca encola algo que pediría un archivo inexistente al overlay.
+    const state = await server.app.inject({
+      method: "GET",
+      url: "/api/state",
+      headers: { cookie },
+    });
+    expect(state.json().current ?? null).toBeNull();
+  });
+
   it("Probar alerta usa el recorte y aplica volumen global y duración por defecto", async () => {
     const { server, cookie } = await withServer();
     insertClip(server);

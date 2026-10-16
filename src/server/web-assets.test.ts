@@ -248,4 +248,18 @@ describe("archivos locales y descargas (Etapa 3B)", () => {
     const block = css.slice(css.indexOf(".drop-overlay {"), css.indexOf(".visually-hidden"));
     expect(block).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
+
+  it("avisa en el dashboard si la reconciliación recuperó o marcó clips", () => {
+    // Aviso descartable arriba de la biblioteca, además de la consola.
+    expect(html).toMatch(/x-if="libraryNotice"/);
+    expect(html).toMatch(/@click="dismissLibraryNotice\(\)"/);
+    expect(app).toMatch(/libraryNoticeText/);
+    expect(app).toMatch(/Se recuperaron/);
+    expect(app).toMatch(/clips sin archivo/);
+    // El aviso viene del servidor en /api/clips (no se inventa en el cliente).
+    expect(app).toMatch(/data\.libraryNotice/);
+    // El estilo del aviso no usa colores literales.
+    const block = css.slice(css.indexOf(".library-notice {"), css.indexOf(".notice-dismiss {"));
+    expect(block).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
+  });
 });

@@ -316,9 +316,17 @@ export async function reconcileClips(
   }
   const files = scan.files;
 
+  const now = options.now ?? (() => new Date().toISOString());
+  const existing = new Map(listClips(db).map((clip) => [clip.id, clip]));
+
   // Batería de seguridad: una carpeta de medios VACÍA se trata como "unidad sin
-  // montar" y aborta. Nunca se marcan todos los clips como ausentes por eso.
+  // montar" y aborta, pero SOLO si la base tiene clips que se perderían de vista.
+  // En una instalación nueva (base sin clips y carpeta vacía) no hay nada que
+  // proteger: es un no-op silencioso, no un aviso alarmante.
   if (files.size === 0 && scan.directories === 0) {
+    if (existing.size === 0) {
+      return { added, missing, restored, skipped, aborted: false };
+    }
     return {
       added,
       missing,
@@ -328,9 +336,6 @@ export async function reconcileClips(
       message: "La carpeta de medios está vacía. No se modificó la biblioteca.",
     };
   }
-
-  const now = options.now ?? (() => new Date().toISOString());
-  const existing = new Map(listClips(db).map((clip) => [clip.id, clip]));
 
   // 1) Archivos sin fila: se agregan (sidecar, ffprobe o se omiten).
   for (const [id, file] of files) {

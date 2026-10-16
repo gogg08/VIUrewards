@@ -301,6 +301,21 @@ describe("abortos", () => {
     expect(getClip(db, "abc")?.missing).toBe(false);
   });
 
+  it("una instalación nueva (base y carpeta vacías) no aborta ni avisa", async () => {
+    const { mediaDir } = makeDirs();
+    const db = openMemoryDatabase();
+
+    const result = await reconcileClips(db, mediaDir);
+
+    // No hay nada que proteger: es un no-op silencioso, no un aviso alarmante.
+    expect(result.aborted).toBe(false);
+    expect(result.message).toBeUndefined();
+    expect(result.added).toEqual([]);
+    expect(result.missing).toEqual([]);
+    expect(result.restored).toEqual([]);
+    expect(result.skipped).toEqual([]);
+  });
+
   it("doble reconciliación seguida es idempotente", async () => {
     const { mediaDir, logsDir } = makeDirs();
     writeFileSync(join(mediaDir, "huerfano.m4a"), "audio-bytes");

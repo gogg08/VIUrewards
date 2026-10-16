@@ -34,6 +34,10 @@ function dashboardApp() {
   return {
     url: "",
     clips: [],
+    // Aviso de arranque de la biblioteca (reconciliación con /media) y si el
+    // creador ya lo descartó en esta sesión.
+    libraryNotice: null,
+    libraryNoticeDismissed: false,
     overlay: { key: "", url: "" },
     overlayRevealed: false,
     // Trabajos de descarga/subida de esta sesión (los últimos 20 se muestran en
@@ -441,6 +445,26 @@ function dashboardApp() {
       const response = await api("/api/clips");
       const data = await response.json();
       this.clips = data.clips ?? [];
+      // Aviso de arranque (reconciliación con /media): se muestra una vez si
+      // hubo clips recuperados o marcados sin archivo; se puede descartar.
+      if (data.libraryNotice && !this.libraryNoticeDismissed) {
+        this.libraryNotice = data.libraryNotice;
+      }
+    },
+
+    dismissLibraryNotice() {
+      this.libraryNoticeDismissed = true;
+      this.libraryNotice = null;
+    },
+
+    get libraryNoticeText() {
+      const notice = this.libraryNotice;
+      if (!notice) return "";
+      const parts = [];
+      if (notice.recovered > 0) parts.push(`Se recuperaron ${notice.recovered} clips`);
+      if (notice.missing > 0) parts.push(`${notice.missing} clips sin archivo`);
+      if (parts.length === 0 && notice.restored > 0) parts.push(`${notice.restored} clips volvieron a aparecer`);
+      return parts.join(" · ");
     },
 
     async loadOverlay() {

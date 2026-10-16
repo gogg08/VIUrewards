@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   openMemoryDatabase,
+  setClipMissing,
   upsertClip,
   upsertReward,
   type RewardRecord,
@@ -144,6 +145,7 @@ function makeHarness(): Harness {
 describe("modo cola: cooldown global", () => {
   it("dispara, encola y acepta el canje", async () => {
     const h = makeHarness();
+    addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ cooldownSec: 0 }));
     const result = await h.dispatcher.process(rewardEvent("c1"));
     expect(result).toMatchObject({ outcome: "fired", ruleId: "rule-1" });
@@ -153,6 +155,7 @@ describe("modo cola: cooldown global", () => {
 
   it("bloquea el segundo canje del mismo ciclo y lo omite con el motivo exacto", async () => {
     const h = makeHarness();
+    addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ cooldownSec: 30 }));
     // Dos canjes en el mismo ciclo: se lanzan sin esperar el primero.
     const [first, second] = await Promise.all([
@@ -167,6 +170,7 @@ describe("modo cola: cooldown global", () => {
 
   it("con cooldown 0 no bloquea", async () => {
     const h = makeHarness();
+    addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ cooldownSec: 0 }));
     const [a, b] = await Promise.all([
       h.dispatcher.process(rewardEvent("c1")),
@@ -178,6 +182,7 @@ describe("modo cola: cooldown global", () => {
 
   it("el cooldown persiste entre llamadas (sobrevive reinicios)", async () => {
     const h = makeHarness();
+    addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ cooldownSec: 30 }));
     await h.dispatcher.process(rewardEvent("c1"));
     // Otro despachador, misma base: el last_fired_at se lee de la fila.
@@ -254,6 +259,55 @@ describe("modo superpuesto", () => {
     expect(result.outcome).toBe("fired");
     expect(h.audios).toHaveLength(1);
     expect(h.queue.getState().current).toBeNull();
+  });
+});
+
+describe("clip con archivo ausente (missing)", () => {
+  it("en modo cola se omite con motivo 'falta el archivo del clip' y no encola", async () => {
+    const h = makeHarness();
+    addClip(h.db, "clip-1", true);
+    setClipMissing(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "queue" }));
+
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+
+    expect(result).toMatchObject({ outcome: "skipped", reason: "falta el archivo del clip" });
+    // Nunca se encola algo que pediría un archivo inexistente al overlay.
+    expect(h.queue.getState().current).toBeNull();
+    expect(h.resolutions).toEqual([]);
+  });
+
+  it("en modo superpuesto se omite con el mismo motivo y no manda audio", async () => {
+    const h = makeHarness();
+    addClip(h.db, "clip-1", true);
+    setClipMissing(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "overlap" }));
+
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+
+    expect(result).toMatchObject({ outcome: "skipped", reason: "falta el archivo del clip" });
+    expect(h.audios).toEqual([]);
+  });
+
+  it("una recompensa sin clip se omite con un motivo distinto y claro", async () => {
+    const h = makeHarness();
+    upsertReward(h.db, reward({ repetition: "queue", clipId: null }));
+
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+
+    expect(result).toMatchObject({ outcome: "skipped", reason: "la recompensa no tiene clip" });
+    expect(h.queue.getState().current).toBeNull();
+  });
+
+  it("si el archivo reaparece (missing en falso), vuelve a disparar", async () => {
+    const h = makeHarness();
+    addClip(h.db, "clip-1", true);
+    setClipMissing(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "queue" }));
+    expect((await h.dispatcher.process(rewardEvent("c1"))).outcome).toBe("skipped");
+
+    setClipMissing(h.db, "clip-1", false);
+    expect((await h.dispatcher.process(rewardEvent("c2"))).outcome).toBe("fired");
   });
 });
 
