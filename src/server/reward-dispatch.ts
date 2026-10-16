@@ -115,11 +115,12 @@ export class RewardDispatcher {
         reason: `cooldown, faltan ${decision.remainingSec} s`,
       });
     }
-    // El clip de la recompensa debe existir y no estar marcado como ausente: si no,
-    // el overlay pediría un archivo inexistente. Se omite con un motivo claro. El
-    // cooldown se evalúa antes (es la decisión documentada del modo cola).
     const clip = reward.clipId ? getClip(this.db, reward.clipId) : null;
     if (!clip || clip.missing) {
+      // Se omite SIN registrar `last_fired_at`: un clip ausente nunca consume el
+      // cooldown (no sonó nada). Si el archivo reaparece, el próximo canje dispara
+      // enseguida. La comprobación del clip va después de la decisión pura de
+      // cooldown, que no tiene efectos secundarios.
       const reason = missingClipReason(clip);
       this.logger?.(`rewards: ${reward.id} modo=esperar turno → omitido (${reason})`);
       return Promise.resolve({ ...base, outcome: "skipped", ruleId: reward.ruleId ?? undefined, reason });

@@ -309,6 +309,39 @@ describe("clip con archivo ausente (missing)", () => {
     setClipMissing(h.db, "clip-1", false);
     expect((await h.dispatcher.process(rewardEvent("c2"))).outcome).toBe("fired");
   });
+
+  it("un clip ausente NUNCA consume el cooldown (con cooldown configurado)", async () => {
+    const h = makeHarness();
+    addClip(h.db, "clip-1", true);
+    setClipMissing(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "queue", cooldownSec: 30 }));
+
+    // Dos canjes seguidos con el archivo ausente: los dos se omiten por el clip
+    // (no por cooldown) y NINGUNO registra last_fired_at.
+    const first = await h.dispatcher.process(rewardEvent("c1"));
+    const second = await h.dispatcher.process(rewardEvent("c2"));
+    expect(first).toMatchObject({ outcome: "skipped", reason: "falta el archivo del clip" });
+    expect(second).toMatchObject({ outcome: "skipped", reason: "falta el archivo del clip" });
+
+    // El cooldown no quedó registrado: al reaparecer, el siguiente canje dispara
+    // enseguida (si se hubiera consumido, daría "cooldown, faltan N s").
+    setClipMissing(h.db, "clip-1", false);
+    const third = await h.dispatcher.process(rewardEvent("c3"));
+    expect(third.outcome).toBe("fired");
+    expect(h.queue.getState().current?.clipId).toBe("clip-1");
+  });
+
+  it("el cooldown sigue bloqueando el segundo canje cuando el clip SÍ existe", async () => {
+    // Control: la omisión por clip ausente no rompe el cooldown normal.
+    const h = makeHarness();
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "queue", cooldownSec: 30 }));
+    expect((await h.dispatcher.process(rewardEvent("c1"))).outcome).toBe("fired");
+    expect(await h.dispatcher.process(rewardEvent("c2"))).toMatchObject({
+      outcome: "skipped",
+      reason: "cooldown, faltan 30 s",
+    });
+  });
 });
 
 describe("modo cola con solo audio", () => {
