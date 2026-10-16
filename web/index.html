@@ -689,16 +689,33 @@
                     <div class="settings-grid">
                       <label class="field">
                         <span>Client ID</span>
-                        <input type="text" maxlength="256" x-model="platformForm.clientId" placeholder="Client ID de tu app" />
+                        <input
+                          type="text"
+                          maxlength="256"
+                          name="viu-kick-client-id"
+                          autocomplete="off"
+                          x-model="platformForm.clientId"
+                          placeholder="Client ID de tu app"
+                        />
                       </label>
                       <label class="field">
-                        <span>Client Secret <span class="muted">(se guarda y no se vuelve a mostrar)</span></span>
+                        <span>
+                          Client Secret
+                          <span class="muted" x-text="activePlatform.hasCredentials ? '· Secret guardado' : '· Falta el secret'"></span>
+                        </span>
                         <input
                           type="password"
                           maxlength="512"
+                          name="viu-kick-client-secret"
+                          id="viu-kick-client-secret"
+                          autocomplete="new-password"
+                          data-1p-ignore
+                          data-lpignore="true"
+                          data-form-type="other"
                           x-model="platformForm.clientSecret"
                           :placeholder="activePlatform.hasCredentials ? '•••••••• (guardado)' : 'Client Secret de tu app'"
                         />
+                        <span class="muted">Se guarda y no se vuelve a mostrar: dejalo vacío para conservar el actual.</span>
                       </label>
                     </div>
                     <div class="row">
@@ -1211,12 +1228,16 @@
             <h2>Cambios sin guardar</h2>
           </div>
           <div class="modal-body">
-            <p>Hay cambios sin guardar en:</p>
-            <ul class="pending-failed">
-              <template x-for="name in settingsCloseConfirm.tabs" :key="name">
-                <li x-text="name"></li>
-              </template>
-            </ul>
+            <template x-if="settingsCloseConfirm.tabs.length > 0">
+              <div>
+                <p>Hay cambios sin guardar en:</p>
+                <ul class="pending-failed">
+                  <template x-for="name in settingsCloseConfirm.tabs" :key="name">
+                    <li x-text="name"></li>
+                  </template>
+                </ul>
+              </div>
+            </template>
             <template x-if="settingsCloseConfirm.pendingActions.length > 0">
               <div>
                 <p>Además, estas pestañas tienen un campo escrito y sin aplicar:</p>
@@ -1227,17 +1248,21 @@
                 </ul>
               </div>
             </template>
-            <p class="muted">
-              "Guardar todo" solo guarda las pestañas con botón Guardar (Alertas, Biblioteca y descargas,
-              Avanzado). Kick, Overlay y Seguridad se guardan con sus propias acciones.
-            </p>
+            <template x-if="settingsCloseConfirm.canSaveAll">
+              <p class="muted">
+                "Guardar todo" solo guarda las pestañas con botón Guardar (Alertas, Biblioteca y descargas,
+                Avanzado). Kick, Overlay y Seguridad se guardan con sus propias acciones.
+              </p>
+            </template>
             <p class="muted">Si cerrás sin guardar, esos cambios se pierden.</p>
           </div>
           <div class="modal-foot">
             <button class="ghost" @click="cancelCloseSettings()">Seguir editando</button>
             <div class="modal-foot-right">
               <button class="danger" @click="confirmDiscardSettings()">Descartar</button>
-              <button class="primary" @click="saveAllSettings()">Guardar todo</button>
+              <button class="primary" x-show="settingsCloseConfirm.canSaveAll" @click="saveAllSettings()">
+                Guardar todo
+              </button>
             </div>
           </div>
         </div>

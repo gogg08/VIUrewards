@@ -167,7 +167,12 @@ function dashboardApp() {
     // --- Plataformas (Fase 4B) ------------------------------------------------
     platforms: [],
     activePlatformId: "",
+    // `clientIdBase` es el valor GUARDADO del Client ID (línea base del aviso de
+    // "sin guardar"); se actualiza al cargar/guardar/vincular/desvincular/borrar.
+    // Mientras `platformFormLoaded` sea false, no se calcula ningún aviso.
     platformForm: { clientId: "", clientSecret: "" },
+    platformFormBase: { clientId: "" },
+    platformFormLoaded: false,
     platformMessage: "",
     platformNotice: "",
     redirectCopied: false,
@@ -388,6 +393,23 @@ function dashboardApp() {
       this.downloadsOpen = false;
       writeSettingsTab(this.settingsTab);
       this.refreshTabData(this.settingsTab);
+      // El navegador puede rellenar el campo del Client Secret antes de que Alpine
+      // lo controle: lo limpiamos siempre al abrir (el secret SIEMPRE arranca vacío).
+      this.clearBrowserFilledSecret();
+    },
+
+    // Borra cualquier valor que el navegador haya puesto en el campo del Secret.
+    // Se corre al abrir Ajustes y al cambiar a la pestaña Kick; el estado y el
+    // input quedan alineados en vacío. El campo tiene id propio para poder hallarlo.
+    clearBrowserFilledSecret() {
+      const clear = () => {
+        const input = document.getElementById("viu-kick-client-secret");
+        if (input && input.value) input.value = "";
+        this.platformForm.clientSecret = "";
+      };
+      clear();
+      // De nuevo tras el render: algunos gestores de contraseñas rellenan tarde.
+      setTimeout(clear, 0);
     },
 
     // Datos que cada pestaña necesita al abrirse (herramientas, uso, etc.).
@@ -398,9 +420,12 @@ function dashboardApp() {
     closeSettings() {
       // Cerrar con cambios pendientes avisa y NOMBRA las pestañas afectadas.
       // El estado de cada pestaña se conserva mientras la ventana está abierta.
+      const tabs = this.dirtyTabNames.slice();
       const pendingActions = this.pendingActionTabs();
-      if (this.hasUnsavedTabs || pendingActions.length > 0) {
-        this.settingsCloseConfirm = { tabs: this.dirtyTabNames.slice(), pendingActions };
+      if (tabs.length > 0 || pendingActions.length > 0) {
+        // `canSaveAll` decide si aparece "Guardar todo" (solo si hay pestañas con
+        // botón Guardar con cambios). El texto aclaratorio sigue a esa bandera.
+        this.settingsCloseConfirm = { tabs, pendingActions, canSaveAll: tabs.length > 0 };
         return;
       }
       this.settingsOpen = false;
@@ -409,10 +434,20 @@ function dashboardApp() {
     // Pestañas sin botón Guardar (Kick, Overlay, Seguridad, Apariencia) que tienen
     // un campo escrito y sin aplicar: se guardan con sus propias acciones, así que
     // el diálogo de cierre las menciona aparte.
+    //
+    // Kick solo cuenta como "sin aplicar" si el Client ID CAMBIÓ respecto de la
+    // línea base (el valor guardado) o si hay un Secret escrito. Mientras los datos
+    // no hayan llegado (`platformFormLoaded` false), no se calcula nada: evita el
+    // falso positivo de "Client ID sin guardar" al abrir Ajustes.
     pendingActionTabs() {
       const items = [];
-      if ((this.platformForm.clientId || "").trim() || this.platformForm.clientSecret) {
-        items.push("Kick: tiene el Client ID sin guardar");
+      const platform = this.activePlatform;
+      const name = platform ? platform.name : "Kick";
+      if (this.platformFormLoaded) {
+        const clientIdChanged =
+          String(this.platformForm.clientId || "").trim() !== String(this.platformFormBase.clientId || "");
+        const hasSecret = String(this.platformForm.clientSecret || "").length > 0;
+        if (clientIdChanged || hasSecret) items.push(`${name}: tiene credenciales sin guardar`);
       }
       if (this.passwordForm.current || this.passwordForm.next || this.passwordForm.repeat) {
         items.push("Seguridad: tiene una contraseña sin cambiar");
@@ -453,6 +488,7 @@ function dashboardApp() {
       this.settingsTab = tab;
       writeSettingsTab(tab);
       this.refreshTabData(tab);
+      if (tab === "kick") this.clearBrowserFilledSecret();
     },
 
     // Modo del logo: se guarda en este navegador y se aplica al instante.
@@ -1572,6 +1608,20 @@ function dashboardApp() {
       if (!this.activePlatformId && this.platforms.length > 0) {
         this.activePlatformId = this.platforms[0].id;
       }
+      // Precarga el Client ID guardado (no es secreto) y fija la línea base. El
+      // Client Secret SIEMPRE arranca vacío: la API solo dice si hay uno.
+      this.syncPlatformForm();
+    },
+
+    // Carga en el formulario el Client ID guardado de la plataforma activa y
+    // marca la línea base. Llamar SIEMPRE después de que lleguen los datos.
+    syncPlatformForm() {
+      const platform = this.activePlatform;
+      const clientId = platform && platform.clientId ? platform.clientId : "";
+      this.platformForm.clientId = clientId;
+      this.platformForm.clientSecret = "";
+      this.platformFormBase.clientId = clientId;
+      this.platformFormLoaded = true;
     },
 
     selectPlatform(platform) {
@@ -1579,6 +1629,8 @@ function dashboardApp() {
       this.activePlatformId = platform.id;
       this.rewards = [];
       this.rewardForm = null;
+      // El formulario de credenciales pasa a la plataforma recién elegida.
+      this.syncPlatformForm();
       this.oldRedemptions = [];
       this.diagnostics = null;
       this.platformMessage = "";

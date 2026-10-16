@@ -258,6 +258,30 @@ describe("/api/platforms/* : flujo de vínculo y credenciales", () => {
     expect(fake.calls.some((call) => call === "beginLink:http://localhost:8787/callback")).toBe(true);
   });
 
+  it("GET /api/platforms devuelve el clientId guardado pero nunca el secret", async () => {
+    const { server, cookie } = await withServer();
+    await server.app.inject({
+      method: "POST",
+      url: "/api/platforms/fake/credentials",
+      headers: { cookie, origin: ORIGIN },
+      payload: { clientId: "cid-visible", clientSecret: SECRET },
+    });
+
+    const listed = await server.app.inject({
+      method: "GET",
+      url: "/api/platforms",
+      headers: { cookie },
+    });
+    expect(listed.statusCode).toBe(200);
+    const platforms = listed.json().platforms as Array<Record<string, unknown>>;
+    const fake = platforms.find((platform) => platform.id === "fake");
+    expect(fake).toBeDefined();
+    expect(fake?.clientId).toBe("cid-visible");
+    expect(fake?.hasCredentials).toBe(true);
+    expect(listed.body).not.toContain(SECRET);
+    expect(listed.body).not.toContain("clientSecret");
+  });
+
   it("'Probar conexión' y diagnóstico responden sin secretos", async () => {
     const { server, cookie } = await withServer();
     const test = await server.app.inject({

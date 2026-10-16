@@ -490,7 +490,7 @@ describe("UI del dashboard (plataformas)", () => {
     expect(defines(app, "pendingActionTabs")).toBe(true);
     // Menciona aparte las pestañas que se guardan con sus propias acciones.
     expect(html).toMatch(/pendingActions\.length > 0/);
-    expect(app).toContain("Kick: tiene el Client ID sin guardar");
+    expect(app).toContain("tiene credenciales sin guardar");
   });
 
   it("la última pestaña de Ajustes se recuerda en localStorage", () => {
@@ -571,5 +571,26 @@ describe("UI del dashboard (plataformas)", () => {
     expect(app).not.toContain("ejecutor de procesos");
     // Menciona la carpeta bin/ como alternativa.
     expect(app).toContain("carpeta bin/");
+  });
+
+  // --- Parte 1: Client ID, secret y diálogo de cierre -----------------------
+
+  it("el campo del Client Secret evita el autocompletado del navegador", () => {
+    expect(html).toMatch(/autocomplete="new-password"/);
+    expect(html).toContain("data-1p-ignore");
+    expect(html).toContain('data-lpignore="true"');
+    // El secret tiene name/id propios (no los de un login).
+    expect(html).toContain("viu-kick-client-secret");
+    // El Client ID se precarga (no es secreto) y se limpia el secret al abrir.
+    expect(defines(app, "clearBrowserFilledSecret")).toBe(true);
+    expect(defines(app, "syncPlatformForm")).toBe(true);
+  });
+
+  it("el diálogo de cierre muestra cada sección solo si hay algo que mostrar", () => {
+    expect(html).toMatch(/x-if="settingsCloseConfirm\.tabs\.length > 0"/);
+    expect(html).toMatch(/x-if="settingsCloseConfirm\.pendingActions\.length > 0"/);
+    // "Guardar todo" y su aclaración siguen a `canSaveAll`.
+    expect(html).toMatch(/settingsCloseConfirm\.canSaveAll/);
+    expect(defines(app, "pendingActionTabs")).toBe(true);
   });
 });
