@@ -558,6 +558,23 @@ describe("UI del dashboard (plataformas)", () => {
     expect(html).toContain("actualizá la redirect URI en la app de Kick");
   });
 
+  it("Avanzado: visor de logs con filtro de nivel, auto-actualización y copiar para soporte", () => {
+    expect(html).toContain("Log del servidor");
+    for (const name of ["loadLogs", "setLogLevel", "toggleLogAutoRefresh", "copySupportSummary", "stopLogAutoRefresh"]) {
+      expect(defines(app, name), `app.js no define ${name}()`).toBe(true);
+    }
+    expect(html).toMatch(/@click="loadLogs\(\)"/);
+    expect(html).toMatch(/@change="setLogLevel\(\$event\.target\.value\)"/);
+    expect(html).toMatch(/@change="toggleLogAutoRefresh\(\)"/);
+    expect(html).toMatch(/@click="copySupportSummary\(\)"/);
+    // El visor es solo lectura y usa `x-for` (sin expresión que use métodos sin llamar).
+    expect(html).toContain('class="log-view"');
+    expect(html).toContain("sin secretos");
+    // El CSS del visor usa variables (sin colores literales).
+    const css = read("style.css");
+    expect(css).toMatch(/\.log-view\s*\{[^}]*font-family:\s*var\(--font-mono\)/s);
+  });
+
   it("la biblioteca de Ajustes se refresca al abrir la pestaña", () => {
     expect(defines(app, "refreshTabData")).toBe(true);
     expect(app).toMatch(/tab === "library"\) this\.loadLibraryUsage\(\)/);
@@ -592,5 +609,41 @@ describe("UI del dashboard (plataformas)", () => {
     // "Guardar todo" y su aclaración siguen a `canSaveAll`.
     expect(html).toMatch(/settingsCloseConfirm\.canSaveAll/);
     expect(defines(app, "pendingActionTabs")).toBe(true);
+  });
+
+  // --- Parte 2: errores de OAuth, confirmaciones propias y yt-dlp -----------
+
+  it("los errores de OAuth se muestran en la pestaña Kick, no como JSON", () => {
+    expect(defines(app, "kickLinkError")).toBe(true);
+    // El mensaje del vínculo se rinde con el traductor en español.
+    expect(html).toMatch(/x-text="kickLinkError\(activePlatform\)"/);
+    // El traductor conoce la pista de la redirect URI.
+    expect(app).toContain("redirect URI");
+    expect(app).toContain("invalid authorization request");
+  });
+
+  it("existe un diálogo de confirmación propio (no window.confirm)", () => {
+    expect(defines(app, "askConfirm")).toBe(true);
+    expect(defines(app, "cancelConfirm")).toBe(true);
+    expect(defines(app, "acceptConfirm")).toBe(true);
+    expect(html).toMatch(/<template x-if="settingsConfirm">/);
+    expect(html).toMatch(/x-text="settingsConfirm\.title"/);
+  });
+
+  it("borrar credenciales y actualizar yt-dlp ya no usan window.confirm", () => {
+    // Se aíslan los cuerpos de esas funciones para no chocar con los otros
+    // window.confirm legítimos (que se migrarán aparte).
+    const clear = app.slice(app.indexOf("clearCredentials(platform)"), app.indexOf("runClearCredentials"));
+    expect(clear).not.toContain("window.confirm");
+    expect(clear).toContain("askConfirm");
+    const upd = app.slice(app.indexOf("updateYtdlp()"), app.indexOf("runYtdlpUpdate"));
+    expect(upd).not.toContain("window.confirm");
+    expect(upd).toContain("askConfirm");
+    // La limpieza de caché ya usaba su propio modal de vista previa.
+    expect(html).toMatch(/<template x-if="cleanupPreview">/);
+  });
+
+  it("borrar credenciales avisa que también desvincula", () => {
+    expect(app).toContain("También se desvincula la cuenta");
   });
 });

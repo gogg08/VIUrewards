@@ -154,6 +154,39 @@ describe("updateYtdlp", () => {
     expect(result.message).not.toContain("ejecutor de procesos");
     expect(result.message).toContain("bin/");
   });
+
+  it("un fallo de escritura (sin permisos) no toca el binario y explica en español", async () => {
+    // Nosotros no escribimos el binario: `yt-dlp -U` lo hace él mismo y, si no
+    // puede, aborta dejando el ejecutable intacto. Simulamos ese fallo y
+    // verificamos que el binario sigue respondiendo su versión.
+    const run: RunProcess = async (_command, args) => {
+      if (args[0] === "-U") {
+        return {
+          code: 1,
+          stdout: "",
+          stderr: "ERROR: unable to write to /usr/local/bin/yt-dlp (permission denied)",
+          signal: null,
+          timedOut: false,
+        } as never;
+      }
+      return { code: 0, stdout: "2024.08.06", stderr: "", signal: null, timedOut: false } as never;
+    };
+    const failed = await updateYtdlp({ run, binarySearch: ALL_BINARIES });
+    expect(failed.ok).toBe(false);
+    expect(failed.message).toContain("no pudo actualizarse");
+    expect(failed.output).toContain("permission denied");
+
+    // El binario sigue usable: la detección de versión funciona igual.
+    const versions = await readToolVersions({ run, binarySearch: ALL_BINARIES });
+    expect(versions.ytDlp).toBe("2024.08.06");
+  });
+
+  it("un timeout del proceso no lanza: mensaje claro", async () => {
+    const run: RunProcess = async () => ({ code: null, stdout: "", stderr: "", signal: null, timedOut: true }) as never;
+    const result = await updateYtdlp({ run, binarySearch: ALL_BINARIES });
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("no pudo actualizarse");
+  });
 });
 
 describe("libraryUsage", () => {

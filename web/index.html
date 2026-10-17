@@ -1214,6 +1214,51 @@
                   <button @click="manual()">Evento manual</button>
                   <span class="ok" x-show="simulateMessage" x-text="simulateMessage"></span>
                 </div>
+
+                <hr class="divider" />
+
+                <h3>Log del servidor</h3>
+                <p class="muted">
+                  Últimas líneas del log, sin secretos. Solo lectura.
+                </p>
+                <div class="log-toolbar">
+                  <label class="field">
+                    <span>Nivel</span>
+                    <select :value="logLevel" @change="setLogLevel($event.target.value)">
+                      <option value="">Todos</option>
+                      <option value="info">Info</option>
+                      <option value="warn">Aviso</option>
+                      <option value="error">Error</option>
+                      <option value="debug">Debug</option>
+                    </select>
+                  </label>
+                  <label class="field field-narrow">
+                    <span>Líneas</span>
+                    <input
+                      type="number"
+                      min="10"
+                      max="2000"
+                      step="10"
+                      :value="logLimit"
+                      @change="logLimit = Math.max(10, Math.min(2000, Number($event.target.value) || 200)); loadLogs()"
+                    />
+                  </label>
+                  <label class="option-row">
+                    <input type="checkbox" :checked="logAutoRefresh" @change="toggleLogAutoRefresh()" />
+                    <span class="option-text"><strong>Actualizar solo</strong></span>
+                  </label>
+                  <button type="button" @click="loadLogs()" :disabled="logLoading">Actualizar</button>
+                  <button type="button" class="secondary small" @click="copySupportSummary()">Copiar para soporte</button>
+                </div>
+                <span class="ok" x-show="supportMessage" x-text="supportMessage"></span>
+                <span class="error" x-show="logMessage" x-text="logMessage"></span>
+                <p class="muted" x-show="!logAvailable && !logLoading">
+                  Todavía no hay log: se crea cuando la app registra algo.
+                </p>
+                <pre class="log-view" x-show="logCount > 0"><template x-for="(line, index) in logLines" :key="index"><div class="log-line" x-text="line"></div></template></pre>
+                <p class="muted" x-show="logAvailable && logCount === 0 && !logLoading && !logMessage">
+                  No hay líneas para ese filtro.
+                </p>
               </section>
             </div>
           </div>
@@ -1690,6 +1735,24 @@
             >
               Borrar recompensas y clip
             </button>
+          </div>
+        </div>
+      </div>
+      </template>
+
+      <!-- ================= Confirmación propia (reemplaza window.confirm) ========= -->
+      <template x-if="settingsConfirm">
+      <div class="modal" x-cloak @click="cancelConfirm()">
+        <div class="modal-window modal-small" role="dialog" aria-modal="true" :aria-label="settingsConfirm.title" @click.stop>
+          <div class="modal-head">
+            <h2 x-text="settingsConfirm.title"></h2>
+          </div>
+          <div class="modal-body">
+            <p x-text="settingsConfirm.body"></p>
+          </div>
+          <div class="modal-foot">
+            <button @click="cancelConfirm()">Cancelar</button>
+            <button :class="settingsConfirm.danger ? 'danger' : 'primary'" @click="acceptConfirm()" x-text="settingsConfirm.confirmLabel"></button>
           </div>
         </div>
       </div>

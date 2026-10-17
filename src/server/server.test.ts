@@ -840,6 +840,12 @@ describe("autenticación", () => {
       expect(response.statusCode, `${method} ${url} sin sesión`).toBe(401);
     }
 
+    // Rutas GET nuevas (visor de logs y resumen de soporte): también 401 sin sesión.
+    for (const url of ["/api/logs", "/api/support/summary"]) {
+      const response = await server.app.inject({ method: "GET", url });
+      expect(response.statusCode, `${url} sin sesión`).toBe(401);
+    }
+
     // Con sesión pero Origin ajeno: 403 (CSRF), antes de tocar nada.
     const badOrigin: Array<{ method: "POST" | "DELETE"; url: string }> = [
       { method: "DELETE", url: "/api/jobs/whatever" },
@@ -858,6 +864,46 @@ describe("autenticación", () => {
       expect(response.statusCode, `${method} ${url} con Origin ajeno`).toBe(403);
       expect(response.json().reason).toBe("BAD_ORIGIN");
     }
+  });
+});
+
+describe("visor de logs y resumen de soporte (Etapa 5, Parte C)", () => {
+  it("GET /api/logs devuelve líneas y nunca la clave del overlay", async () => {
+    const { server, cookie } = await withServer();
+    const key = server.getOverlayKey();
+    // El archivo de log vive fuera de /media; lo ubicamos por la ruta expuesta.
+    writeFileSync(server.logPath, `2024-01-01T00:00:00.000Z [info] usando key=${key} en /overlay\n`);
+    const response = await server.app.inject({ method: "GET", url: "/api/logs", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { ok: boolean; lines: string[]; count: number; available: boolean };
+    expect(body.ok).toBe(true);
+    expect(body.available).toBe(true);
+    expect(body.count).toBeGreaterThan(0);
+    expect(response.body).not.toContain(key);
+    expect(body.lines.join("\n")).toContain("***");
+  });
+
+  it("GET /api/logs valida el nivel y el límite en el esquema (400)", async () => {
+    const { server, cookie } = await withServer();
+    const badLevel = await server.app.inject({ method: "GET", url: "/api/logs?level=nope", headers: { cookie } });
+    expect(badLevel.statusCode).toBe(400);
+    const badLimit = await server.app.inject({ method: "GET", url: "/api/logs?limit=abc", headers: { cookie } });
+    expect(badLimit.statusCode).toBe(400);
+  });
+
+  it("GET /api/support/summary arma un resumen sin secretos", async () => {
+    const { server, cookie } = await withServer();
+    const key = server.getOverlayKey();
+    writeFileSync(server.logPath, `2024-01-01T00:00:00.000Z [error] falló con key=${key} al conectar\n`);
+    const response = await server.app.inject({ method: "GET", url: "/api/support/summary", headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const body = response.json() as { ok: boolean; summary: string };
+    expect(body.ok).toBe(true);
+    expect(body.summary).toContain("VIUrewards");
+    expect(body.summary).toContain("Puerto:");
+    expect(body.summary).toContain("Overlay:");
+    expect(body.summary).not.toContain(key);
+    expect(body.summary).toContain("***");
   });
 });
 

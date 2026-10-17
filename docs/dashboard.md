@@ -259,6 +259,28 @@ la limpieza), `POST /api/clips/reconcile` (reconciliación a demanda),
 `GET /api/library/usage` (espacio ocupado y versiones de las herramientas),
 `POST /api/tools/ytdlp/update` y `POST /api/overlay/test` (alerta de prueba).
 
+Etapa 5 (Parte C): `GET /api/logs` (últimas N líneas del log, con `limit` y
+`level`; **redactadas** antes de salir) y `GET /api/support/summary` (resumen de
+soporte sin secretos). Ambas exigen sesión (401) y las de estado también validan
+el origen cuando corresponde.
+
+## Log del servidor
+
+El servidor escribe `logs/server.log` (junto a `media/`, fuera de lo servido por
+HTTP), con líneas `fecha [nivel] mensaje` y rotación por tamaño (2 MiB →
+`server.log.1`). Lo hace `createFileLogger` en `src/server/logs.ts`; si no se
+puede abrir el archivo, degrada a un logger inerte (un fallo de log nunca rompe
+la app). Los mensajes de diagnóstico (plataforma, reglas, despacho, canjes,
+recompensas, biblioteca) se escriben con nivel `debug`, que solo se registra con
+`CZERO_DEBUG=1`; también siguen saliendo por consola en ese modo.
+
+El visor (Ajustes → Avanzado) pide las líneas con `GET /api/logs`; el servidor
+lee **solo el final del archivo** (con un límite de bytes, nunca entero) y
+**redacta los secretos** antes de responder: reemplaza por `***` los valores
+conocidos (la clave del overlay) y todo lo que matchee `key=`, `token=`,
+`secret=`, `password=`, `client_secret`, etc. `GET /api/support/summary` arma el
+resumen de "Copiar para soporte" con las mismas reglas de redacción.
+
 ## Robustez de la cola y el overlay (fix de atascos)
 
 Dos síntomas reportados: (A) la cola quedaba "En espera (1)" con "No hay nada

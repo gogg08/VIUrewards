@@ -78,6 +78,13 @@ import { createClipRebuilder } from "../media/rebuild.ts";
 import { detectBinaries } from "../media/binaries.ts";
 import { runProcess } from "../media/run-process.ts";
 import { candidatesBytes, cleanupCandidates, libraryUsage, readToolVersions, updateYtdlp } from "./tools.ts";
+import {
+  buildSupportSummary,
+  createFileLogger,
+  readLogsForViewer,
+  LOG_LEVELS,
+  type LogLevel,
+} from "./logs.ts";
 import { hasMediaExtension, mediaExtensionOf } from "../media/formats.ts";
 import { RewardDispatcher } from "./reward-dispatch.ts";
 import { attachWebSocket } from "./ws.ts";
@@ -87,6 +94,18 @@ export type { MediaPassthroughOptions } from "./jobs.ts";
 const DEFAULT_WEB_DIR = fileURLToPath(new URL("../../web", import.meta.url));
 const DEFAULT_OVERLAY_HTML = fileURLToPath(new URL("../../overlay/index.html", import.meta.url));
 const OVERLAY_DIR = fileURLToPath(new URL("../../overlay", import.meta.url));
+
+/** Versión de la app (de package.json); "desconocida" si no se puede leer. */
+const APP_VERSION: string = (() => {
+  try {
+    const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8")) as {
+      version?: unknown;
+    };
+    return typeof pkg.version === "string" && pkg.version.length > 0 ? pkg.version : "desconocida";
+  } catch {
+    return "desconocida";
+  }
+})();
 
 export const DEFAULT_SERVER_PORT = DEFAULT_PORT;
 export const SESSION_TTL_SEC = 7 * 24 * 60 * 60;
@@ -99,6 +118,11 @@ export interface ServerOptions {
   mediaDir: string;
   /** Carpeta de temporales de las subidas de archivos locales (Etapa 3B). */
   uploadsDir?: string;
+  /**
+   * Carpeta de logs (visor en Ajustes → Avanzado). Por defecto, `logs/` junto a
+   * `media/`. En tests se usa una carpeta temporal.
+   */
+  logDir?: string;
   /** Base local. Si no se pasa, se usa una en memoria (tests). */
   db?: SqliteDatabase;
   port?: number;
@@ -168,6 +192,8 @@ export interface AppServer {
   integrations: PlatformIntegration[];
   coordinator: RedemptionCoordinator;
   getOverlayKey(): string;
+  /** Ruta del archivo de log del servidor (visor en Ajustes → Avanzado). */
+  logPath: string;
   start(): Promise<{ port: number; host: string; url: string; overlayUrl: string; dashboardUrl: string }>;
   stop(): Promise<void>;
 }
@@ -381,6 +407,12 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   // Temporales de las subidas de archivos locales. Viven fuera de /media para no
   // servirse ni aparecer en la biblioteca; cada trabajo los borra al terminar.
   const uploadsDir = resolve(options.uploadsDir ?? join(mediaDir, "..", ".uploads"));
+  // Log del servidor (visible en Ajustes → Avanzado). Vive fuera de /media.
+  const logDir = resolve(options.logDir ?? join(mediaDir, "..", "logs"));
+  const logPath = join(logDir, "server.log");
+  mkdirSync(logDir, { recursive: true });
+  const logger = createFileLogger({ path: logPath });
+  logger.info(`VIUrewards iniciado (v${APP_VERSION}, overlay ${overlayVersion}).`);
 
   // @fastify/static falla si la raíz no existe todavía.
   mkdirSync(mediaDir, { recursive: true });
@@ -465,6 +497,14 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
   const debug = process.env.CZERO_DEBUG === "1";
 
+  // Log a archivo para el visor (Ajustes → Avanzado) y, si CZERO_DEBUG, también
+  // a la consola, como antes. Los mensajes de debug solo se registran con debug.
+  const logDebug = (level: LogLevel, scope: string, message: string): void => {
+    if (level === "debug" && !debug) return;
+    logger.log(level, `[${scope}] ${message}`);
+    if (debug) console.log(`[${scope}] ${message}`);
+  };
+
   const manualSource = new ManualEventSource();
   const simulatedSource = new SimulatedEventSource();
 
@@ -474,7 +514,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     createPlatformIntegrations({
       db,
       pollIntervalMs: () => readSettings(db).redemptionsPollIntervalMs,
-      logger: debug ? (message) => console.log(`[platform] ${message}`) : undefined,
+      logger: debug ? (message) => logDebug("debug", "platform", message) : undefined,
     });
 
   const sources: EventSource[] = [manualSource, simulatedSource];
@@ -494,8 +534,10 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     resolveEvent: resolveSource,
     logger: debug
       ? (entry) =>
-          console.log(
-            `[rules] ${entry.kind} ${entry.eventId}${entry.ruleId ? ` (${entry.ruleId})` : ""}${
+          logDebug(
+            "debug",
+            "rules",
+            `${entry.kind} ${entry.eventId}${entry.ruleId ? ` (${entry.ruleId})` : ""}${
               entry.detail ? `: ${entry.detail}` : ""
             }`,
           )
@@ -548,7 +590,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     globalVolume: () => readSettings(db).globalVolume,
     defaultMaxDuration: () => readSettings(db).defaultMaxDurationSec,
     maxVoices: () => readSettings(db).maxAudioVoices,
-    logger: debug ? (message) => console.log(`[dispatch] ${message}`) : undefined,
+    logger: debug ? (message) => logDebug("debug", "dispatch", message) : undefined,
   });
 
   const coordinator = new RedemptionCoordinator({
@@ -578,7 +620,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           return { outcome: "no_match", reason: result.reason };
       }
     },
-    logger: debug ? (message) => console.log(`[redemptions] ${message}`) : undefined,
+    logger: debug ? (message) => logDebug("debug", "redemptions", message) : undefined,
   });
 
   for (const source of sources) {
@@ -855,7 +897,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           db,
           integration,
           onRulesChanged: () => engine.setRules(listRules(db).map(toRule)),
-          logger: debug ? (message) => console.log(`[rewards] ${message}`) : undefined,
+          logger: debug ? (message) => logDebug("debug", "rewards", message) : undefined,
         });
         const result = await service.remove(reward.id, {});
         if (result.ok) continue;
@@ -1129,7 +1171,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     api.post("/api/clips/reconcile", async () => {
       const result = await reconcileClips(db, mediaDir, {
         rebuild: createClipRebuilder({ mediaDir, run, binarySearch: mediaOptions.binarySearch, logsDir: mediaOptions.logsDir }),
-        log: debug ? (message) => console.log(`[library] ${message}`) : undefined,
+        log: debug ? (message) => logDebug("debug", "library", message) : undefined,
       });
       const notice = result.aborted ? null : {
         recovered: result.added.length,
@@ -1174,6 +1216,69 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     api.post("/api/tools/ytdlp/update", async () => {
       const result = await updateYtdlp({ run, binarySearch: mediaOptions.binarySearch });
       return { ok: result.ok, message: result.message, output: result.output };
+    });
+
+    // --- Visor de logs y resumen de soporte (Etapa 5, Parte C) ---------------
+    // Los secretos conocidos se redactan antes de enviar cualquier línea: la
+    // clave del overlay (actual) y la contraseña/secretos no viven acá, pero
+    // igual se redactan por patrón (`key=`, `token=`, `secret=`, etc.).
+    const knownSecrets = (): string[] => [overlayKey];
+
+    api.get<{ Querystring: { limit?: string; level?: string } }>(
+      "/api/logs",
+      {
+        schema: {
+          querystring: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              limit: { type: "string", pattern: "^[0-9]{1,4}$" },
+              level: { type: "string", enum: [...LOG_LEVELS] },
+            },
+          },
+        },
+      },
+      async (request) => {
+        const limit = request.query.limit ? Number(request.query.limit) : 200;
+        const level = request.query.level as LogLevel | undefined;
+        const result = readLogsForViewer(logPath, { limit, level }, knownSecrets());
+        return { ok: true, ...result };
+      },
+    );
+
+    // Resumen apto para soporte: sin secretos. Incluye versiones, sistema,
+    // puerto, estado de Kick y del overlay y los últimos errores del log.
+    api.get("/api/support/summary", async () => {
+      const detection = detectBinaries(mediaOptions.binarySearch);
+      const tools = detection.ok
+        ? await readToolVersions({ run, binarySearch: mediaOptions.binarySearch })
+        : { ytDlp: null, ffmpeg: null, ffprobe: null };
+      const platform =
+        integrations.length === 0
+          ? "(ninguna)"
+          : integrations
+              .map((integration) => {
+                const status = integration.status();
+                const link = status.state === "connected" ? "conectada" : "sin conectar";
+                return `${status.name} (${link})`;
+              })
+              .join(", ");
+      const recentErrors = readLogsForViewer(logPath, { limit: 200, level: "error" }, knownSecrets()).lines;
+      const summary = buildSupportSummary(
+        {
+          appVersion: APP_VERSION,
+          overlayVersion,
+          tools,
+          platform,
+          os: `${process.platform} ${process.arch}`,
+          port,
+          overlayConnected: hub.clientCount() > 0,
+          overlayClients: hub.clientCount(),
+          recentErrors,
+        },
+        knownSecrets(),
+      );
+      return { ok: true, summary };
     });
 
     api.post<{ Params: { id: string }; Body: { title: string } }>(
@@ -1579,6 +1684,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     integrations,
     coordinator,
     getOverlayKey: () => overlayKey,
+    logPath,
     async start() {
       try {
         await app.listen({ port, host });

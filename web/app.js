@@ -74,6 +74,11 @@ function dashboardApp() {
     // Vista previa de la limpieza de caché (null = cerrada).
     cleanupPreview: null,
     cleanupMessage: "",
+    // Diálogo de confirmación propio de la app (null = cerrado). Reemplaza a
+    // window.confirm para las acciones destructivas que no tienen su propio
+    // modal (borrar credenciales, actualizar yt-dlp, limpiar caché).
+    // { title, body, confirmLabel, danger, onConfirm }
+    settingsConfirm: null,
     // Trabajos de descarga/subida de esta sesión (los últimos 20 se muestran en
     // el panel Descargas). El estado se refresca con polling de /api/jobs.
     jobs: [],
@@ -202,6 +207,20 @@ function dashboardApp() {
     oldRedemptions: [],
     redemptionMessage: "",
     diagnostics: null,
+    // --- Visor de logs (Ajustes → Avanzado) -------------------------------
+    // Líneas del log del servidor ya redactadas (sin secretos).
+    logLines: [],
+    logCount: 0,
+    logAvailable: false,
+    logLoading: false,
+    logLevel: "", // "" = todos
+    logLimit: 200,
+    logMessage: "",
+    // Actualización automática del visor (interruptor) y su temporizador.
+    logAutoRefresh: false,
+    logTimer: null,
+    // Resumen de soporte copiado (mensaje breve).
+    supportMessage: "",
 
     get downloading() {
       return this.jobs.some((job) => ["queued", "downloading", "converting"].includes(job.status)) || this.uploadingCount > 0;
@@ -415,6 +434,7 @@ function dashboardApp() {
     // Datos que cada pestaña necesita al abrirse (herramientas, uso, etc.).
     refreshTabData(tab) {
       if (tab === "library") this.loadLibraryUsage();
+      if (tab === "advanced") void this.loadLogs();
     },
 
     closeSettings() {
@@ -429,6 +449,7 @@ function dashboardApp() {
         return;
       }
       this.settingsOpen = false;
+      this.stopLogAutoRefresh();
     },
 
     // Pestañas sin botón Guardar (Kick, Overlay, Seguridad, Apariencia) que tienen
@@ -460,6 +481,7 @@ function dashboardApp() {
       this.settingsCloseConfirm = null;
       this.dirtyTabs = {};
       this.settingsOpen = false;
+      this.stopLogAutoRefresh();
     },
 
     // "Seguir editando": vuelve a la ventana sin cerrar.
@@ -487,6 +509,8 @@ function dashboardApp() {
     setSettingsTab(tab) {
       this.settingsTab = tab;
       writeSettingsTab(tab);
+      // La actualización automática del visor solo corre mientras su pestaña está visible.
+      if (tab !== "advanced") this.stopLogAutoRefresh();
       this.refreshTabData(tab);
       if (tab === "kick") this.clearBrowserFilledSecret();
     },
@@ -544,6 +568,10 @@ function dashboardApp() {
     // Esc cierra lo que esté abierto arriba de todo (ventanas de recompensa,
     // desplegable y luego Ajustes).
     onEscape() {
+      if (this.settingsConfirm) {
+        this.cancelConfirm();
+        return;
+      }
       if (this.settingsCloseConfirm) {
         this.cancelCloseSettings();
         return;
@@ -1264,10 +1292,16 @@ function dashboardApp() {
     },
 
     // Actualiza yt-dlp (solo por acción explícita). Muestra el resultado a la vista.
-    async updateYtdlp() {
-      if (!window.confirm("Se va a actualizar yt-dlp, la herramienta que descarga los videos. ¿Seguir?")) {
-        return;
-      }
+    updateYtdlp() {
+      this.askConfirm({
+        title: "Actualizar yt-dlp",
+        body: "Se va a actualizar yt-dlp, la herramienta que descarga los videos. ¿Seguir?",
+        confirmLabel: "Actualizar",
+        onConfirm: () => this.runYtdlpUpdate(),
+      });
+    },
+
+    async runYtdlpUpdate() {
       this.toolsBusy = true;
       this.toolsMessage = "Actualizando yt-dlp…";
       try {
@@ -1301,6 +1335,24 @@ function dashboardApp() {
 
     cancelCleanup() {
       this.cleanupPreview = null;
+    },
+
+    // --- Diálogo de confirmación propio (reemplaza a window.confirm) --------
+    // Abre el diálogo genérico. `onConfirm` es un método del componente que se
+    // ejecuta al aceptar (se llama con el contexto de la app para no perder `this`).
+    askConfirm({ title, body, confirmLabel, danger = false, onConfirm }) {
+      this.settingsConfirm = { title, body, confirmLabel, danger, onConfirm };
+    },
+
+    cancelConfirm() {
+      this.settingsConfirm = null;
+    },
+
+    async acceptConfirm() {
+      const pending = this.settingsConfirm;
+      if (!pending) return;
+      this.settingsConfirm = null;
+      if (typeof pending.onConfirm === "function") await pending.onConfirm();
     },
 
     // Borra la caché (solo clips de link que se pueden volver a descargar).
@@ -1733,8 +1785,20 @@ function dashboardApp() {
       await this.loadPlatforms();
     },
 
-    async clearCredentials(platform) {
-      if (!window.confirm("¿Borrar las credenciales de " + platform.name + "?")) return;
+    clearCredentials(platform) {
+      this.askConfirm({
+        title: "Borrar credenciales",
+        body:
+          "¿Borrar las credenciales de " +
+          platform.name +
+          "? También se desvincula la cuenta: vas a tener que volver a vincularla.",
+        confirmLabel: "Borrar credenciales",
+        danger: true,
+        onConfirm: () => this.runClearCredentials(platform),
+      });
+    },
+
+    async runClearCredentials(platform) {
       await api("/api/platforms/" + encodeURIComponent(platform.id) + "/credentials", { method: "DELETE" });
       this.rewards = [];
       await this.loadPlatforms();
@@ -1777,6 +1841,74 @@ function dashboardApp() {
       const headers = (this.diagnostics && this.diagnostics.lastRateLimitHeaders) || {};
       const keys = Object.keys(headers);
       return keys.length === 0 ? "—" : keys.map((key) => key + "=" + headers[key]).join(" · ");
+    },
+
+    // --- Visor de logs y soporte (Ajustes → Avanzado) ------------------------
+    // Pide las últimas líneas del log (ya redactadas por el servidor).
+    async loadLogs() {
+      this.logLoading = true;
+      try {
+        const query = new URLSearchParams();
+        query.set("limit", String(this.logLimit));
+        if (this.logLevel) query.set("level", this.logLevel);
+        const response = await api("/api/logs?" + query.toString());
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          this.logMessage = "No se pudo leer el log del servidor.";
+          return;
+        }
+        this.logLines = data.lines || [];
+        this.logCount = data.count || 0;
+        this.logAvailable = data.available === true;
+        this.logMessage = "";
+      } catch {
+        this.logMessage = "No se pudo leer el log del servidor.";
+      } finally {
+        this.logLoading = false;
+      }
+    },
+
+    setLogLevel(level) {
+      this.logLevel = level;
+      void this.loadLogs();
+    },
+
+    // Interruptor de actualización automática (cada 3 s).
+    toggleLogAutoRefresh() {
+      this.logAutoRefresh = !this.logAutoRefresh;
+      if (this.logAutoRefresh) {
+        if (!this.logTimer) this.logTimer = setInterval(() => void this.loadLogs(), 3000);
+      } else if (this.logTimer) {
+        clearInterval(this.logTimer);
+        this.logTimer = null;
+      }
+    },
+
+    // Detiene la actualización automática (al cerrar Ajustes o cambiar de pestaña).
+    stopLogAutoRefresh() {
+      if (this.logTimer) {
+        clearInterval(this.logTimer);
+        this.logTimer = null;
+      }
+      this.logAutoRefresh = false;
+    },
+
+    // Copia un resumen sin secretos para soporte.
+    async copySupportSummary() {
+      this.supportMessage = "";
+      try {
+        const response = await api("/api/support/summary");
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || !data.ok) {
+          this.supportMessage = "No se pudo armar el resumen.";
+          return;
+        }
+        await navigator.clipboard.writeText(data.summary);
+        this.supportMessage = "Resumen copiado.";
+      } catch {
+        this.supportMessage = "No se pudo copiar el resumen.";
+      }
+      setTimeout(() => (this.supportMessage = ""), 4000);
     },
 
     // --- Recompensas del canal ------------------------------------------------
