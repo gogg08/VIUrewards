@@ -24,6 +24,17 @@ export interface RewardRoutesContext {
   db: SqliteDatabase;
   refreshRules: () => void;
   debug: boolean;
+  /**
+   * Se llama cuando una recompensa cambia de forma que invalida su espera por
+   * cooldown (borrar, desactivar, cambiar de modo o de cooldown, quitar vínculo).
+   * Devuelve cuántos canjes en espera había (para el texto de confirmación).
+   */
+  discardWaits?: (localId: string) => number;
+  /**
+   * Canjes del canje en espera de una recompensa (para sumarlos a los pendientes
+   * de la plataforma en el texto de confirmación).
+   */
+  waitCount?: (localId: string) => number;
 }
 
 const animationEnum = [...ANIMATION_NAMES, null];
@@ -160,6 +171,8 @@ export function registerRewardApiRoutes(app: FastifyInstance, ctx: RewardRoutesC
       if (!integration) return;
       const result = await serviceFor(integration).update(request.params.localId, request.body as never);
       if (!result.ok) return reply.code(httpStatusForPlatformReason(result.reason)).send(operationError(result));
+      // Editar (cooldown, modo…) invalida la espera: se descarta y se recalcula.
+      ctx.discardWaits?.(request.params.localId);
       return { ok: true, reward: result.value };
     },
   );
@@ -185,6 +198,7 @@ export function registerRewardApiRoutes(app: FastifyInstance, ctx: RewardRoutesC
       const integration = withIntegration(request.params.id, reply);
       if (!integration) return;
       const result = await serviceFor(integration).disable(request.params.localId, request.body ?? {});
+      if (result.ok) ctx.discardWaits?.(request.params.localId);
       return sendPending(reply, result, httpStatusForPlatformReason);
     },
   );
@@ -209,6 +223,7 @@ export function registerRewardApiRoutes(app: FastifyInstance, ctx: RewardRoutesC
       if (!integration) return;
       const result = await serviceFor(integration).detach(request.params.localId);
       if (!result.ok) return reply.code(httpStatusForPlatformReason(result.reason)).send(operationError(result));
+      ctx.discardWaits?.(request.params.localId);
       return { ok: true, id: result.value.id };
     },
   );
@@ -222,6 +237,7 @@ export function registerRewardApiRoutes(app: FastifyInstance, ctx: RewardRoutesC
       const integration = withIntegration(request.params.id, reply);
       if (!integration) return;
       const result = await serviceFor(integration).remove(request.params.localId, request.body ?? {});
+      if (result.ok) ctx.discardWaits?.(request.params.localId);
       return sendPending(reply, result, httpStatusForPlatformReason);
     },
   );
@@ -236,7 +252,11 @@ export function registerRewardApiRoutes(app: FastifyInstance, ctx: RewardRoutesC
       if (!integration) return;
       const result = await serviceFor(integration).pendingCount(request.params.localId);
       if (!result.ok) return reply.code(httpStatusForPlatformReason(result.reason)).send(operationError(result));
-      return { ok: true, count: result.value };
+      // Los canjes en espera por cooldown también se cuentan: al desactivar o
+      // borrar se descartan y quedan pendientes, así que el texto de confirmación
+      // debe avisar por ellos.
+      const waiting = ctx.waitCount?.(request.params.localId) ?? 0;
+      return { ok: true, count: result.value + waiting, waiting };
     },
   );
 }

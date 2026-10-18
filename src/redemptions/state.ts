@@ -22,13 +22,17 @@ export const REDEMPTION_STATUSES = [
   "ignored",
   "failed",
   "skipped",
+  "waiting",
 ] as const;
 
 export type RedemptionStatus = (typeof REDEMPTION_STATUSES)[number];
 
 export const REDEMPTION_TRANSITIONS: Record<RedemptionStatus, readonly RedemptionStatus[]> = {
-  received: ["accepted", "rejected", "ignored", "failed", "skipped"],
+  received: ["accepted", "rejected", "ignored", "failed", "skipped", "waiting"],
   ignored: ["received", "rejected"],
+  // En espera por cooldown: puede dispararse (accepted), omitirse (skipped) o
+  // descartarse al desactivar/borrar la recompensa (ignored, rechazo a mano).
+  waiting: ["accepted", "rejected", "ignored", "failed", "skipped"],
   accepted: [],
   rejected: [],
   failed: [],
@@ -54,6 +58,8 @@ export function redemptionStatusLabel(status: RedemptionStatus): string {
       return "Rechazado";
     case "ignored":
       return "Omitido (pendiente)";
+    case "waiting":
+      return "En espera por cooldown";
     case "failed":
       return "Fallido";
     case "skipped":

@@ -41,7 +41,8 @@ export type ProcessOutcome =
   | { outcome: "fired" }
   | { outcome: "skipped"; reason?: string }
   | { outcome: "no_match"; reason?: string }
-  | { outcome: "error"; reason?: string };
+  | { outcome: "error"; reason?: string }
+  | { outcome: "waiting"; reason?: string };
 
 export interface RedemptionCoordinatorOptions {
   db: SqliteDatabase;
@@ -165,6 +166,14 @@ export class RedemptionCoordinator {
     if (outcome.outcome === "fired") {
       // `PlayClip` ya aceptó el canje al encolar; acá solo se refleja.
       return this.settleFromRecord(event, "accepted", null);
+    }
+
+    if (outcome.outcome === "waiting") {
+      // En espera por cooldown: NO se resuelve en la plataforma todavía (queda
+      // pendiente hasta que suene). La alerta se acepta cuando se encola.
+      const reason = outcome.reason ?? "En espera por cooldown";
+      this.transitionFromCurrent(event, "waiting", reason);
+      return { status: "waiting", reason };
     }
 
     // Omitido: sin regla, cooldown o sin permiso.

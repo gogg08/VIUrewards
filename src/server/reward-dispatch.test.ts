@@ -6,8 +6,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  getReward,
   openMemoryDatabase,
   setClipMissing,
+  setRewardLastFired,
   upsertClip,
   upsertReward,
   type RewardRecord,
@@ -17,7 +19,7 @@ import { createEvent, type NormalizedEvent, type ResolveOutcome } from "../event
 import { AlertQueue } from "../queue/index.ts";
 import { RuleEngine } from "../rules/index.ts";
 import type { AudioPlayback } from "./protocol.ts";
-import { RewardDispatcher } from "./reward-dispatch.ts";
+import { RewardDispatcher, type WaitPolicy } from "./reward-dispatch.ts";
 
 const REWARD_REMOTE = "rw-1";
 
@@ -85,15 +87,24 @@ interface Harness {
   resolutions: Array<{ id: string; outcome: ResolveOutcome }>;
   clock: { value: number };
   setAudioRecipients: (count: number) => void;
+  /** Simula que el clip de la recompensa terminó de reproducirse (sella el cooldown). */
+  finish: (rewardId: string) => void;
+  setWaitPolicy: (policy: WaitPolicy) => void;
+  /** Simula que la recompensa tiene/ya no tiene un clip en curso. */
+  setBusy: (busy: boolean) => void;
 }
 
-function makeHarness(): Harness {
+function makeHarness(options: { waitPolicy?: WaitPolicy } = {}): Harness {
   const db = openMemoryDatabase();
   const queue = new AlertQueue();
   const audios: AudioPlayback[] = [];
   const resolutions: Array<{ id: string; outcome: ResolveOutcome }> = [];
   const clock = { value: 1_000 };
   let audioRecipients = 1;
+  let waitPolicy: WaitPolicy = options.waitPolicy ?? "skip";
+  let rewardBusy = false;
+  // Cola de espera mínima en memoria (un solo nivel), para probar el despacho.
+  const waiting: Array<{ rewardId: string; event: NormalizedEvent }> = [];
   const resolveEvent = async (event: NormalizedEvent, outcome: ResolveOutcome): Promise<void> => {
     resolutions.push({ id: event.id, outcome });
   };
@@ -127,6 +138,19 @@ function makeHarness(): Harness {
     globalVolume: () => 100,
     defaultMaxDuration: () => 30,
     maxVoices: () => 8,
+    waitPolicy: () => waitPolicy,
+    isRewardBusy: () => rewardBusy,
+    markPlay: () => {
+      // No hace falta el id acá: el harness dispara el siguiente a mano.
+    },
+    admitWait: (reward, event) => {
+      if (waiting.some((item) => item.event.id === event.id)) return { admitted: false, reason: "duplicate" };
+      if (waiting.filter((item) => item.rewardId === reward.id).length >= 20) {
+        return { admitted: false, reason: "full" };
+      }
+      waiting.push({ rewardId: reward.id, event });
+      return { admitted: true };
+    },
   });
 
   return {
@@ -138,6 +162,22 @@ function makeHarness(): Harness {
     clock,
     setAudioRecipients: (count) => {
       audioRecipients = count;
+    },
+    setWaitPolicy: (policy) => {
+      waitPolicy = policy;
+    },
+    setBusy: (busy) => {
+      rewardBusy = busy;
+    },
+    finish: (rewardId) => {
+      setRewardLastFired(db, rewardId, clock.value);
+      // Dispara el siguiente en espera, si hay.
+      const index = waiting.findIndex((item) => item.rewardId === rewardId);
+      if (index >= 0) {
+        const [next] = waiting.splice(index, 1);
+        const reward = getReward(db, rewardId);
+        if (reward) void dispatcher.dispatchWaiting(reward, next.event);
+      }
     },
   };
 }
@@ -157,14 +197,13 @@ describe("modo cola: cooldown global", () => {
     const h = makeHarness();
     addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ cooldownSec: 30 }));
-    // Dos canjes en el mismo ciclo: se lanzan sin esperar el primero.
-    const [first, second] = await Promise.all([
-      h.dispatcher.process(rewardEvent("c1")),
-      h.dispatcher.process(rewardEvent("c2")),
-    ]);
+    // El primer canje encola y «termina» (sella el cooldown al terminar el clip).
+    const first = await h.dispatcher.process(rewardEvent("c1"));
     expect(first.outcome).toBe("fired");
+    h.finish("local-1");
+    // El segundo llega dentro del cooldown y se omite con el motivo de siempre.
+    const second = await h.dispatcher.process(rewardEvent("c2"));
     expect(second).toMatchObject({ outcome: "skipped", reason: "cooldown, faltan 30 s" });
-    // Solo un ítem disparado: el cooldown quedó registrado en el primer ciclo.
     expect(h.resolutions).toEqual([{ id: "c1", outcome: "accept" }]);
   });
 
@@ -185,6 +224,7 @@ describe("modo cola: cooldown global", () => {
     addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ cooldownSec: 30 }));
     await h.dispatcher.process(rewardEvent("c1"));
+    h.finish("local-1");
     // Otro despachador, misma base: el last_fired_at se lee de la fila.
     const again = new RewardDispatcher({
       db: h.db,
@@ -337,6 +377,7 @@ describe("clip con archivo ausente (missing)", () => {
     addClip(h.db, "clip-1", true);
     upsertReward(h.db, reward({ repetition: "queue", cooldownSec: 30 }));
     expect((await h.dispatcher.process(rewardEvent("c1"))).outcome).toBe("fired");
+    h.finish("local-1");
     expect(await h.dispatcher.process(rewardEvent("c2"))).toMatchObject({
       outcome: "skipped",
       reason: "cooldown, faltan 30 s",
@@ -375,5 +416,101 @@ describe("modo cola con solo audio", () => {
     const result = await dispatcher.process(rewardEvent("c1"));
     expect(result.outcome).toBe("fired");
     expect(queue.getState().current?.params.audioOnly).toBe(true);
+  });
+});
+
+describe("espera por cooldown (poner en cola)", () => {
+  it("con la política 'queue' el canje dentro del cooldown queda en espera, no se omite", async () => {
+    const h = makeHarness({ waitPolicy: "queue" });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 30 }));
+    expect((await h.dispatcher.process(rewardEvent("c1"))).outcome).toBe("fired");
+    h.finish("local-1");
+    const second = await h.dispatcher.process(rewardEvent("c2"));
+    expect(second).toMatchObject({ outcome: "waiting" });
+  });
+
+  it("al terminar el primero se dispara el siguiente en espera (uno por uno)", async () => {
+    const h = makeHarness({ waitPolicy: "queue" });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 30 }));
+    await h.dispatcher.process(rewardEvent("c1"));
+    h.finish("local-1");
+    await h.dispatcher.process(rewardEvent("c2"));
+    // El fin del primer clip no dispara el c2 todavía: hay que cumplir el cooldown.
+    expect(h.resolutions).toEqual([{ id: "c1", outcome: "accept" }]);
+    // Al cumplirse el cooldown (30 s) y terminar de nuevo, se dispara c2.
+    h.clock.value += 30_000;
+    h.finish("local-1");
+    expect(h.resolutions).toEqual([
+      { id: "c1", outcome: "accept" },
+      { id: "c2", outcome: "accept" },
+    ]);
+  });
+
+  it("con la política 'skip' el canje dentro del cooldown se omite (como antes)", async () => {
+    const h = makeHarness({ waitPolicy: "skip" });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 30 }));
+    await h.dispatcher.process(rewardEvent("c1"));
+    h.finish("local-1");
+    const second = await h.dispatcher.process(rewardEvent("c2"));
+    expect(second).toMatchObject({ outcome: "skipped", reason: "cooldown, faltan 30 s" });
+  });
+
+  it("el canje en espera NO se acepta hasta que dispara", async () => {
+    const h = makeHarness({ waitPolicy: "queue" });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 30 }));
+    await h.dispatcher.process(rewardEvent("c1"));
+    h.finish("local-1");
+    await h.dispatcher.process(rewardEvent("c2"));
+    // Ni c2 ni c1 vuelven a aceptarse hasta que c2 dispare.
+    expect(h.resolutions).toEqual([{ id: "c1", outcome: "accept" }]);
+  });
+
+  it("un clip ausente nunca entra a la espera (se omite por el clip)", async () => {
+    const h = makeHarness({ waitPolicy: "queue" });
+    addClip(h.db, "clip-1", true);
+    setClipMissing(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 30 }));
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+    expect(result).toMatchObject({ outcome: "skipped", reason: "falta el archivo del clip" });
+  });
+
+  it("dispatchWaiting omite si el clip desapareció mientras esperaba", async () => {
+    const h = makeHarness({ waitPolicy: "queue" });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 30 }));
+    await h.dispatcher.process(rewardEvent("c1"));
+    h.finish("local-1");
+    await h.dispatcher.process(rewardEvent("c2"));
+    // El archivo se borra mientras el canje espera.
+    setClipMissing(h.db, "clip-1", true);
+    h.clock.value += 30_000;
+    const rewardRecord = getReward(h.db, "local-1");
+    const fired = await h.dispatcher.dispatchWaiting(rewardRecord!, rewardEvent("c2"));
+    expect(fired).toMatchObject({ outcome: "skipped", reason: "falta el archivo del clip" });
+  });
+
+  it("con la recompensa ocupada (clip en curso) el canje entra a la espera aunque el cooldown figure vencido", async () => {
+    const h = makeHarness({ waitPolicy: "queue" });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 0 })); // sin cooldown: sólo la ocupa el clip
+    h.setBusy(true);
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+    expect(result).toMatchObject({ outcome: "waiting" });
+    // No se encoló nada: el canje quedó esperando.
+    expect(h.queue.getState().size).toBe(0);
+  });
+
+  it("con la recompensa ocupada y política 'skip' el canje se omite con motivo de cooldown", async () => {
+    const h = makeHarness({ waitPolicy: "skip" });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ cooldownSec: 30 }));
+    h.setBusy(true);
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+    expect(result.outcome).toBe("skipped");
+    expect(result.reason).toBe("cooldown, faltan 30 s");
   });
 });

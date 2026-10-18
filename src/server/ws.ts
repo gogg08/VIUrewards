@@ -54,6 +54,13 @@ export interface WebSocketOptions {
   resolveClipUrl: (clipId: string) => string;
   /** Versión del overlay; viaja en el mensaje `state` para que el overlay se recargue si quedó viejo. */
   overlayVersion?: string;
+  /**
+   * Se llama cuando un clip **terminó de reproducirse** (el overlay avisó `ended`
+   * o venció el watchdog). El servidor lo usa para sellar el fin de la recompensa
+   * (el cooldown cuenta desde acá, no desde que arrancó) y para disparar el
+   * siguiente canje en espera. NO se llama al saltar un clip a mano.
+   */
+  onItemFinished?: (item: QueueItem) => void;
 }
 
 const WS_PATH = "/ws";
@@ -147,7 +154,9 @@ export function attachWebSocket(
       const state = queue.getState();
       if (state.current?.id !== watchdogItemId) return;
       debug(`watchdog: "${watchdogItemId}" superó ${durationSec}s + ${marginMs}ms sin fin; avanzo la cola`);
+      const finished = state.current;
       queue.complete(watchdogItemId ?? undefined);
+      if (finished) options.onItemFinished?.(finished);
     }, durationSec * 1000 + Math.max(0, marginMs));
     watchdogTimer.unref?.();
   }
@@ -262,7 +271,9 @@ export function attachWebSocket(
         ws.send(JSON.stringify(stateMessage()));
       } else if (message.type === "ended") {
         debug(`overlay avisó fin de "${message.itemId}"${message.reason ? ` (${message.reason})` : ""}`);
+        const finished = queue.getState().current;
         queue.complete(message.itemId);
+        if (finished && finished.id === message.itemId) options.onItemFinished?.(finished);
       } else if (message.type === "diag") {
         logDiag(message.diag);
       } else if (message.type === "error") {

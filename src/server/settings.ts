@@ -26,8 +26,14 @@ export const SETTING_REDEMPTIONS_POLL_INTERVAL = "redemptions.pollIntervalMs";
 export const SETTING_REDEMPTIONS_ON_SKIP = "redemptions.onSkip";
 export const SETTING_REDEMPTIONS_OLD_MINUTES = "redemptions.oldMinutes";
 export const SETTING_REDEMPTIONS_OLD_ACTION = "redemptions.oldAction";
+export const SETTING_REDEMPTIONS_ON_COOLDOWN = "redemptions.onCooldown";
+export const SETTING_REDEMPTIONS_WAIT_MAX = "redemptions.waitMax";
+export const SETTING_REDEMPTIONS_WAIT_TIMEOUT_MIN = "redemptions.waitTimeoutMin";
 
 export const DEFAULT_PORT = 8787;
+
+/** Qué hacer cuando un canje llega dentro del cooldown de una recompensa `queue`. */
+export type OnCooldownPolicy = "queue" | "skip";
 
 /** Política al omitir un canje (sin regla, cooldown o sin permiso). */
 export type OnSkipPolicy = "leave_pending" | "reject";
@@ -36,6 +42,7 @@ export type OldRedemptionAction = "ignore" | "reject" | "process";
 
 export const ON_SKIP_POLICIES: readonly OnSkipPolicy[] = ["leave_pending", "reject"];
 export const OLD_REDEMPTION_ACTIONS: readonly OldRedemptionAction[] = ["ignore", "reject", "process"];
+export const ON_COOLDOWN_POLICIES: readonly OnCooldownPolicy[] = ["queue", "skip"];
 
 /** Configuración resuelta, con todos los valores aplicados. */
 export interface AppSettings {
@@ -65,6 +72,12 @@ export interface AppSettings {
   redemptionsOldMinutes: number;
   /** Qué hacer con los canjes viejos al iniciar. */
   redemptionsOldAction: OldRedemptionAction;
+  /** Qué hacer cuando un canje llega dentro del cooldown de la recompensa. */
+  redemptionsOnCooldown: OnCooldownPolicy;
+  /** Máximo de canjes en espera por recompensa. */
+  redemptionsWaitMax: number;
+  /** Espera máxima por canje en espera, en minutos. */
+  redemptionsWaitTimeoutMin: number;
 }
 
 /** Campos editables desde el dashboard. */
@@ -82,6 +95,9 @@ export interface SettingsPatch {
   redemptionsOnSkip?: OnSkipPolicy;
   redemptionsOldMinutes?: number;
   redemptionsOldAction?: OldRedemptionAction;
+  redemptionsOnCooldown?: OnCooldownPolicy;
+  redemptionsWaitMax?: number;
+  redemptionsWaitTimeoutMin?: number;
 }
 
 /** Rangos aceptados para cada valor numérico. */
@@ -96,6 +112,8 @@ export const SETTINGS_LIMITS = {
   eventHistoryMax: { min: 10, max: 5000 },
   redemptionsPollIntervalMs: { min: 1000, max: 60000 },
   redemptionsOldMinutes: { min: 0, max: 1440 },
+  redemptionsWaitMax: { min: 1, max: 200 },
+  redemptionsWaitTimeoutMin: { min: 1, max: 120 },
 } as const;
 
 const MAX_DOMAINS = 50;
@@ -115,7 +133,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   redemptionsPollIntervalMs: 5000,
   redemptionsOnSkip: "leave_pending",
   redemptionsOldMinutes: 10,
-  redemptionsOldAction: "ignore",
+  redemptionsOldAction: "process",
+  redemptionsOnCooldown: "queue",
+  redemptionsWaitMax: 20,
+  redemptionsWaitTimeoutMin: 10,
 };
 
 export type SettingsValidation =
@@ -133,9 +154,11 @@ const NUMERIC_KEYS = [
   "eventHistoryMax",
   "redemptionsPollIntervalMs",
   "redemptionsOldMinutes",
+  "redemptionsWaitMax",
+  "redemptionsWaitTimeoutMin",
 ] as const;
 
-const ENUM_KEYS = ["redemptionsOnSkip", "redemptionsOldAction"] as const;
+const ENUM_KEYS = ["redemptionsOnSkip", "redemptionsOldAction", "redemptionsOnCooldown"] as const;
 
 const KNOWN_KEYS = new Set<string>([...NUMERIC_KEYS, ...ENUM_KEYS, "allowedDomains"]);
 
@@ -253,6 +276,17 @@ export function validateSettingsPatch(patch: unknown): SettingsValidation {
     }
     value.redemptionsOldAction = raw as OldRedemptionAction;
   }
+  if ("redemptionsOnCooldown" in record) {
+    const raw = record.redemptionsOnCooldown;
+    if (typeof raw !== "string" || !ON_COOLDOWN_POLICIES.includes(raw as OnCooldownPolicy)) {
+      return {
+        ok: false,
+        reason: "INVALID_SETTINGS",
+        message: "redemptionsOnCooldown debe ser 'queue' o 'skip'.",
+      };
+    }
+    value.redemptionsOnCooldown = raw as OnCooldownPolicy;
+  }
 
   if ("allowedDomains" in record) {
     const raw = record.allowedDomains;
@@ -368,6 +402,24 @@ export function readSettings(db: SqliteDatabase): AppSettings {
       DEFAULT_SETTINGS.redemptionsOldAction,
       OLD_REDEMPTION_ACTIONS,
     ),
+    redemptionsOnCooldown: readEnum(
+      db,
+      SETTING_REDEMPTIONS_ON_COOLDOWN,
+      DEFAULT_SETTINGS.redemptionsOnCooldown,
+      ON_COOLDOWN_POLICIES,
+    ),
+    redemptionsWaitMax: readNumber(
+      db,
+      SETTING_REDEMPTIONS_WAIT_MAX,
+      DEFAULT_SETTINGS.redemptionsWaitMax,
+      SETTINGS_LIMITS.redemptionsWaitMax,
+    ),
+    redemptionsWaitTimeoutMin: readNumber(
+      db,
+      SETTING_REDEMPTIONS_WAIT_TIMEOUT_MIN,
+      DEFAULT_SETTINGS.redemptionsWaitTimeoutMin,
+      SETTINGS_LIMITS.redemptionsWaitTimeoutMin,
+    ),
   };
 }
 
@@ -405,5 +457,14 @@ export function writeSettings(db: SqliteDatabase, patch: SettingsPatch): void {
   }
   if (patch.redemptionsOldAction !== undefined) {
     setSetting(db, SETTING_REDEMPTIONS_OLD_ACTION, patch.redemptionsOldAction);
+  }
+  if (patch.redemptionsOnCooldown !== undefined) {
+    setSetting(db, SETTING_REDEMPTIONS_ON_COOLDOWN, patch.redemptionsOnCooldown);
+  }
+  if (patch.redemptionsWaitMax !== undefined) {
+    setSetting(db, SETTING_REDEMPTIONS_WAIT_MAX, String(patch.redemptionsWaitMax));
+  }
+  if (patch.redemptionsWaitTimeoutMin !== undefined) {
+    setSetting(db, SETTING_REDEMPTIONS_WAIT_TIMEOUT_MIN, String(patch.redemptionsWaitTimeoutMin));
   }
 }

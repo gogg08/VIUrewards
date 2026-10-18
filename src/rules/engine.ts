@@ -18,7 +18,7 @@ import { defaultActionResolver } from "./actions.ts";
 import { hasPermission, matchesTrigger } from "./matching.ts";
 import type { ActionResolver, Rule, RuleActionContext, RuleActionOutcome } from "./types.ts";
 
-export type EngineOutcome = "fired" | "skipped" | "error" | "no_match" | "duplicate";
+export type EngineOutcome = "fired" | "skipped" | "error" | "no_match" | "duplicate" | "waiting";
 
 export interface EngineResult {
   eventId: string;

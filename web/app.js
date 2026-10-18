@@ -162,7 +162,7 @@ function dashboardApp() {
     // Modo del logo (Parte C): "auto" | "dynamic" | "static". Vive en localStorage.
     logoMode: "auto",
 
-    queue: { status: "idle", current: null, pending: [], size: 0, overlay: { connected: false, clients: 0 } },
+    queue: { status: "idle", current: null, pending: [], size: 0, cooldownWait: [], overlay: { connected: false, clients: 0 } },
 
     settings: {
       globalVolume: 100,
@@ -175,7 +175,10 @@ function dashboardApp() {
       redemptionsPollIntervalMs: 5000,
       redemptionsOnSkip: "leave_pending",
       redemptionsOldMinutes: 10,
-      redemptionsOldAction: "ignore",
+      redemptionsOldAction: "process",
+      redemptionsOnCooldown: "queue",
+      redemptionsWaitMax: 20,
+      redemptionsWaitTimeoutMin: 10,
     },
     settingsForm: { maxVideoMb: 100, domainsText: "" },
     // Resultado del guardado POR PESTAÑA: guardar una no limpia el aviso de otra.
@@ -1505,6 +1508,20 @@ function dashboardApp() {
           1440,
           "La antigüedad de los canjes",
         );
+        const redemptionsWaitMax = intInRange(
+          "redemptionsWaitMax",
+          this.settings.redemptionsWaitMax,
+          1,
+          200,
+          "El máximo de canjes en espera",
+        );
+        const redemptionsWaitTimeoutMin = intInRange(
+          "redemptionsWaitTimeoutMin",
+          this.settings.redemptionsWaitTimeoutMin,
+          1,
+          120,
+          "La espera máxima por canje",
+        );
         if (Object.keys(this.settingsFieldErrors).length > 0) {
           this.settingsMessages[tab] = "Revisá los valores marcados.";
           return;
@@ -1516,6 +1533,9 @@ function dashboardApp() {
           redemptionsOldMinutes,
           redemptionsOnSkip: this.settings.redemptionsOnSkip,
           redemptionsOldAction: this.settings.redemptionsOldAction,
+          redemptionsOnCooldown: this.settings.redemptionsOnCooldown,
+          redemptionsWaitMax,
+          redemptionsWaitTimeoutMin,
         });
       } else if (tab === "library") {
         const maxVideoDurationSec = intInRange(
@@ -2937,6 +2957,8 @@ function dashboardApp() {
       switch (outcome) {
         case "fired":
           return "ok";
+        case "waiting":
+          return "warn";
         case "skipped":
         case "duplicate":
           return "warn";
@@ -2951,8 +2973,12 @@ function dashboardApp() {
       switch (entry.outcome) {
         case "fired":
           return entry.reason === "superpuesto" ? "Disparó · superpuesto" : "Disparó";
+        case "waiting":
+          return entry.reason === "espera descartada"
+            ? "En espera por cooldown · descartada"
+            : "En espera por cooldown";
         case "skipped":
-          return "Omitido";
+          return entry.reason ? "Omitido · " + entry.reason : "Omitido";
         case "error":
           return "Error";
         case "no_match":

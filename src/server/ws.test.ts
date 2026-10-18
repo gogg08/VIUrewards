@@ -491,3 +491,302 @@ describe("audioOnly viaja en el mensaje play (camino de canje real)", () => {
     ws.close();
   });
 });
+
+describe("espera por cooldown (integración con el servidor real)", () => {
+  function fakeKickIntegration(): PlatformIntegration {
+    class FakeKickSource extends EmitterEventSource {
+      async resolve(): Promise<void> {
+        /* El adaptador real habla con la API; acá no hace falta. */
+      }
+    }
+    const source = new FakeKickSource({
+      id: "kick",
+      platform: "kick",
+      capabilities: { types: ["reward_redeemed"], resolve: true },
+    });
+    const account = {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      state: "connected" as const,
+      accountId: "u1",
+      accountName: "Canal",
+      capabilities: source.capabilities,
+      hasCredentials: true,
+      clientId: "cid",
+      lastError: null,
+    };
+    const notImplemented = async (): Promise<never> => {
+      throw new Error("no implementado en el test");
+    };
+    return {
+      id: "kick",
+      platform: "kick",
+      name: "Kick",
+      source,
+      status: () => account,
+      setCredentials: notImplemented,
+      clearCredentials: async () => {},
+      beginLink: notImplemented,
+      completeLink: notImplemented,
+      unlink: async () => {},
+      test: notImplemented,
+      diagnostics: () => ({
+        enabled: true,
+        intervalMs: 5000,
+        lastCheckAt: null,
+        lastResult: null,
+        lastError: null,
+        latencyLastMs: null,
+        latencyMinMs: null,
+        latencyTypicalMs: null,
+        latencyMaxMs: null,
+        rateLimit429Count: 0,
+        lastRateLimitHeaders: {},
+      }),
+      listRewards: notImplemented,
+      createReward: notImplemented,
+      updateReward: notImplemented,
+      deleteReward: notImplemented,
+      listPendingRedemptions: notImplemented,
+      rejectRedemptions: notImplemented,
+      start: async () => {},
+      stop: async () => {},
+    };
+  }
+
+  async function withCooldownServer(): Promise<{ server: AppServer; port: number }> {
+    const parent = mkdtempSync(join(tmpdir(), "ws-wait-test-"));
+    dirs.push(parent);
+    const mediaDir = join(parent, "media");
+    mkdirSync(mediaDir, { recursive: true });
+    const server = await createAppServer({
+      mediaDir,
+      db: openMemoryDatabase(),
+      port: 0,
+      requireOverlay: true,
+      platforms: [fakeKickIntegration()],
+    });
+    servers.push(server);
+    const info = await server.start();
+    // Cooldown largo para que el segundo canje quede en espera durante el test.
+    server.db
+      .prepare(
+        `INSERT INTO clips (id, source_url, title, duration_sec, size_bytes, file, created_at)
+         VALUES ('clip-1','https://x/y','Goku',4,4,'clip-1.mp4','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    server.db
+      .prepare(
+        `INSERT INTO rewards (id, platform, remote_reward_id, title, cost, color, description,
+           clip_id, volume, max_duration_sec, cooldown_sec, repetition, audio_only, desired_enabled,
+           managed, synced, rule_id, created_at, updated_at)
+         VALUES ('local-1','kick','rw-1','Alerta',100,'#64f7d9','', 'clip-1',1,30,600,'queue',0,1,1,1,'rule-1',
+           '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    server.db
+      .prepare(
+        `INSERT INTO rules (id, name, enabled, trigger_json, conditions_json, action_json, created_at, updated_at)
+         VALUES ('rule-1','Recompensa: Alerta',1,
+           '{"type":"reward_redeemed","rewardId":"rw-1"}',
+           '{"permission":"everyone"}',
+           '{"kind":"play_clip","clipId":"clip-1","label":"Alerta"}',
+           '2026-01-01T00:00:00.000Z','2026-01-01T00:00:00.000Z')`,
+      )
+      .run();
+    server.engine.setRules(listRules(server.db).map(toRule));
+    return { server, port: info.port };
+  }
+
+  function redeem(id: string, name: string) {
+    return createEvent({
+      id,
+      platform: "kick",
+      type: "reward_redeemed",
+      user: { id: "u-" + id, name, roles: [] },
+      payload: { rewardId: "rw-1", rewardTitle: "Alerta", userInput: "" },
+    });
+  }
+
+  it("un canje dentro del cooldown queda en espera y se ve en /api/state", async () => {
+    const { server, port } = await withCooldownServer();
+    const cookie = `czero_session=${server.auth.createSession()}`;
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+
+    await server.coordinator.receive(redeem("c1", "Ana"));
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const first = messages.find((m) => m.type === "play")?.item as { id: string };
+    // El primer clip terminó: recién ahí empieza a contar el cooldown (10 min).
+    ws.send(JSON.stringify({ type: "ended", itemId: first.id }));
+    await waitFor(() => server.queue.getState().status === "idle");
+
+    // Segundo canje dentro del cooldown: queda en espera, no se omite.
+    const second = await server.coordinator.receive(redeem("c2", "Beto"));
+    expect(second.status).toBe("waiting");
+
+    const state = await server.app.inject({ method: "GET", url: "/api/state", headers: { cookie } });
+    const wait = state.json().cooldownWait as Array<{ rewardId: string; title: string; userName: string }>;
+    expect(wait).toHaveLength(1);
+    expect(wait[0].title).toBe("Alerta");
+    expect(wait[0].userName).toBe("Beto");
+
+    ws.close();
+  });
+
+  it("al terminar el primero, el canje en espera dispara (uno por uno)", async () => {
+    const { server, port } = await withCooldownServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+
+    // Cooldown corto (1 s) para que el canje en espera dispare dentro del test.
+    server.db.prepare(`UPDATE rewards SET cooldown_sec = 1 WHERE id = 'local-1'`).run();
+
+    await server.coordinator.receive(redeem("c1", "Ana"));
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const first = messages.find((m) => m.type === "play")?.item as { id: string };
+
+    // El primer clip termina: empieza a contar el cooldown (1 s). El segundo canje
+    // entra DENTRO del cooldown, así que queda en espera.
+    ws.send(JSON.stringify({ type: "ended", itemId: first.id }));
+    await waitFor(() => server.queue.getState().status === "idle");
+    const second = await server.coordinator.receive(redeem("c2", "Beto"));
+    expect(second.status).toBe("waiting");
+
+    // Al cumplirse el cooldown, el planificador dispara el canje en espera.
+    await waitFor(() => messages.filter((m) => m.type === "play").length >= 2, 4000);
+    const plays = messages.filter((m) => m.type === "play") as Array<{ item: { id: string } }>;
+    expect(plays).toHaveLength(2);
+    expect(plays[1].item.id).not.toBe(first.id);
+
+    ws.close();
+  });
+
+  it("dos canjes seguidos con cooldown NO se reproducen pegados (el 2º espera)", async () => {
+    const { server, port } = await withCooldownServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    server.db.prepare(`UPDATE rewards SET cooldown_sec = 1 WHERE id = 'local-1'`).run();
+
+    // El primer canje arranca a reproducirse (nadie avisó el fin todavía).
+    await server.coordinator.receive(redeem("c1", "Ana"));
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const first = messages.find((m) => m.type === "play")?.item as { id: string };
+
+    // Un segundo canje llega MIENTRAS el primero suena: debe quedar en espera,
+    // no encolarse pegado detrás.
+    const second = await server.coordinator.receive(redeem("c2", "Beto"));
+    expect(second.status).toBe("waiting");
+
+    // Mientras el primero no terminó, no sale un segundo `play`.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(messages.filter((m) => m.type === "play")).toHaveLength(1);
+
+    // Al terminar el primero, recién ahí corre su cooldown (1 s) y sale el segundo.
+    const endedAt = Date.now();
+    ws.send(JSON.stringify({ type: "ended", itemId: first.id }));
+    await waitFor(() => messages.filter((m) => m.type === "play").length >= 2, 4000);
+    const secondAt = Date.now();
+    expect(secondAt - endedAt).toBeGreaterThanOrEqual(800);
+
+    ws.close();
+  });
+
+  it("dos canjes en espera disparan separados por el cooldown, no pegados", async () => {
+    const { server, port } = await withCooldownServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+
+    // Cooldown corto (1 s) para que el test no tarde.
+    server.db.prepare(`UPDATE rewards SET cooldown_sec = 1 WHERE id = 'local-1'`).run();
+
+    await server.coordinator.receive(redeem("c1", "Ana"));
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const first = messages.find((m) => m.type === "play")?.item as { id: string };
+    ws.send(JSON.stringify({ type: "ended", itemId: first.id }));
+    await waitFor(() => server.queue.getState().status === "idle");
+
+    // Dos canjes dentro del cooldown: uno detrás del otro en la espera.
+    expect((await server.coordinator.receive(redeem("c2", "Beto"))).status).toBe("waiting");
+    expect((await server.coordinator.receive(redeem("c3", "Caro"))).status).toBe("waiting");
+
+    // El segundo (primero de la espera) sale al cumplirse el cooldown.
+    await waitFor(() => messages.filter((m) => m.type === "play").length >= 2, 4000);
+    const secondPlay = messages.filter((m) => m.type === "play")[1] as { item: { id: string } };
+    const secondAt = Date.now();
+
+    // El tercero NO debe salir pegado: tiene que esperar el cooldown de nuevo.
+    // No llegó todavía mientras no se avise el fin del segundo.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    expect(messages.filter((m) => m.type === "play")).toHaveLength(2);
+
+    // Al terminar el segundo, recién ahí corre su cooldown y sale el tercero.
+    ws.send(JSON.stringify({ type: "ended", itemId: secondPlay.item.id }));
+    await waitFor(() => messages.filter((m) => m.type === "play").length >= 3, 4000);
+    const thirdAt = Date.now();
+    // Separación mínima esperada: ~1 s (cooldown). Con el bug previo salían pegados.
+    expect(thirdAt - secondAt).toBeGreaterThanOrEqual(800);
+
+    ws.close();
+  });
+
+  it("saltar el clip a mano NO deja la recompensa ocupada para siempre", async () => {
+    const { server, port } = await withCooldownServer();
+    const cookie = `czero_session=${server.auth.createSession()}`;
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+
+    // Sin cooldown: si `isRewardBusy` se quedara pegado tras saltar, el canje
+    // siguiente entraría a la espera y NUNCA dispararía.
+    server.db.prepare(`UPDATE rewards SET cooldown_sec = 0 WHERE id = 'local-1'`).run();
+
+    await server.coordinator.receive(redeem("c1", "Ana"));
+    await waitFor(() => messages.some((m) => m.type === "play"));
+
+    // Saltar a mano el clip en curso (no dispara onItemFinished).
+    const skipped = await server.app.inject({
+      method: "POST",
+      url: "/api/skip",
+      headers: { cookie },
+    });
+    expect(skipped.statusCode).toBe(200);
+    await waitFor(() => server.queue.getState().status === "idle");
+
+    // Un canje nuevo debe disparar enseguida (la recompensa ya no está ocupada).
+    const next = await server.coordinator.receive(redeem("c2", "Beto"));
+    expect(next.status).not.toBe("waiting");
+    await waitFor(() => messages.filter((m) => m.type === "play").length >= 2, 4000);
+
+    ws.close();
+  });
+
+  it("vaciar la cola NO deja la recompensa ocupada para siempre", async () => {
+    const { server, port } = await withCooldownServer();
+    const cookie = `czero_session=${server.auth.createSession()}`;
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+
+    // Cooldown 0: con la recompensa ocupada, el 2º canje igual queda en espera.
+    server.db.prepare(`UPDATE rewards SET cooldown_sec = 0 WHERE id = 'local-1'`).run();
+
+    // El primer clip está sonando; el segundo queda en espera de cooldown.
+    await server.coordinator.receive(redeem("c1", "Ana"));
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    expect((await server.coordinator.receive(redeem("c2", "Beto"))).status).toBe("waiting");
+
+    // Vaciar la cola descarta la espera (el canje queda pendiente en la plataforma).
+    const cleared = await server.app.inject({
+      method: "POST",
+      url: "/api/clear",
+      headers: { cookie },
+    });
+    expect(cleared.statusCode).toBe(200);
+
+    // Terminar el clip actual: la recompensa deja de estar ocupada.
+    const first = messages.find((m) => m.type === "play")?.item as { id: string };
+    ws.send(JSON.stringify({ type: "ended", itemId: first.id }));
+    await waitFor(() => server.queue.getState().status === "idle");
+
+    // Un canje nuevo debe disparar enseguida (no quedó ocupada para siempre).
+    const next = await server.coordinator.receive(redeem("c3", "Caro"));
+    expect(next.status).not.toBe("waiting");
+    await waitFor(() => messages.filter((m) => m.type === "play").length >= 2, 4000);
+
+    ws.close();
+  });
+});

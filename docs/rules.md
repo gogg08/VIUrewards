@@ -83,8 +83,10 @@ en memoria** y se perdía al reiniciar. (Se descartó como causa el uso del
   `overlap` (superponer).
 - Solo hay **cooldown global por recompensa**, en segundos (0 = sin cooldown). El
   cooldown por usuario se eliminó de todo el sistema.
-- El cooldown cuenta desde el momento en que la alerta **se dispara**, con un
-  único **reloj local inyectable**. No se usa el `redeemed_at` de la plataforma.
+- El cooldown cuenta desde que la alerta **termina de reproducirse** (no desde que
+  se encola ni desde que se dispara), con un único **reloj local inyectable**. No
+  se usa el `redeemed_at` de la plataforma. El servidor sella `last_fired_at` al
+  completarse el ítem (aviso `ended` del overlay o *watchdog*), nunca al encolar.
 - `last_fired_at` se persiste en la fila de la recompensa (clave: id local) y
   sobrevive reinicios. Un `last_fired_at` en el futuro (cambio de hora) se
   considera vencido. Editar, activar, desactivar, recrear en la plataforma o
@@ -94,9 +96,10 @@ en memoria** y se perdía al reiniciar. (Se descartó como causa el uso del
   comprobación + el registro son **una sola operación atómica** (sin `await` en el
   medio), en `RewardDispatcher` (`src/server/reward-dispatch.ts`). Los canjes de un
   mismo ciclo se procesan **de a uno**, ordenados por `redeemed_at`.
+- **El clip se chequea ANTES del cooldown**: una recompensa sin clip (o con el
+  archivo ausente) se omite sin consumir cooldown ni entrar a la espera.
 - **Modo `queue`**: si dispara, se encola un `PlayClip` y el canje se acepta **al
-  encolar**. Si no, el canje queda omitido según la política global de omitidos,
-  con motivo `cooldown, faltan N s`.
+  encolar**. Si no, según la política `redemptionsOnCooldown` (ver abajo).
 - **Modo `overlap`**: **siempre es solo audio** (el interruptor "Solo audio" queda encendido y bloqueado). Nunca lo bloquea un
   cooldown, no entra en la cola y no lo afectan Saltar/Pausar/Reanudar/Vaciar. Al
   dispararse, el servidor manda un `playAudio` fire-and-forget a los overlays; el
@@ -111,6 +114,46 @@ marca del clip. El modo `overlap` la fuerza; un clip sin imagen también la fuer
 overlay reproduce el medio sin mostrar la imagen. `clips.audio_only` quedó en
 desuso (no se lee).
 
+### Canje dentro del cooldown: poner en cola (por defecto)
+
+Cuando un canje llega dentro del cooldown de una recompensa `queue`, la política
+`redemptionsOnCooldown` decide qué hacer:
+
+- **`queue` (por defecto)**: el canje entra a una **cola de espera de esa
+  recompensa** y suena cuando se libera, uno por uno, en orden de llegada (FIFO).
+  No se resuelve en la plataforma hasta que dispara: mientras espera queda
+  **pendiente** en Kick.
+- **`skip` (como antes)**: el canje se omite con el motivo `cooldown, faltan N s`.
+
+La espera vive en `CooldownWaiter` (`src/rules/cooldown-wait.ts`), un módulo puro
+con **un solo planificador por recompensa** (no un temporizador por canje) y
+reloj inyectable. Al vaciarse la espera no quedan temporizadores colgados.
+
+- **Idempotencia**: un mismo `event.id` no espera dos veces; el segundo intento
+  se omite con motivo `ya está en espera`.
+- **Tope de cantidad** (`redemptionsWaitMax`, por defecto 20): si la espera de una
+  recompensa está llena, los canjes nuevos se omiten con motivo `cola de espera
+  llena`.
+- **Espera máxima** (`redemptionsWaitTimeoutMin`, por defecto 10 min): al momento
+  de disparar se descartan (por antigüedad) los canjes que esperaron de más, con
+  motivo `espera máxima`.
+- **No sobrevive al reinicio**: la espera es en memoria. Al reiniciar se pierde y
+  los canjes siguen **pendientes** en la plataforma (no se rechazan).
+- **Descartar la espera**: desactivar, borrar o editar la recompensa descarta sus
+  canjes en espera, que quedan **pendientes** en la plataforma. `Vaciar` la cola
+  de reproducción descarta **todas** las esperas (tampoco rechaza).
+- El cooldown se arranca recién cuando el canje disparado **termina de
+  reproducirse**; recién ahí el servidor le avisa al planificador y este programa
+  al siguiente. **No** se reprograma al despachar: eso haría que los canjes en
+  espera salieran pegados, sin respetar el cooldown entre clips.
+- **Recompensa ocupada**: mientras la recompensa tenga un clip encolado o sonando
+  que todavía no terminó, un canje nuevo se trata como "en cooldown" (aunque el
+  `last_fired_at` figure vencido o el cooldown sea 0) y entra a la espera. "Ocupada"
+  se deriva del **estado vivo de la cola** (`current`/`pending`), no de un mapa
+  aparte: así, al **saltar** un clip a mano o al **vaciar** la cola (que NO disparan
+  el fin de reproducción) la recompensa deja de estar ocupada y puede volver a
+  disparar. Sin esto quedaría ocupada para siempre y sus canjes no sonarían nunca.
+
 ### Voces superpuestas en el overlay
 
 El overlay mantiene un **pool de voces** independiente del reproductor de video.
@@ -123,8 +166,10 @@ audio del contenedor (un `<audio>` dependería del soporte de mp4).
 
 ### Historial
 
-El historial muestra `Disparó`, `Disparó · superpuesto` y los omitidos con el
-motivo exacto: `cooldown, faltan N s`, `sin overlay conectado`, `sin clip`.
+El historial muestra `Disparó`, `Disparó · superpuesto`, `En espera por cooldown`
+(al entrar a la espera, y `· descartada` si se descarta) y los omitidos con el
+motivo exacto: `cooldown, faltan N s`, `cola de espera llena`, `ya está en espera`,
+`sin overlay conectado`, `sin clip`.
 
 ## Persistencia
 

@@ -29,6 +29,8 @@ import {
   getClip,
   getOrCreateSecret,
   getRuleRecord,
+  getReward,
+  findRewardByRemoteId,
   listClips,
   listHistory,
   listRewardsUsingClip,
@@ -37,6 +39,7 @@ import {
   reconcileClips,
   renameClip,
   setClipTrim,
+  setRewardLastFired,
   setSetting,
   SETTING_OVERLAY_KEY,
   toRule,
@@ -65,6 +68,7 @@ import {
   type NormalizedEvent,
 } from "../events/index.ts";
 import { RuleEngine, validateRuleInput, type EngineResult } from "../rules/index.ts";
+import { CooldownWaiter } from "../rules/cooldown-wait.ts";
 import type { Clip, MediaOptions } from "../media/index.ts";
 import { createPlatformIntegrations, type PlatformIntegration } from "../platforms/index.ts";
 import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index.ts";
@@ -276,6 +280,13 @@ const settingsSchema = {
     },
     port: { type: "integer", minimum: 1024, maximum: 65535 },
     eventHistoryMax: { type: "integer", minimum: 10, maximum: 5000 },
+    redemptionsPollIntervalMs: { type: "integer", minimum: 1000, maximum: 60000 },
+    redemptionsOnSkip: { type: "string", enum: ["leave_pending", "reject"] },
+    redemptionsOldMinutes: { type: "integer", minimum: 0, maximum: 1440 },
+    redemptionsOldAction: { type: "string", enum: ["ignore", "reject", "process"] },
+    redemptionsOnCooldown: { type: "string", enum: ["queue", "skip"] },
+    redemptionsWaitMax: { type: "integer", minimum: 1, maximum: 200 },
+    redemptionsWaitTimeoutMin: { type: "integer", minimum: 1, maximum: 120 },
   },
 } as const;
 
@@ -482,6 +493,112 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   // El hub del overlay se crea ya: así puede informar en todo momento cuántos
   // overlays hay conectados y la cola no arranca clips que nadie reproduce.
   const requireOverlay = options.requireOverlay ?? true;
+
+  // --- Espera por cooldown (Parte 1) -----------------------------------------
+  // El cooldown cuenta desde que el clip TERMINA de reproducirse. Cuando la cola
+  // da por terminado un ítem, se sella `last_fired_at` de su recompensa y se
+  // dispara el siguiente canje en espera. `itemReward` asocia cada ítem encolado
+  // (por una recompensa en modo cola) con su id local.
+  const debug = process.env.CZERO_DEBUG === "1";
+  const logDebug = (level: LogLevel, scope: string, message: string): void => {
+    if (level === "debug" && !debug) return;
+    logger.log(level, `[${scope}] ${message}`);
+    if (debug) console.log(`[${scope}] ${message}`);
+  };
+  const itemReward = new Map<string, string>();
+  // Recompensa en curso durante un disparo (la setea `markPlay` justo antes de
+  // que el motor encole). Sincrónico: `engine.handle` encola antes de su primer
+  // `await`, así que el sink lo lee en el mismo tick.
+  let pendingRewardId: string | null = null;
+  const nowMs = (): number => options.now?.() ?? Date.now();
+
+  // ¿La recompensa tiene una reproducción pendiente (encolada o sonando)? Se
+  // deriva del **estado vivo de la cola**, no de la sola presencia en
+  // `itemReward`: `onItemFinished` NO se llama al saltar un clip a mano ni al
+  // vaciar la cola, así que un ítem descartado por esos caminos quedaría en el
+  // mapa para siempre y la recompensa nunca volvería a disparar. Al mirar la
+  // cola real, un ítem saltado/vaciado desaparece del estado y deja de ocupar.
+  const isRewardBusy = (rewardId: string): boolean => {
+    const live = liveItemIds();
+    // Poda: descarta los mapeos de ítems que ya no están en la cola.
+    for (const itemId of [...itemReward.keys()]) {
+      if (!live.has(itemId)) itemReward.delete(itemId);
+    }
+    for (const itemId of live) {
+      if (itemReward.get(itemId) === rewardId) return true;
+    }
+    return false;
+  };
+
+  /** Ids de los ítems que siguen en la cola (actual o en espera). */
+  const liveItemIds = (): Set<string> => {
+    const state = queue.getState();
+    const live = new Set<string>(state.pending.map((item) => item.id));
+    if (state.current) live.add(state.current.id);
+    return live;
+  };
+
+  /**
+   * Descarta los mapeos de ítems que ya no están en la cola y devuelve las
+   * recompensas afectadas. Se llama tras `skip`/`clear`: esos caminos NO disparan
+   * `onItemFinished`, así que la recompensa dejaría de estar ocupada sin que nadie
+   * avise; hay que reprogramar su espera con `kick`.
+   */
+  const pruneItemReward = (): string[] => {
+    const live = liveItemIds();
+    const affected = new Set<string>();
+    for (const [itemId, rewardId] of [...itemReward]) {
+      if (!live.has(itemId)) {
+        itemReward.delete(itemId);
+        affected.add(rewardId);
+      }
+    }
+    return [...affected];
+  };
+
+  const finishReward = (rewardId: string): void => {
+    setRewardLastFired(db, rewardId, nowMs());
+    logDebug("debug", "dispatch", `rewards: ${rewardId} terminó; cooldown sellado`);
+  };
+
+  const waiter = new CooldownWaiter({
+    now: nowMs,
+    maxWaiting: () => readSettings(db).redemptionsWaitMax,
+    maxWaitMs: () => readSettings(db).redemptionsWaitTimeoutMin * 60_000,
+    cooldownMs: (rewardId) => {
+      const reward = getReward(db, rewardId);
+      return reward ? Math.max(0, reward.cooldownSec) * 1000 : 0;
+    },
+    lastFiredAt: (rewardId) => getReward(db, rewardId)?.lastFiredAt ?? null,
+    isBusy: isRewardBusy,
+    dispatch: (rewardId, entry) => {
+      const reward = getReward(db, rewardId);
+      if (!reward) return;
+      const event = entry.payload as NormalizedEvent;
+      void (async () => {
+        const result = await dispatcherRef.current?.dispatchWaiting(reward, event);
+        // Si el canje NO llegó a reproducirse (clip ausente, sin regla, error…),
+        // nadie va a avisar el fin y la espera quedaría colgada. Se reprograma el
+        // planificador para el siguiente: el cooldown ya se cumplió, así que
+        // dispara enseguida. Si SÍ se encoló (fired) o quedó pendiente por falta
+        // de overlay (waiting), el fin lo sellará `onItemFinished`.
+        if (result && result.outcome !== "fired" && result.outcome !== "waiting") {
+          waiter.kick(rewardId);
+        }
+      })();
+    },
+    onDrop: (rewardId, entry, reason) => {
+      const detail = reason === "full" ? "cola de espera llena" : "esperó demasiado";
+      logDebug("debug", "dispatch", `rewards: ${rewardId} canje ${entry.eventId} omitido (${detail})`);
+      void onWaitDropped(rewardId, entry.payload as NormalizedEvent, detail);
+    },
+  });
+
+  // Referencias rellenadas más abajo (el dispatcher y el coordinador se crean
+  // después de la cola y del motor).
+  const dispatcherRef: { current: RewardDispatcher | null } = { current: null };
+  let onWaitDropped: (rewardId: string, event: NormalizedEvent, reason: string) => Promise<void> =
+    async () => {};
   const hub = attachWebSocket(app.server, queue, {
     getKey: () => overlayKey,
     resolveWatchdogMarginMs: () => readSettings(db).watchdogMarginSec * 1000,
@@ -490,20 +607,20 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     onClientsChanged: (count) => {
       if (requireOverlay) queue.setPlayerReady(count > 0);
     },
+    onItemFinished: (item) => {
+      // El clip terminó de reproducirse: recién ahora cuenta el cooldown.
+      const rewardId = itemReward.get(item.id);
+      if (!rewardId) return;
+      itemReward.delete(item.id);
+      finishReward(rewardId);
+      // Si hay más canjes esperando esa recompensa, el planificador se reprograma
+      // para el nuevo cooldown (dispara el siguiente al cumplirse).
+      waiter.kick(rewardId);
+    },
   });
   if (requireOverlay) queue.setPlayerReady(hub.clientCount() > 0);
 
   // --- Motor de reglas y fuentes locales (Fase 4A) ---------------------------
-
-  const debug = process.env.CZERO_DEBUG === "1";
-
-  // Log a archivo para el visor (Ajustes → Avanzado) y, si CZERO_DEBUG, también
-  // a la consola, como antes. Los mensajes de debug solo se registran con debug.
-  const logDebug = (level: LogLevel, scope: string, message: string): void => {
-    if (level === "debug" && !debug) return;
-    logger.log(level, `[${scope}] ${message}`);
-    if (debug) console.log(`[${scope}] ${message}`);
-  };
 
   const manualSource = new ManualEventSource();
   const simulatedSource = new SimulatedEventSource();
@@ -530,7 +647,20 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   };
 
   const engine = new RuleEngine({
-    queue,
+    queue: {
+      enqueue: (input) => {
+        const item = queue.enqueue(input);
+        // Si el disparo viene de una recompensa en modo cola, se asocia el ítem
+        // con su id local para sellar el cooldown al terminar de reproducirse.
+        const rewardId = pendingRewardId;
+        if (rewardId) {
+          itemReward.set(item.id, rewardId);
+          // One-shot: el marcado vale solo para el próximo encolado del disparo.
+          pendingRewardId = null;
+        }
+        return item;
+      },
+    },
     resolveEvent: resolveSource,
     logger: debug
       ? (entry) =>
@@ -590,8 +720,27 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     globalVolume: () => readSettings(db).globalVolume,
     defaultMaxDuration: () => readSettings(db).defaultMaxDurationSec,
     maxVoices: () => readSettings(db).maxAudioVoices,
+    waitPolicy: () => readSettings(db).redemptionsOnCooldown,
+    // Hay un ítem encolado o sonando para esta recompensa: no puede disparar otro
+    // hasta que termine (el cooldown recién se sella al terminar).
+    isRewardBusy,
+    admitWait: (reward, event) => {
+      const result = waiter.admit(reward.id, {
+        eventId: event.id,
+        enqueuedAtMs: nowMs(),
+        payload: event,
+      });
+      if (result.admitted) {
+        logDebug("debug", "dispatch", `rewards: ${reward.id} canje ${event.id} en espera (posición ${result.position})`);
+      }
+      return result;
+    },
+    markPlay: (reward) => {
+      pendingRewardId = reward.id;
+    },
     logger: debug ? (message) => logDebug("debug", "dispatch", message) : undefined,
   });
+  dispatcherRef.current = dispatcher;
 
   const coordinator = new RedemptionCoordinator({
     db,
@@ -616,12 +765,35 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           return { outcome: "skipped", reason: result.reason };
         case "error":
           return { outcome: "error", reason: result.reason };
+        case "waiting":
+          return { outcome: "waiting", reason: result.reason };
         default:
           return { outcome: "no_match", reason: result.reason };
       }
     },
     logger: debug ? (message) => logDebug("debug", "redemptions", message) : undefined,
   });
+
+  // Un canje que sale de la espera por tope o por espera máxima se trata como
+  // omitido según la política global (dejar pendiente o rechazar).
+  onWaitDropped = async (_rewardId, event, reason): Promise<void> => {
+    const result: EngineResult = {
+      eventId: event.id,
+      platform: event.platform,
+      type: event.type,
+      outcome: "skipped",
+      reason,
+    };
+    await recordHistory(event, result);
+    if (readSettings(db).redemptionsOnSkip === "reject") {
+      try {
+        await resolveSource(event, "reject");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "error";
+        logDebug("debug", "redemptions", `resolve(reject) falló (${message})`);
+      }
+    }
+  };
 
   for (const source of sources) {
     // Los canjes que la plataforma deja pendientes pasan por el coordinador; el
@@ -851,6 +1023,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   const queueDisplayState = (): QueueState & {
     current: (QueueItem & { title: string }) | null;
     pending: (QueueItem & { title: string })[];
+    cooldownWait: Array<{ rewardId: string; title: string; userName: string; remainingSec: number }>;
   } => {
     const withTitle = (item: QueueItem): QueueItem & { title: string } => ({
       ...item,
@@ -861,7 +1034,33 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       ...state,
       current: state.current ? withTitle(state.current) : null,
       pending: state.pending.map(withTitle),
+      cooldownWait: cooldownWaitView(),
     };
+  };
+
+  // Canjes en espera por cooldown (para la sección "En espera de cooldown" del
+  // panel derecho). No son ítems de la cola de reproducción: aún no tienen clip
+  // asignado en la cola. Se arma desde el nombre de la recompensa y el usuario.
+  const cooldownWaitView = (): Array<{
+    rewardId: string;
+    title: string;
+    userName: string;
+    remainingSec: number;
+  }> => {
+    const out: Array<{ rewardId: string; title: string; userName: string; remainingSec: number }> = [];
+    for (const rewardId of waiter.rewardIds()) {
+      const reward = getReward(db, rewardId);
+      const entries = waiter.waiting(rewardId);
+      if (entries.length === 0) continue;
+      const first = entries[0]?.payload as NormalizedEvent | undefined;
+      out.push({
+        rewardId,
+        title: reward?.title ?? "Recompensa",
+        userName: first?.user?.name ?? "",
+        remainingSec: waiter.remainingSec(rewardId),
+      });
+    }
+    return out;
   };
 
   await app.register(async (api) => {
@@ -971,6 +1170,9 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
     api.post("/api/skip", async () => {
       const next = queue.skip();
+      // Saltar a mano NO dispara `onItemFinished`: la recompensa del ítem saltado
+      // deja de estar ocupada y hay que reprogramar su espera.
+      for (const rewardId of pruneItemReward()) waiter.kick(rewardId);
       return { ok: true, state: queueDisplayState(), next };
     });
     api.post("/api/pause", async () => {
@@ -981,11 +1183,30 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       queue.resume();
       return { ok: true, state: queueDisplayState() };
     });
-    api.post("/api/clear", async () => ({
-      ok: true,
-      removed: queue.clear(),
-      state: queueDisplayState(),
-    }));
+    api.post("/api/clear", async () => {
+      // Vaciar la cola de reproducción también descarta las esperas de cooldown:
+      // esos canjes quedan PENDIENTES en la plataforma (no se rechazan).
+      for (const { entries } of waiter.discardAll()) {
+        for (const entry of entries) {
+          await recordHistory(entry.payload as NormalizedEvent, {
+            eventId: entry.eventId,
+            platform: (entry.payload as NormalizedEvent).platform,
+            type: (entry.payload as NormalizedEvent).type,
+            outcome: "waiting",
+            reason: "espera descartada",
+          });
+        }
+      }
+      const removed = queue.clear();
+      // Los ítems vaciados dejan de ocupar a su recompensa (sus esperas, si las
+      // había, ya se descartaron arriba).
+      pruneItemReward();
+      return {
+        ok: true,
+        removed,
+        state: queueDisplayState(),
+      };
+    });
 
     // Corta todas las voces superpuestas de los overlays conectados.
     api.post("/api/audio/stop", async () => {
@@ -1633,6 +1854,20 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       db,
       refreshRules: () => engine.setRules(listRules(db).map(toRule)),
       debug,
+      discardWaits: (localId) => {
+        const discarded = waiter.discard(localId);
+        for (const entry of discarded) {
+          void recordHistory(entry.payload as NormalizedEvent, {
+            eventId: entry.eventId,
+            platform: (entry.payload as NormalizedEvent).platform,
+            type: (entry.payload as NormalizedEvent).type,
+            outcome: "waiting",
+            reason: "espera descartada",
+          });
+        }
+        return discarded.length;
+      },
+      waitCount: (localId) => waiter.waiting(localId).length,
     });
 
     api.post<{ Body: SimulateBody }>(

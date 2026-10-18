@@ -79,6 +79,27 @@ describe("validateSettingsPatch", () => {
     const result = validateSettingsPatch({ globalVolume: 0 });
     expect(result).toEqual({ ok: true, value: { globalVolume: 0 } });
   });
+
+  it("acepta la política de cooldown y sus topes", () => {
+    expect(validateSettingsPatch({ redemptionsOnCooldown: "queue" })).toEqual({
+      ok: true,
+      value: { redemptionsOnCooldown: "queue" },
+    });
+    expect(validateSettingsPatch({ redemptionsOnCooldown: "skip" })).toEqual({
+      ok: true,
+      value: { redemptionsOnCooldown: "skip" },
+    });
+    expect(validateSettingsPatch({ redemptionsWaitMax: 50 }).ok).toBe(true);
+    expect(validateSettingsPatch({ redemptionsWaitTimeoutMin: 30 }).ok).toBe(true);
+  });
+
+  it("rechaza una política de cooldown desconocida y topes fuera de rango", () => {
+    expect(validateSettingsPatch({ redemptionsOnCooldown: "otra" }).ok).toBe(false);
+    expect(validateSettingsPatch({ redemptionsWaitMax: 0 }).ok).toBe(false);
+    expect(validateSettingsPatch({ redemptionsWaitMax: 201 }).ok).toBe(false);
+    expect(validateSettingsPatch({ redemptionsWaitTimeoutMin: 0 }).ok).toBe(false);
+    expect(validateSettingsPatch({ redemptionsWaitTimeoutMin: 121 }).ok).toBe(false);
+  });
 });
 
 describe("isValidDomainName", () => {

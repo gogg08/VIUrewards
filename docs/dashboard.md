@@ -117,7 +117,11 @@ literales, así los temas futuros (OLED, noche, día) son otro juego de valores.
   inicio y corta al final. El tiempo efectivo es el **menor** entre el recorte y
   la duración máxima de la alerta.
 - **Cola en vivo**: muestra el clip en reproducción y los pendientes, con botones
-  **Saltar / Pausar / Reanudar / Vaciar**.
+  **Saltar / Pausar / Reanudar / Vaciar**. Debajo de los pendientes aparece la
+  sección **"En espera de cooldown"** cuando una recompensa tiene canjes
+  esperando su turno: muestra el nombre de la recompensa, el usuario y los
+  segundos restantes (se refresca con el polling de 1 s). Esos canjes no son
+  ítems de la cola de reproducción y no tienen botones por ítem.
 - **Configuración general**: volumen global (0-100%) que multiplica el de cada
   alerta; duración máxima por defecto de una alerta; límites de descarga
   (duración y tamaño máximos, que el módulo de media relee **en cada descarga**);
@@ -135,8 +139,9 @@ interna 1:1** que se crea y se mantiene sola al crear/editar la recompensa (trig
 eventos sigue igual por debajo; ver `docs/rules.md`.
 
 - **Historial de eventos**: últimas 100 entradas con hora, plataforma, tipo,
-  usuario, resultado (`Disparó / Omitido / Error / Sin regla / Duplicado`) y motivo
-  (por ejemplo `cooldown`, `sin permiso`).
+  usuario, resultado (`Disparó / En espera por cooldown / Omitido / Error / Sin
+  regla / Duplicado`) y motivo (por ejemplo `cooldown, faltan N s`,
+  `cola de espera llena`, `sin permiso`).
 - **Simular evento**: dispara un evento de cualquier tipo sin ninguna plataforma
   conectada, y un botón **Evento manual** (el mismo que dispara `ManualEventSource`).
   Sirve para probar las reglas internas de punta a punta.

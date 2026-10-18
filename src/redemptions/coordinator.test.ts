@@ -162,6 +162,39 @@ describe("RedemptionCoordinator: canjes viejos", () => {
   });
 });
 
+describe("RedemptionCoordinator: canje en espera por cooldown", () => {
+  it("queda en 'waiting' sin resolver en la plataforma hasta que suene", async () => {
+    const h = makeHarness({
+      process: async () => ({ outcome: "waiting", reason: "En espera por cooldown (12 s)" }),
+    });
+    const result = await h.coordinator.receive(rewardEvent("r1"));
+    expect(result.status).toBe("waiting");
+    expect(result.reason).toBe("En espera por cooldown (12 s)");
+    expect(h.coordinator.get("fake", "r1")?.status).toBe("waiting");
+    // No se resuelve en la plataforma: el canje queda pendiente.
+    expect(h.resolveCalls).toHaveLength(0);
+  });
+
+  it("es idempotente: un canje en espera que reaparece por polling no se reprocesa", async () => {
+    const h = makeHarness({ process: async () => ({ outcome: "waiting" }) });
+    await h.coordinator.receive(rewardEvent("r1"));
+    const again = await h.coordinator.receive(rewardEvent("r1"));
+    expect(again.status).toBe("waiting");
+    // Solo se procesó una vez (el estado 'waiting' no es 'ignored', no se reprocesa).
+    expect(h.processedCount).toBe(1);
+  });
+
+  it("con onSkip='reject' el canje en espera igual NO se rechaza (no es un omitido)", async () => {
+    const h = makeHarness({
+      process: async () => ({ outcome: "waiting" }),
+      policy: { onSkip: "reject" },
+    });
+    const result = await h.coordinator.receive(rewardEvent("r1"));
+    expect(result.status).toBe("waiting");
+    expect(h.resolveCalls).toHaveLength(0);
+  });
+});
+
 describe("RedemptionCoordinator: aislamiento de errores", () => {
   it("si el procesamiento lanza, el canje queda en failed y no rompe el flujo", async () => {
     const h = makeHarness({

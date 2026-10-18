@@ -515,6 +515,24 @@
                     </template>
                   </ol>
                 </div>
+
+                <div x-show="queue.cooldownWait && queue.cooldownWait.length > 0">
+                  <p class="muted">
+                    En espera de cooldown (<span x-text="queue.cooldownWait ? queue.cooldownWait.length : 0"></span>):
+                  </p>
+                  <ol class="queue-list">
+                    <template x-for="wait in (queue.cooldownWait || [])" :key="wait.rewardId">
+                      <li class="queue-item">
+                        <span class="queue-item-name" :title="wait.title" x-text="wait.title"></span>
+                        <span class="queue-item-meta">
+                          <span x-text="wait.userName"></span>
+                          <span> · </span>
+                          <span x-text="wait.remainingSec > 0 ? 'faltan ' + wait.remainingSec + ' s' : 'ya toca'"></span>
+                        </span>
+                      </li>
+                    </template>
+                  </ol>
+                </div>
               </div>
 
               <!-- Historial de eventos -->
@@ -743,6 +761,37 @@
                     <span>Audios simultáneos máximos</span>
                     <input type="number" min="1" max="20" x-model.number="settings.maxAudioVoices" @input="markDirty()" />
                     <span class="muted">Si se supera, se corta el audio más antiguo.</span>
+                  </label>
+                  <label class="field">
+                    <span>Cuando una recompensa está en cooldown</span>
+                    <select x-model="settings.redemptionsOnCooldown" @change="markDirty()">
+                      <option value="queue">Poner en cola (suena cuando se libera)</option>
+                      <option value="skip">Omitir el canje (como antes)</option>
+                    </select>
+                  </label>
+                  <label class="field">
+                    <span>Máximo de canjes en espera (por recompensa)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="200"
+                      x-model.number="settings.redemptionsWaitMax"
+                      @input="markDirty()"
+                    />
+                    <span class="error" x-show="fieldError('redemptionsWaitMax')" x-text="fieldError('redemptionsWaitMax')"></span>
+                    <span class="muted">Si se llena, los canjes nuevos se omiten.</span>
+                  </label>
+                  <label class="field">
+                    <span>Espera máxima por canje (min)</span>
+                    <input
+                      type="number"
+                      min="1"
+                      max="120"
+                      x-model.number="settings.redemptionsWaitTimeoutMin"
+                      @input="markDirty()"
+                    />
+                    <span class="error" x-show="fieldError('redemptionsWaitTimeoutMin')" x-text="fieldError('redemptionsWaitTimeoutMin')"></span>
+                    <span class="muted">Si espera más que esto, se omite.</span>
                   </label>
                   <label class="field">
                     <span>Al omitir un canje</span>

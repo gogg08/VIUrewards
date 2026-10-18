@@ -895,6 +895,14 @@ input[type="checkbox"] {
   min-width: 0;
 }
 
+/* Ítem en espera de cooldown: nombre y datos (usuario · tiempo restante). */
+.queue-item-meta {
+  margin-left: auto;
+  color: var(--color-muted);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
 /* Controles de la cola: una sola fila, sin wrap. */
 .queue-controls {
   display: flex;

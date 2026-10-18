@@ -665,3 +665,30 @@ describe("Parte 3: visor de logs", () => {
     expect(app.logTimer).toBeNull();
   });
 });
+
+describe("Parte 1: cooldown con espera (poner en cola)", () => {
+  it("la política por defecto es 'queue' con los topes por defecto", () => {
+    const app = makeApp();
+    const settings = app.settings as Record<string, unknown>;
+    expect(settings.redemptionsOnCooldown).toBe("queue");
+    expect(settings.redemptionsWaitMax).toBe(20);
+    expect(settings.redemptionsWaitTimeoutMin).toBe(10);
+  });
+
+  it("el historial muestra 'En espera por cooldown' y su descarte", () => {
+    const app = makeApp();
+    const outcomeLabel = app.outcomeLabel as (entry: Record<string, unknown>) => string;
+    expect(outcomeLabel({ outcome: "waiting", reason: "En espera por cooldown (12 s)" })).toBe(
+      "En espera por cooldown",
+    );
+    expect(outcomeLabel({ outcome: "waiting", reason: "espera descartada" })).toBe(
+      "En espera por cooldown · descartada",
+    );
+  });
+
+  it("la espera por cooldown usa la etiqueta de advertencia", () => {
+    const app = makeApp();
+    const badge = app.outcomeBadgeClass as (outcome: string) => string;
+    expect(badge("waiting")).toBe("warn");
+  });
+});
