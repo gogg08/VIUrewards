@@ -610,6 +610,35 @@ describe("UI del dashboard (plataformas)", () => {
     expect(row).not.toContain("rewardStateLabel");
   });
 
+  it("la fila de acciones está anclada abajo y el texto de ayuda va arriba", () => {
+    // La tarjeta es flex en columna y se estira a su celda; el pie (separador +
+    // fila de acciones) se empuja abajo con `margin-top: auto`.
+    const css = read("style.css");
+    const card =
+      [...css.matchAll(/\.reward-card\s*\{[^}]*\}/g)].map((m) => m[0]).find((r) => r.includes("flex-direction")) ?? "";
+    expect(card).toMatch(/display:\s*flex/);
+    expect(card).toMatch(/flex-direction:\s*column/);
+    expect(card).toMatch(/height:\s*100%/);
+    const foot = css.match(/\.reward-card-foot\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(foot).toMatch(/margin-top:\s*auto/);
+    // El markup del pie (separador + fila) está definido una sola vez.
+    expect([...app.matchAll(/class="reward-card-foot"/g)].length).toBe(1);
+    expect([...app.matchAll(/class="reward-card-bottom"/g)].length).toBe(1);
+    expect(app).toMatch(/data-action="toggle"/);
+    // En el markup, el texto de ayuda (foreign / sin sincronizar / apply_failed)
+    // aparece ANTES del pie y de la fila de acciones.
+    const iHint = app.indexOf("La creó otra aplicación");
+    const iFoot = app.indexOf('class="reward-card-foot"');
+    const iBottom = app.indexOf('class="reward-card-bottom"');
+    expect(iHint).toBeGreaterThan(0);
+    expect(iHint).toBeLessThan(iFoot);
+    expect(iFoot).toBeLessThan(iBottom);
+    // El separador va dentro del pie, antes de la fila de acciones.
+    const sepIdx = app.indexOf('class="reward-card-sep"');
+    expect(sepIdx).toBeGreaterThan(iFoot);
+    expect(sepIdx).toBeLessThan(iBottom);
+  });
+
   it("la ventana de recompensa usa una sola columna y los tokens de espaciado", () => {
     const css = read("style.css");
     // Ancho pedido y cuerpo con padding/separación por tokens.

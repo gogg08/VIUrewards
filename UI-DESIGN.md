@@ -59,10 +59,25 @@ Lista de recompensas con un botón "Nueva recompensa". Hasta la Etapa 4, la list
 2. **Resumen en una línea:** costo · modo (`cooldown N s` o `superpuesto`) · ícono de parlante si es solo audio.
 3. **Clip:** nombre y duración (solo si apunta a un clip local).
 4. **Etiqueta de estado**, en su **propia línea**.
-5. **Separador sutil** (sin borde marcado).
-6. **Fila inferior:** Editar y Borrar juntos a la izquierda, el interruptor solo a la derecha (`justify-content: space-between`, centrado vertical, sin wrap en un ancho normal). La etiqueta de estado **nunca** comparte línea con los botones ni con el interruptor.
+5. **Texto de ayuda o de advertencia**, si lo hay ("La creó otra aplicación; Kick no permite editarla desde acá.", "Datos sin sincronizar con Kick.", el error de "No se pudo aplicar"), **entre** la etiqueta y la fila de acciones.
+6. **Separador sutil** (sin borde marcado).
+7. **Fila de acciones, ANCLADA ABAJO:** Editar y Borrar juntos a la izquierda, el interruptor solo a la derecha (`justify-content: space-between`, centrado vertical, sin wrap en un ancho normal). La etiqueta de estado **nunca** comparte línea con los botones ni con el interruptor.
 
-Espaciado: entre líneas de texto `var(--space-2)`; antes de la fila inferior `var(--space-3)`. El **cuadradito de color es clicable**: abre el selector de color nativo del sistema (botón accesible con `aria-label` "Cambiar color"); al cerrarse o aceptarse se guarda el color, sin diálogos propios de la app. Si el guardado falla, vuelve al color anterior y se muestra el error en español. El interruptor queda deshabilitado — igual que Editar — en los estados bloqueados ("De otra app", "Falta en Kick", sin conexión, sin sincronizar). El color dentro de la ventana de crear/editar es parte del formulario y se guarda con Guardar.
+```
+┌──────────────────────────────────────┐
+│ Goku Ahhh!                        ■  │  1. nombre + cuadradito de color
+│ 100 pts · cooldown 5 s · 🔊          │  2. resumen
+│ Goku Ahhh! · 0:04                    │  3. clip
+│ [HABILITADA]                         │  4. etiqueta de estado
+│ (texto de ayuda, si lo hay)          │  5. ayuda/advertencia
+│ ─────────────────────────────────────│  6. separador sutil
+│ [Editar] [Borrar]             (●━)   │  7. fila de acciones, anclada abajo
+└──────────────────────────────────────┘
+```
+
+**Anclaje de las acciones:** la tarjeta es un **flex en columna con `height: 100%`** (se estira a su celda de la grilla); el **pie** (`.reward-card-foot`: separador + fila de acciones) lleva **`margin-top: auto`**, así las acciones quedan **siempre pegadas al borde inferior** sin importar cuánto contenido haya arriba. Con tarjetas de distinta altura en una misma fila (la grilla estira todas a la más alta), las acciones de todas quedan alineadas en la misma línea inferior. El texto de ayuda **nunca** queda debajo de la fila de acciones.
+
+Espaciado: entre líneas de texto `var(--space-2)`; entre el separador y la fila de acciones `var(--space-3)` (como antes). El **cuadradito de color es clicable**: abre el selector de color nativo del sistema (botón accesible con `aria-label` "Cambiar color"); al cerrarse o aceptarse se guarda el color, sin diálogos propios de la app. Si el guardado falla, vuelve al color anterior y se muestra el error en español. El interruptor queda deshabilitado — igual que Editar — en los estados bloqueados ("De otra app", "Falta en Kick", sin conexión, sin sincronizar). El color dentro de la ventana de crear/editar es parte del formulario y se guarda con Guardar.
 
 **Estados de una recompensa** (se contrastan con Kick al cargar la app y al apretar "Recargar"):
 

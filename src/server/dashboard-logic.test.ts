@@ -407,6 +407,66 @@ describe("Parte 3: ventana grande de recompensas", () => {
     expect(html).toContain("Sin fecha de creación");
     expect(html).toContain("De otra app");
   });
+
+  it("el texto de ayuda de una 'De otra app' aparece antes de la fila de acciones", () => {
+    const app = withRewards();
+    const html = (app.rewardCardHtml as (r: unknown) => string).call(app, {
+      id: "r1",
+      localId: "r1",
+      title: "De otra app",
+      cost: 5,
+      state: "foreign",
+      synced: true,
+      enabled: true,
+    });
+    const help = html.indexOf("La creó otra aplicación");
+    const foot = html.indexOf('class="reward-card-foot"');
+    const bottom = html.indexOf('class="reward-card-bottom"');
+    expect(help).toBeGreaterThan(-1);
+    expect(foot).toBeGreaterThan(-1);
+    expect(bottom).toBeGreaterThan(-1);
+    // Orden: ayuda → pie (separador + acciones).
+    expect(help).toBeLessThan(foot);
+    expect(foot).toBeLessThan(bottom);
+  });
+
+  it("el texto de 'Falta en Kick' y el de sin sincronizar van antes de las acciones", () => {
+    const app = withRewards();
+    const missing = (app.rewardCardHtml as (r: unknown) => string).call(app, {
+      id: "r1",
+      localId: "r1",
+      title: "X",
+      cost: 5,
+      state: "missing",
+      synced: true,
+    });
+    const bottomMissing = missing.indexOf('class="reward-card-bottom"');
+    expect(missing.indexOf("Quitar de la app")).toBeLessThan(bottomMissing);
+
+    const unsynced = (app.rewardCardHtml as (r: unknown) => string).call(app, {
+      id: "r2",
+      localId: "r2",
+      title: "Y",
+      cost: 5,
+      state: "enabled",
+      synced: false,
+    });
+    const bottomUnsynced = unsynced.indexOf('class="reward-card-bottom"');
+    expect(unsynced.indexOf("Datos sin sincronizar")).toBeLessThan(bottomUnsynced);
+  });
+
+  it("una tarjeta habilitada es idéntica en las dos vistas (mismo HTML)", () => {
+    const app = withRewards();
+    const reward = { id: "r1", localId: "r1", title: "Goku", cost: 100, state: "enabled", enabled: true, synced: true };
+    const inPanel = (app.rewardCardHtml as (r: unknown) => string).call(app, reward);
+    const inWindow = (app.rewardCardHtml as (r: unknown) => string).call(app, reward);
+    expect(inPanel).toBe(inWindow);
+    // La fila de acciones vive dentro del pie anclado abajo.
+    expect(inPanel).toContain('class="reward-card-foot"');
+    expect(inPanel.indexOf('class="reward-card-foot"')).toBeLessThan(
+      inPanel.indexOf('class="reward-card-bottom"')
+    );
+  });
 });
 
 describe("Parte 4: orden de la ventana grande de recompensas", () => {

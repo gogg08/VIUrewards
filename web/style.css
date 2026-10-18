@@ -1070,6 +1070,7 @@ input[type="checkbox"] {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  height: 100%;
   padding: var(--space-3);
   background: var(--color-panel-2);
   border: 1px solid var(--color-border);
@@ -1096,7 +1097,6 @@ input[type="checkbox"] {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  margin-top: var(--space-1);
 }
 
 /* Acciones agrupadas a la izquierda; nunca se parten en un ancho normal. */
@@ -1121,6 +1121,18 @@ input[type="checkbox"] {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
+}
+
+/* Pie de la tarjeta: separador + fila de acciones. Se empuja al fondo con
+   `margin-top: auto`, así las acciones quedan SIEMPRE pegadas al borde inferior
+   de la tarjeta, con el texto de ayuda arriba del separador, sin importar cuánto
+   contenido haya (la tarjeta es flex en columna y se estira a su celda). */
+.reward-card-foot {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  /* Separa el separador de la fila de acciones: --space-3, como antes. */
+  gap: var(--space-3);
 }
 
 /* Separador sutil antes de la fila inferior. */

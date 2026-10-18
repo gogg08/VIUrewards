@@ -2461,6 +2461,20 @@ function dashboardApp() {
         parts.push("</div>");
       }
 
+      // Texto de ayuda o de advertencia, ARRIBA de la fila de acciones (entre la
+      // etiqueta de estado y las acciones). El pie (separador + acciones) queda
+      // anclado abajo con `margin-top: auto` (ver .reward-card-foot).
+      if (!reward.synced && reward.state !== "offline") {
+        parts.push('<p class="hint">Datos sin sincronizar con Kick.</p>');
+      }
+      if (reward.state === "apply_failed" && reward.error) {
+        parts.push(`<p class="error">${esc(reward.error)}</p>`);
+      }
+      if (reward.state === "foreign") {
+        parts.push('<p class="hint">La creó otra aplicación; Kick no permite editarla desde acá.</p>');
+      }
+
+      parts.push('<div class="reward-card-foot">');
       parts.push('<hr class="reward-card-sep" />');
 
       // Fila inferior: Editar/Borrar a la izquierda, interruptor a la derecha.
@@ -2489,17 +2503,8 @@ function dashboardApp() {
           '><span class="switch-knob"></span></button>'
       );
       parts.push("</div>");
+      parts.push("</div>");
 
-      // Datos sin sincronizar y mensajes.
-      if (!reward.synced && reward.state !== "offline") {
-        parts.push('<p class="hint">Datos sin sincronizar con Kick.</p>');
-      }
-      if (reward.state === "apply_failed" && reward.error) {
-        parts.push(`<p class="error">${esc(reward.error)}</p>`);
-      }
-      if (reward.state === "foreign") {
-        parts.push('<p class="hint">La creó otra aplicación; Kick no permite editarla desde acá.</p>');
-      }
       return parts.join("");
     },
 
