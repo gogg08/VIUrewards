@@ -70,8 +70,9 @@ una **barra de pestañas fija** arriba (Recompensas, Clips, Cola).
   misma estética que el filtro de la biblioteca). El orden es **solo de la ventana**
   (el panel vertical conserva el orden del servidor) y se guarda en `localStorage`
   (`viurewards.rewardsSort`); por defecto, fecha añadida más reciente primero. Las
-  recompensas sin fecha local ("de otra app") van siempre al final y muestran "sin
-  fecha".
+  recompensas sin fecha local ("de otra app") van siempre al final, ordenadas por
+  nombre; el detalle ("sin fecha de creación") va en el `title` de la etiqueta "De
+  otra app", no como línea aparte (no altera la altura de la tarjeta).
 - **Columna central:** dos cajas apiladas, **Agregar un clip** (fija) y **Biblioteca**
   (título fijo; la grilla scrollea dentro).
 - **Columna derecha:** **una sola caja** con el **selector compacto y centrado**

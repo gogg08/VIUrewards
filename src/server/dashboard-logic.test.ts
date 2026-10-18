@@ -381,6 +381,32 @@ describe("Parte 3: ventana grande de recompensas", () => {
     expect(html).not.toContain("<img");
     expect(html).toContain("&lt;img");
   });
+
+  it("rewardCardHtml produce el MISMO HTML en el panel y en la ventana (una firma)", () => {
+    const app = withRewards();
+    const reward = { id: "r1", localId: "r1", title: "Goku", cost: 100, state: "enabled", synced: true };
+    // Una sola firma: la misma recompensa rinde lo mismo sin importar dónde se pinte.
+    expect((app.rewardCardHtml as (r: unknown) => string).length).toBe(1);
+    const inPanel = (app.rewardCardHtml as (r: unknown) => string).call(app, reward);
+    const inWindow = (app.rewardCardHtml as (r: unknown) => string).call(app, reward);
+    expect(inPanel).toBe(inWindow);
+  });
+
+  it("una recompensa sin fecha NO agrega la línea 'sin fecha' a la tarjeta", () => {
+    const app = withRewards();
+    const html = (app.rewardCardHtml as (r: unknown) => string).call(app, {
+      id: "r1",
+      localId: "r1",
+      title: "De otra app",
+      cost: 5,
+      state: "foreign",
+      createdAt: null,
+    });
+    expect(html).not.toContain("sin fecha");
+    // La información vive en el title de la etiqueta de estado.
+    expect(html).toContain("Sin fecha de creación");
+    expect(html).toContain("De otra app");
+  });
 });
 
 describe("Parte 4: orden de la ventana grande de recompensas", () => {

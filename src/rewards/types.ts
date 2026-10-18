@@ -57,7 +57,7 @@ export interface RewardListItem {
   synced: boolean;
   /**
    * Fecha de creación local (ISO). `null` para las recompensas sin fila local (las
-   * "de otra app"): la UI las ordena al final y muestra "sin fecha".
+   * "de otra app"): la UI las ordena al final (el detalle va en el title).
    */
   createdAt: string | null;
 }

@@ -2388,7 +2388,7 @@ function dashboardApp() {
     // grande (grilla). Como Alpine local no tiene paso de build ni parciales,
     // se devuelve el HTML y both contenedores lo pintan con x-html; la
     // interactividad va por delegación de eventos (data-action).
-    rewardCardHtml(reward, showNoDate = false) {
+    rewardCardHtml(reward) {
       const esc = escapeHtml;
       const colorEditable = this.rewardColorEditable(reward);
       const editable = this.rewardEditable(reward);
@@ -2435,15 +2435,15 @@ function dashboardApp() {
       if (reward.clipId) {
         parts.push('<div class="reward-card-line"><span class="muted">' + esc(this.rewardClipLabel(reward)) + "</span></div>");
       }
-      // "Sin fecha" solo en la ventana con orden por fecha: las recompensas sin
-      // fila local ("de otra app") no tienen fecha de creación.
-      if (showNoDate && !reward.createdAt) {
-        parts.push('<div class="reward-card-line"><span class="muted">sin fecha</span></div>');
-      }
 
-      // Etiqueta de estado, en su propia línea.
+      // Etiqueta de estado, en su propia línea. Las recompensas "de otra app" no
+      // tienen fecha de creación: el detalle va en el title (no como línea aparte,
+      // que cambiaría la altura de la tarjeta).
       parts.push('<div class="reward-card-state">');
-      parts.push(`<span class="badge ${esc(this.rewardStateBadgeClass(reward))}">${esc(this.rewardStateLabel(reward))}</span>`);
+      const foreignTitle = reward.state === "foreign" ? ' title="Sin fecha de creación: va al final cuando se ordena por fecha"' : "";
+      parts.push(
+        `<span class="badge ${esc(this.rewardStateBadgeClass(reward))}"${foreignTitle}>${esc(this.rewardStateLabel(reward))}</span>`
+      );
       if (!reward.synced && reward.state !== "offline") {
         parts.push(
           '<span class="badge off" title="Los datos todavía no se sincronizaron con Kick">Sin sincronizar</span>'

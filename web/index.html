@@ -1287,11 +1287,11 @@
                     :aria-expanded="rewardsSortOpen ? 'true' : 'false'"
                     @click="toggleRewardsSortOpen()"
                     @keydown.escape.prevent="closeRewardsSort()"
-                    title="Ordenar por"
+                    title="Ordenar por (las recompensas de otra app, sin fecha de creación, van al final)"
                   >
                     <span class="rewards-sort-caption">Ordenar por:</span>
-                    <span x-text="rewardSortLabel(rewardsSort.field)"></span>
-                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <span class="rewards-sort-value" x-text="rewardSortLabel(rewardsSort.field)"></span>
+                    <svg class="rewards-sort-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                       <path d="M6 9l6 6 6-6" />
                     </svg>
                   </button>
@@ -1377,7 +1377,7 @@
                     class="reward-card"
                     @click="onRewardCardClick(reward, $event)"
                     @change="onRewardCardChange(reward, $event)"
-                    x-html="rewardCardHtml(reward, rewardsSort.field === 'created')"
+                    x-html="rewardCardHtml(reward)"
                   ></div>
                 </template>
               </div>

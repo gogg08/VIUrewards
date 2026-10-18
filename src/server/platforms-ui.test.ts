@@ -414,10 +414,46 @@ describe("UI del dashboard (plataformas)", () => {
     expect(css).toMatch(/\.reward-grid\s*\{[^}]*justify-content:\s*start/s);
     expect(css).toMatch(/\.reward-grid\s*\{[^}]*gap:\s*var\(--space-4\)/s);
     expect(css).toMatch(/\.reward-list \.reward-card,[\s\S]*\.reward-grid \.reward-card\s*\{[^}]*width:\s*var\(--reward-card-width\)/s);
-    // La ventana grande ocupa casi toda la pantalla (sin tope de ancho fijo).
-    expect(css).toMatch(/\.rewards-window\s*\{[^}]*width:\s*calc\(100vw - 3rem\)/s);
-    expect(css).toMatch(/\.rewards-window\s*\{[^}]*height:\s*calc\(100vh - 3rem\)/s);
-    expect(css).not.toMatch(/\.rewards-window\s*\{[^}]*max-width/s);
+  });
+
+  it("la ventana grande define su tamaño una sola vez por variable (gana la cascada)", () => {
+    // Causa real del bug: `.modal-window` (posterior en el archivo, misma
+    // especificidad) fijaba width/height y ganaba. Ahora `.modal-window` usa
+    // variables y `.rewards-window` solo las sobreescribe.
+    const css = read("style.css");
+    // La base usa las variables.
+    expect(css).toMatch(/\.modal-window\s*\{[^}]*width:\s*var\(--modal-width/s);
+    expect(css).toMatch(/\.modal-window\s*\{[^}]*height:\s*var\(--modal-height/s);
+    // `.rewards-window` NO fija width/height ni max-width/max-height: solo variables.
+    const rule = css.match(/\.rewards-window\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/--modal-width:\s*calc\(100vw - 3rem\)/);
+    expect(rule).toMatch(/--modal-height:\s*calc\(100vh - 3rem\)/);
+    expect(rule).not.toMatch(/^\s*width:/m);
+    expect(rule).not.toMatch(/^\s*height:/m);
+    expect(rule).not.toMatch(/max-width|max-height/);
+    // Solo una regla define el ancho de esta ventana en el archivo.
+    const windowRules = [...css.matchAll(/\.modal-window\.rewards-window|\.rewards-window\s*\{/g)];
+    expect(windowRules.length).toBe(2); // la base + la del media query angosto
+    // Sin tamaño fijo en px (1200px/800px serían la regresión).
+    expect(css).not.toMatch(/\.rewards-window[^}]*\b(1200|800)px/);
+    // Sin estilo inline en el elemento del diálogo.
+    const dialogTag = html.match(/class="modal-window rewards-window"[^>]*>/)?.[0] ?? "";
+    expect(dialogTag).not.toMatch(/style=/);
+    // El media query angosto también usa variables (margen de 1rem).
+    expect(css).toMatch(/@media[^{]*1024px[\s\S]*\.rewards-window\s*\{[^}]*--modal-width:\s*calc\(100vw - 2rem\)/);
+    expect(css).toMatch(/@media[^{]*1024px[\s\S]*\.rewards-window\s*\{[^}]*--modal-height:\s*calc\(100vh - 2rem\)/);
+  });
+
+  it("el markup de la tarjeta es idéntico en las dos vistas (sin parámetro extra)", () => {
+    // rewardCardHtml tiene una única firma de un parámetro: el markup no cambia
+    // entre el panel vertical y la ventana (nada de líneas extra que alteren la
+    // altura de la tarjeta).
+    expect(app).toMatch(/rewardCardHtml\(reward\)\s*\{/);
+    expect(app).not.toContain("showNoDate");
+    expect(app).not.toMatch(/sin fecha<\/span>/);
+    // Las dos vistas invocan con el mismo argumento.
+    const uses = [...html.matchAll(/x-html="rewardCardHtml\(([^)]*)\)"/g)].map((m) => m[1]);
+    expect(uses).toEqual(["reward", "reward"]);
   });
 
   it("el control de orden de la ventana reutiliza la estética del selector de la biblioteca", () => {
@@ -438,6 +474,40 @@ describe("UI del dashboard (plataformas)", () => {
     expect(html).toMatch(/:aria-expanded="rewardsSortOpen \? 'true' : 'false'"/);
     expect(html).toMatch(/role="option"/);
     expect(html).toMatch(/:aria-selected="rewardsSort\.field === field/);
+  });
+
+  it("la estética del control de orden: altura compartida y chevron centrado", () => {
+    const css = read("style.css");
+    // Altura común por variable, compartida por disparador, dirección y el
+    // selector de la biblioteca (no se inventa otro valor).
+    expect(css).toMatch(/--control-height:/);
+    const trigger = css.match(/\.rewards-sort-trigger\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(trigger).toMatch(/min-height:\s*var\(--control-height\)/);
+    expect(trigger).toMatch(/display:\s*inline-flex/);
+    expect(trigger).toMatch(/align-items:\s*center/);
+    expect(trigger).toMatch(/gap:\s*var\(--space-2\)/);
+    expect(trigger).toMatch(/padding-inline:\s*var\(--space-3\)/);
+    expect(trigger).toMatch(/white-space:\s*nowrap/);
+    const dir = css.match(/\.rewards-sort-dir\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(dir).toMatch(/min-height:\s*var\(--control-height\)/);
+    // El chevron NO usa position: absolute ni márgenes que lo muevan de eje.
+    const chevron = css.match(/\.rewards-sort-chevron\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(chevron).toMatch(/flex:\s*0 0 auto/);
+    expect(chevron).not.toMatch(/position:\s*absolute/);
+    expect(chevron).not.toMatch(/margin/);
+    // Gira al abrir; con reduced-motion no hay transición.
+    expect(css).toMatch(/\.rewards-sort-trigger\[aria-expanded="true"\][^}]*rotate\(180deg\)/);
+    expect(css).toMatch(/prefers-reduced-motion:[\s\S]*\.rewards-sort-chevron\s*\{[^}]*transition:\s*none/);
+    // El texto secundario y el valor primario.
+    expect(html).toMatch(/class="rewards-sort-caption"/);
+    expect(html).toMatch(/class="rewards-sort-value"/);
+    // La lista: alineada a la derecha del disparador, ítems con padding e izquierda.
+    const menu = css.match(/\.rewards-sort-menu\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(menu).toMatch(/right:\s*0/);
+    expect(menu).toMatch(/min-width:\s*100%/);
+    const option = css.match(/\.rewards-sort-option\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(option).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);
+    expect(option).toMatch(/text-align:\s*left/);
   });
 
   it("el control de orden se guarda en localStorage y la ventana ordena solo a ella", () => {

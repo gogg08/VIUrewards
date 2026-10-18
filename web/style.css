@@ -46,6 +46,10 @@
   /* --- Componentes --- */
   /* Ancho mínimo de cada pestaña del selector Cola / Historial. */
   --queue-tab-min: 5.5rem;
+  /* Alto común de los controles segmentados (selector de la biblioteca, control
+     de orden de la ventana grande): el disparador y el botón de dirección lo
+     comparten para quedar alineados. */
+  --control-height: calc(var(--space-1) * 2 + var(--text-sm) * var(--leading));
 
   /* --- Tipografía --- */
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -916,10 +920,12 @@ input[type="checkbox"] {
 
 /* Ventana grande: misma grilla de tarjetas que el panel vertical, con el mismo
    ancho (var(--reward-card-width)) definido por variable CSS. Ocupa casi toda la
-   pantalla, centrada, sin tope de ancho fijo. */
+   pantalla, centrada, sin tope de ancho fijo. El tamaño se define en UN solo
+   lugar: sobreescribiendo las variables de `.modal-window`, para no competir por
+   especificidad con la clase base. */
 .rewards-window {
-  width: calc(100vw - 3rem);
-  height: calc(100vh - 3rem);
+  --modal-width: calc(100vw - 3rem);
+  --modal-height: calc(100vh - 3rem);
 }
 
 .rewards-window-body {
@@ -941,30 +947,61 @@ input[type="checkbox"] {
 }
 
 /* El disparador del orden reutiliza la estética del selector de la biblioteca
-   (.segmented) pero como botón desplegable. */
+   (.segmented). Layout interno en una sola fila, con padding a los costados para
+   que el texto no quede pegado al borde, y el chevron centrado por el flex. */
 .rewards-sort-trigger {
+  display: inline-flex;
+  align-items: center;
   gap: var(--space-2);
-  color: var(--color-text);
-  font-size: var(--text-sm);
+  min-height: var(--control-height);
+  padding-inline: var(--space-3);
+  line-height: 1;
   white-space: nowrap;
+  font-size: var(--text-sm);
 }
 
 .rewards-sort-caption {
   color: var(--color-muted);
 }
 
+/* El valor actual, en color primario (el resto del disparador queda secundario). */
+.rewards-sort-trigger .rewards-sort-value {
+  color: var(--color-text);
+}
+
+/* Chevron: SVG inline de 16 px, centrado verticalmente por el flex (sin
+   position: absolute ni márgenes que lo muevan). Gira al abrir. */
+.rewards-sort-chevron {
+  flex: 0 0 auto;
+  transition: transform 0.15s ease;
+}
+
+.rewards-sort-trigger[aria-expanded="true"] .rewards-sort-chevron {
+  transform: rotate(180deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rewards-sort-chevron {
+    transition: none;
+  }
+}
+
+/* Botón de dirección: cuadrado del mismo alto que el disparador, ícono centrado. */
 .rewards-sort-dir {
-  padding: var(--space-1);
+  min-height: var(--control-height);
+  padding-inline: var(--space-2);
   line-height: 0;
   color: var(--color-text);
 }
 
+/* Lista desplegada: alineada al borde derecho del disparador, con ítems de
+   padding cómodo y texto alineado a la izquierda. */
 .rewards-sort-menu {
-  right: auto;
-  left: 0;
-  min-width: 200px;
+  right: 0;
+  left: auto;
+  min-width: 100%;
   max-width: 260px;
-  padding: var(--space-2);
+  padding: var(--space-1);
 }
 
 .rewards-sort-list {
@@ -981,6 +1018,7 @@ input[type="checkbox"] {
   border-radius: var(--radius-sm);
   cursor: pointer;
   color: var(--color-text);
+  text-align: left;
 }
 
 .rewards-sort-option:hover,
@@ -1649,8 +1687,10 @@ table.grid td.actions button {
 }
 
 .modal-window {
-  width: min(960px, 100%);
-  height: min(640px, 100%);
+  /* Tamaño por defecto de las ventanas flotantes. Cada ventana lo sobreescribe
+     con estas variables (evita competir por especificidad entre clases). */
+  width: var(--modal-width, min(960px, 100%));
+  height: var(--modal-height, min(640px, 100%));
   display: flex;
   flex-direction: column;
   background: var(--color-panel);
@@ -1998,8 +2038,8 @@ table.grid td.actions button {
      columna centrada si no alcanza el ancho de una tarjeta. El encabezado se
      acomoda en dos filas si no entra. */
   .rewards-window {
-    width: calc(100vw - 2rem);
-    height: calc(100vh - 2rem);
+    --modal-width: calc(100vw - 2rem);
+    --modal-height: calc(100vh - 2rem);
   }
 
   .rewards-window-head {
