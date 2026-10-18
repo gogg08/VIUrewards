@@ -2,6 +2,18 @@
 
 const BYTES_PER_MB = 1024 * 1024;
 
+// Escapa texto para incrustarlo en HTML armado como cadena (el markup compartido
+// de la tarjeta de recompensa se pinta con x-html, así que los datos externos
+// —títulos, mensajes, colores— deben escaparse a mano).
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 // Subidas simultáneas permitidas en el navegador; el resto queda en espera y
 // arranca solo. El servidor, además, encola el procesamiento de cada archivo.
 const UPLOAD_MAX_CONCURRENT = 2;
@@ -42,6 +54,35 @@ function writeSettingsTab(tab) {
     window.localStorage.setItem(SETTINGS_TAB_KEY, tab);
   } catch (error) {
     // No poder guardar no debe romper la app.
+  }
+}
+
+// Orden de la ventana grande de recompensas (solo este navegador).
+const REWARD_SORT_FIELDS = ["created", "cost"];
+const REWARD_SORT_DIRECTIONS = ["asc", "desc"];
+const REWARD_SORT_KEY = "viurewards.rewardsSort";
+const REWARD_SORT_DEFAULT = { field: "created", direction: "desc" };
+
+// Lee el orden guardado; cualquier valor inválido o fallo cae al valor por defecto.
+function readRewardsSort() {
+  try {
+    const raw = window.localStorage.getItem(REWARD_SORT_KEY);
+    if (!raw) return { ...REWARD_SORT_DEFAULT };
+    const parsed = JSON.parse(raw);
+    const field = REWARD_SORT_FIELDS.indexOf(parsed?.field) !== -1 ? parsed.field : REWARD_SORT_DEFAULT.field;
+    const direction =
+      REWARD_SORT_DIRECTIONS.indexOf(parsed?.direction) !== -1 ? parsed.direction : REWARD_SORT_DEFAULT.direction;
+    return { field, direction };
+  } catch (error) {
+    return { ...REWARD_SORT_DEFAULT };
+  }
+}
+
+function writeRewardsSort(sort) {
+  try {
+    window.localStorage.setItem(REWARD_SORT_KEY, JSON.stringify(sort));
+  } catch (error) {
+    // No poder guardar no debe romper la ventana.
   }
 }
 
@@ -188,6 +229,8 @@ function dashboardApp() {
     rewardsOffline: false,
     rewardsPlatformState: "unlinked",
     rewardsMessage: "",
+    // Mientras se contrasta con Kick: el ícono de Recargar gira y se bloquea.
+    rewardReloading: false,
     // Formulario de crear/editar recompensa (modal). `null` = cerrado.
     rewardForm: null,
     // Una vez elegido un clip la ventana crece y no se vuelve a achicar.
@@ -196,6 +239,14 @@ function dashboardApp() {
     rewardTitleTouched: false,
     rewardAdvancedOpen: false,
     rewardMessage: "",
+    // Ventana flotante grande con la grilla de todas las recompensas.
+    rewardsWindowOpen: false,
+    // Elemento que abrió la ventana; el foco vuelve ahí al cerrarla.
+    rewardsFocusOrigin: null,
+    // Orden de la ventana grande (solo este navegador).
+    rewardsSort: readRewardsSort(),
+    // Desplegable de "Ordenar por" abierto.
+    rewardsSortOpen: false,
     // Fotografía del formulario al abrirlo: para avisar cambios sin guardar.
     rewardSnapshot: "",
     // Confirmación base antes de borrar.
@@ -568,6 +619,10 @@ function dashboardApp() {
     // Esc cierra lo que esté abierto arriba de todo (ventanas de recompensa,
     // desplegable y luego Ajustes).
     onEscape() {
+      if (this.rewardsSortOpen) {
+        this.rewardsSortOpen = false;
+        return;
+      }
       if (this.settingsConfirm) {
         this.cancelConfirm();
         return;
@@ -586,6 +641,10 @@ function dashboardApp() {
       }
       if (this.rewardForm) {
         this.closeReward();
+        return;
+      }
+      if (this.rewardsWindowOpen) {
+        this.closeRewardsWindow();
         return;
       }
       if (this.downloadsOpen) {
@@ -1920,23 +1979,32 @@ function dashboardApp() {
         this.rewardsOffline = false;
         this.rewardsPlatformState = "unlinked";
         this.rewardsMessage = "";
+        this.rewardsWindowOpen = false;
         return;
       }
-      const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/rewards");
-      if (!response.ok) {
-        this.rewards = [];
-        this.rewardsConnected = false;
-        this.rewardsOffline = true;
-        this.rewardsPlatformState = platform.state;
-        this.rewardsMessage = "No se pudieron cargar las recompensas.";
-        return;
+      this.rewardReloading = true;
+      try {
+        const response = await api("/api/platforms/" + encodeURIComponent(platform.id) + "/rewards");
+        if (!response.ok) {
+          this.rewards = [];
+          this.rewardsConnected = false;
+          this.rewardsOffline = true;
+          this.rewardsPlatformState = platform.state;
+          this.rewardsMessage = "No se pudieron cargar las recompensas.";
+          if (this.rewardsLocked) this.rewardsWindowOpen = false;
+          return;
+        }
+        const data = await response.json();
+        this.rewards = data.rewards ?? [];
+        this.rewardsConnected = data.connected === true;
+        this.rewardsOffline = data.offline === true;
+        this.rewardsPlatformState = data.platformState ?? platform.state;
+        this.rewardsMessage = data.message ?? "";
+        // Si la plataforma deja de estar vinculada, la ventana grande se cierra.
+        if (this.rewardsLocked) this.rewardsWindowOpen = false;
+      } finally {
+        this.rewardReloading = false;
       }
-      const data = await response.json();
-      this.rewards = data.rewards ?? [];
-      this.rewardsConnected = data.connected === true;
-      this.rewardsOffline = data.offline === true;
-      this.rewardsPlatformState = data.platformState ?? platform.state;
-      this.rewardsMessage = data.message ?? "";
     },
 
     // Ruta de una recompensa local dentro de la API de la plataforma.
@@ -2124,9 +2192,13 @@ function dashboardApp() {
     },
 
     // Abre el selector de color nativo del cuadradito (input oculto de la tarjeta).
+    // Puede llamarse directo (con el clic en el cuadradito) o por delegación
+    // desde la tarjeta; en ambos casos se busca el input dentro de la tarjeta.
     openRewardColor(reward, event) {
       if (!this.rewardColorEditable(reward)) return;
-      const input = event.currentTarget.parentElement.querySelector(".reward-color-input");
+      const swatch = event.target && event.target.closest ? event.target.closest(".reward-swatch") : null;
+      const scope = swatch ? swatch.closest(".reward-card") : event.currentTarget;
+      const input = scope ? scope.querySelector(".reward-color-input") : null;
       if (input) input.click();
     },
 
@@ -2178,6 +2250,282 @@ function dashboardApp() {
           return "Zoom";
         default:
           return "Sin animación";
+      }
+    },
+
+    // --- Ventana grande de recompensas ----------------------------------------
+
+    // Lista ordenada SOLO para la ventana grande; el panel vertical conserva el
+    // orden del servidor. Las recompensas sin fecha local ("de otra app") van
+    // siempre al final, en ambas direcciones, ordenadas por nombre.
+    get sortedRewardsForWindow() {
+      const { field, direction } = this.rewardsSort;
+      const factor = direction === "asc" ? 1 : -1;
+      const items = this.rewards.slice();
+      items.sort((a, b) => {
+        const aNoDate = field === "created" && !a.createdAt;
+        const bNoDate = field === "created" && !b.createdAt;
+        if (aNoDate || bNoDate) {
+          if (aNoDate && bNoDate) return this.compareRewardNames(a, b);
+          return aNoDate ? 1 : -1;
+        }
+        if (field === "cost") {
+          const diff = Number(a.cost) - Number(b.cost);
+          if (diff !== 0) return diff * factor;
+          return this.compareRewardNames(a, b);
+        }
+        const diff = String(a.createdAt).localeCompare(String(b.createdAt));
+        if (diff !== 0) return diff * factor;
+        return this.compareRewardNames(a, b);
+      });
+      return items;
+    },
+
+    // Nombre normalizado (sin mayúsculas ni tildes) para desempatar.
+    compareRewardNames(a, b) {
+      const norm = (value) =>
+        String(value ?? "")
+          .toLowerCase()
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "");
+      return norm(a.title).localeCompare(norm(b.title));
+    },
+
+    rewardSortLabel(field) {
+      return field === "cost" ? "Puntos" : "Fecha añadida";
+    },
+
+    get rewardsSortDirectionLabel() {
+      return this.rewardsSort.direction === "asc" ? "Orden ascendente" : "Orden descendente";
+    },
+
+    toggleRewardsSortOpen() {
+      if (this.rewards.length === 0) return;
+      this.rewardsSortOpen = !this.rewardsSortOpen;
+    },
+
+    closeRewardsSort() {
+      this.rewardsSortOpen = false;
+    },
+
+    // Cierra el desplegable solo con clic afuera.
+    closeRewardsSortIfBackdrop(event) {
+      if (event.target === event.currentTarget) this.rewardsSortOpen = false;
+    },
+
+    selectRewardsSort(field) {
+      this.rewardsSort = { ...this.rewardsSort, field };
+      writeRewardsSort(this.rewardsSort);
+      this.rewardsSortOpen = false;
+    },
+
+    toggleRewardsSortDirection() {
+      const direction = this.rewardsSort.direction === "asc" ? "desc" : "asc";
+      this.rewardsSort = { ...this.rewardsSort, direction };
+      writeRewardsSort(this.rewardsSort);
+    },
+
+    // Ejecuta el callback después de que Alpine re-renderice, si está disponible
+    // (usa `$nextTick`); si no (por ejemplo en tests de lógica sin Alpine), corre
+    // enseguida. Así el foco se ubica sin depender del DOM real.
+    afterRender(fn) {
+      if (typeof this.$nextTick === "function") this.$nextTick(fn);
+      else fn();
+    },
+
+    openRewardsWindow() {
+      if (this.rewardsLocked) return;
+      this.rewardsSortOpen = false;
+      this.rewardsFocusOrigin = document.activeElement ?? null;
+      this.rewardsWindowOpen = true;
+      // Foco inicial en el botón de cerrar una vez renderizada la ventana.
+      this.afterRender(() => {
+        const close = document.querySelector(".rewards-window [aria-label='Cerrar']");
+        if (close) close.focus();
+      });
+    },
+
+    closeRewardsWindow() {
+      this.rewardsWindowOpen = false;
+      this.rewardsSortOpen = false;
+      // El foco vuelve al botón que abrió la ventana.
+      const origin = this.rewardsFocusOrigin;
+      this.rewardsFocusOrigin = null;
+      if (origin && typeof origin.focus === "function") {
+        this.afterRender(() => origin.focus());
+      }
+    },
+
+    // Trampa de foco simple: Tab cicla dentro de la ventana mientras está abierta.
+    trapRewardsWindowFocus(event) {
+      if (event.key !== "Tab") return;
+      const windowEl = event.currentTarget;
+      const focusables = windowEl.querySelectorAll(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      );
+      const list = Array.prototype.filter.call(focusables, (el) => !el.disabled && el.offsetParent !== null);
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+
+    // Clic fuera: cierra solo si no hay otra capa abierta encima.
+    closeRewardsWindowBackdrop(event) {
+      if (event.target !== event.currentTarget) return;
+      if (this.rewardForm || this.rewardPending || this.rewardDelete) return;
+      this.closeRewardsWindow();
+    },
+
+    // --- Tarjeta de recompensa (markup compartido) ----------------------------
+    // Una sola definición del markup: la usan el panel vertical y la ventana
+    // grande (grilla). Como Alpine local no tiene paso de build ni parciales,
+    // se devuelve el HTML y both contenedores lo pintan con x-html; la
+    // interactividad va por delegación de eventos (data-action).
+    rewardCardHtml(reward, showNoDate = false) {
+      const esc = escapeHtml;
+      const colorEditable = this.rewardColorEditable(reward);
+      const editable = this.rewardEditable(reward);
+      const toggleBlocked = this.rewardToggleBlocked(reward);
+      const editing = reward.state !== "missing";
+      const offlineExtra = reward.state === "missing" || reward.state === "offline";
+
+      const parts = [];
+      // Fila superior: nombre + cuadradito de color clicable.
+      parts.push('<div class="reward-card-top">');
+      parts.push(`<span class="reward-name">${esc(reward.title)}</span>`);
+      parts.push(
+        `<button type="button" class="reward-swatch${this.rewardColorSaving === reward.id ? " saving" : ""}"` +
+          ` style="background-color: ${esc(reward.color)}"` +
+          ` data-action="color"` +
+          (colorEditable
+            ? ' title="Cambiar color"'
+            : ` disabled title="${esc(this.rewardToggleHint(reward))}"`) +
+          ' aria-label="Cambiar color"></button>'
+      );
+      parts.push(
+        '<input type="color" class="reward-color-input" value="' +
+          esc(reward.color) +
+          '" aria-hidden="true" tabindex="-1" data-action="color-input" />'
+      );
+      parts.push("</div>");
+
+      // Resumen en una línea: costo · modo · parlante (solo audio).
+      const mode = this.rewardModeLabel(reward);
+      parts.push('<div class="reward-card-line">');
+      parts.push(`<span class="muted">${esc(reward.cost)} pts</span>`);
+      if (mode) parts.push(`<span class="muted">${esc(mode)}</span>`);
+      if (reward.audioOnly) {
+        parts.push(
+          '<span class="reward-audio-icon" title="Solo audio" aria-label="Solo audio">' +
+            '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">' +
+            '<path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z" />' +
+            "</svg></span>"
+        );
+      }
+      parts.push("</div>");
+
+      // Clip: nombre y duración (solo si apunta a un clip local).
+      if (reward.clipId) {
+        parts.push('<div class="reward-card-line"><span class="muted">' + esc(this.rewardClipLabel(reward)) + "</span></div>");
+      }
+      // "Sin fecha" solo en la ventana con orden por fecha: las recompensas sin
+      // fila local ("de otra app") no tienen fecha de creación.
+      if (showNoDate && !reward.createdAt) {
+        parts.push('<div class="reward-card-line"><span class="muted">sin fecha</span></div>');
+      }
+
+      // Etiqueta de estado, en su propia línea.
+      parts.push('<div class="reward-card-state">');
+      parts.push(`<span class="badge ${esc(this.rewardStateBadgeClass(reward))}">${esc(this.rewardStateLabel(reward))}</span>`);
+      if (!reward.synced && reward.state !== "offline") {
+        parts.push(
+          '<span class="badge off" title="Los datos todavía no se sincronizaron con Kick">Sin sincronizar</span>'
+        );
+      }
+      parts.push("</div>");
+
+      // Acciones extra de "Falta en Kick".
+      if (offlineExtra) {
+        parts.push('<div class="reward-card-extra">');
+        if (reward.state === "missing") {
+          parts.push('<button class="small" data-action="recreate">Recrear</button>');
+        }
+        parts.push('<button class="small" data-action="detach">Quitar de la app</button>');
+        parts.push("</div>");
+      }
+
+      parts.push('<hr class="reward-card-sep" />');
+
+      // Fila inferior: Editar/Borrar a la izquierda, interruptor a la derecha.
+      parts.push('<div class="reward-card-bottom"><div class="reward-card-actions">');
+      if (editing) {
+        parts.push(
+          `<button class="small" data-action="edit"` +
+            (editable ? ' title="Editar"' : ` disabled title="${esc(this.rewardToggleHint(reward))}"`) +
+            ">Editar</button>"
+        );
+        parts.push(
+          `<button class="small danger" data-action="delete"` +
+            (editable ? ' title="Borrar"' : ` disabled title="${esc(this.rewardToggleHint(reward))}"`) +
+            ">Borrar</button>"
+        );
+      }
+      parts.push("</div>");
+      parts.push(
+        `<button type="button" role="switch" class="switch${reward.enabled ? " on" : ""}"` +
+          ` aria-checked="${reward.enabled ? "true" : "false"}"` +
+          ` aria-label="Activar o desactivar ${esc(reward.title)}"` +
+          ` data-action="toggle"` +
+          (toggleBlocked
+            ? ` disabled title="${esc(this.rewardToggleHint(reward))}"`
+            : ' title="Activar o desactivar"') +
+          '><span class="switch-knob"></span></button>'
+      );
+      parts.push("</div>");
+
+      // Datos sin sincronizar y mensajes.
+      if (!reward.synced && reward.state !== "offline") {
+        parts.push('<p class="hint">Datos sin sincronizar con Kick.</p>');
+      }
+      if (reward.state === "apply_failed" && reward.error) {
+        parts.push(`<p class="error">${esc(reward.error)}</p>`);
+      }
+      if (reward.state === "foreign") {
+        parts.push('<p class="hint">La creó otra aplicación; Kick no permite editarla desde acá.</p>');
+      }
+      return parts.join("");
+    },
+
+    // Delegación: un solo handler por tarjeta decide según data-action.
+    onRewardCardClick(reward, event) {
+      const button = event.target.closest("[data-action]");
+      if (!button || !event.currentTarget.contains(button)) return;
+      const action = button.getAttribute("data-action");
+      if (action === "color") {
+        this.openRewardColor(reward, event);
+      } else if (action === "edit") {
+        this.editReward(reward);
+      } else if (action === "delete") {
+        this.deleteReward(reward);
+      } else if (action === "recreate") {
+        this.recreateReward(this.activePlatform, reward);
+      } else if (action === "detach") {
+        this.detachReward(this.activePlatform, reward);
+      } else if (action === "toggle") {
+        this.toggleReward(this.activePlatform, reward);
+      }
+    },
+
+    onRewardCardChange(reward, event) {
+      if (event.target.closest('[data-action="color-input"]')) {
+        this.applyRewardColor(reward, event);
       }
     },
 

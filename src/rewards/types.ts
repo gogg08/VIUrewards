@@ -55,6 +55,11 @@ export interface RewardListItem {
    * plataforma): la UI la muestra como "Sincronizando..." y bloquea Editar.
    */
   synced: boolean;
+  /**
+   * Fecha de creación local (ISO). `null` para las recompensas sin fila local (las
+   * "de otra app"): la UI las ordena al final y muestra "sin fecha".
+   */
+  createdAt: string | null;
 }
 
 /** Resultado de `GET` de recompensas: la vista unificada con el estado del vínculo. */

@@ -43,6 +43,10 @@
   --radius-lg: 14px;
   --radius-pill: 999px;
 
+  /* --- Componentes --- */
+  /* Ancho mínimo de cada pestaña del selector Cola / Historial. */
+  --queue-tab-min: 5.5rem;
+
   /* --- Tipografía --- */
   --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -73,6 +77,9 @@
   --reward-swatch-size: 1.25rem;
   --col-left-width: 320px;
   --col-right-width: 360px;
+  /* Ancho de la tarjeta de recompensa (panel vertical y ventana grande usan el
+     mismo). Sale de: col-left 320 − bordes y padding de la caja (2 + 2×16). */
+  --reward-card-width: 286px;
   /* Altura del logo (52 px; el diseño original pedía 32–40, ampliado a pedido);
      se achica en ventana angosta. */
   --logo-height: 52px;
@@ -587,12 +594,52 @@ input[type="checkbox"] {
   font-size: var(--text-lg);
 }
 
+/* Cabecera con un solo elemento centrado (selector Cola / Historial). */
+.box-head-center {
+  align-items: center;
+  padding-block: var(--space-3);
+}
+
 .box-title-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
   flex-wrap: wrap;
+}
+
+/* Encabezado de Recompensas: el título no se parte y los íconos van a la derecha. */
+.box-title-row h2 {
+  white-space: nowrap;
+}
+
+.reward-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+}
+
+/* El ícono de Recargar gira mientras se contrasta con Kick. */
+.icon-btn.spinning svg {
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Con movimiento reducido no gira: se muestra con opacidad reducida. */
+@media (prefers-reduced-motion: reduce) {
+  .icon-btn.spinning svg {
+    animation: none;
+  }
+}
+
+.icon-btn.spinning {
+  opacity: 0.7;
 }
 
 /* Contenido de la caja: scroll vertical, nunca horizontal. */
@@ -777,6 +824,20 @@ input[type="checkbox"] {
   font-weight: var(--weight-bold);
 }
 
+/* Selector Cola / Historial: ancho de contenido, centrado en la caja, con las
+   dos pestañas del mismo ancho (así el botón activo no cambia de tamaño). */
+.queue-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(var(--queue-tab-min), 1fr));
+  width: fit-content;
+  margin-inline: auto;
+}
+
+.queue-tabs button {
+  text-align: center;
+  white-space: nowrap;
+}
+
 /* --- Cola en vivo -------------------------------------------------------- */
 
 .queue-current {
@@ -851,6 +912,99 @@ input[type="checkbox"] {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+}
+
+/* Ventana grande: misma grilla de tarjetas que el panel vertical, con el mismo
+   ancho (var(--reward-card-width)) definido por variable CSS. Ocupa casi toda la
+   pantalla, centrada, sin tope de ancho fijo. */
+.rewards-window {
+  width: calc(100vw - 3rem);
+  height: calc(100vh - 3rem);
+}
+
+.rewards-window-body {
+  padding: var(--space-6);
+}
+
+/* Encabezado: título a la izquierda; orden y cerrar a la derecha. */
+.rewards-window-head {
+  flex-wrap: wrap;
+  gap: var(--space-3);
+}
+
+.rewards-window-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+/* El disparador del orden reutiliza la estética del selector de la biblioteca
+   (.segmented) pero como botón desplegable. */
+.rewards-sort-trigger {
+  gap: var(--space-2);
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.rewards-sort-caption {
+  color: var(--color-muted);
+}
+
+.rewards-sort-dir {
+  padding: var(--space-1);
+  line-height: 0;
+  color: var(--color-text);
+}
+
+.rewards-sort-menu {
+  right: auto;
+  left: 0;
+  min-width: 200px;
+  max-width: 260px;
+  padding: var(--space-2);
+}
+
+.rewards-sort-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rewards-sort-option {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--color-text);
+}
+
+.rewards-sort-option:hover,
+.rewards-sort-option:focus-visible {
+  background: var(--color-panel-2);
+}
+
+.rewards-sort-option.active {
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-weight: var(--weight-bold);
+}
+
+.reward-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, var(--reward-card-width));
+  justify-content: start;
+  gap: var(--space-4);
+}
+
+/* La tarjeta toma su ancho de la variable compartida por ambos lugares. */
+.reward-list .reward-card,
+.reward-grid .reward-card {
+  width: var(--reward-card-width);
 }
 
 /* Tarjeta de recompensa: nombre + color arriba; líneas de texto; etiqueta de
@@ -1838,6 +1992,27 @@ table.grid td.actions button {
   /* En ventana angosta el logo se achica antes de empujar los indicadores. */
   :root {
     --logo-height: 36px;
+  }
+
+  /* La ventana grande ocupa casi toda la pantalla y la grilla pasa a una
+     columna centrada si no alcanza el ancho de una tarjeta. El encabezado se
+     acomoda en dos filas si no entra. */
+  .rewards-window {
+    width: calc(100vw - 2rem);
+    height: calc(100vh - 2rem);
+  }
+
+  .rewards-window-head {
+    align-items: flex-start;
+  }
+
+  .rewards-window-tools {
+    flex-wrap: wrap;
+  }
+
+  .reward-grid {
+    grid-template-columns: var(--reward-card-width);
+    justify-content: center;
   }
 }
 

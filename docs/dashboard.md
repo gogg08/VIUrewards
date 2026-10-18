@@ -55,15 +55,30 @@ una **barra de pestañas fija** arriba (Recompensas, Clips, Cola).
   con `title`/`aria-label`; el de Descargas lleva el punto superpuesto en la esquina
   (sin punto sin actividad, verde si hay algo en curso, rojo si hubo un error sin
   ver). Después, Salir. El desplegable de Descargas sigue vacío (Etapa 3).
-- **Columna izquierda:** caja **Recompensas del canal**. Título, **Recargar** y
-  **Nueva recompensa** fijos arriba; el formulario y la lista scrollean dentro. La
-  lista se muestra como **tarjetas compactas** (nombre que hace wrap, costo, etiqueta
-  de estado y botones Editar/Borrar en una fila); las columnas Texto y Regla salen de
-  la vista (el dato se conserva). Es provisional hasta la Etapa 4.
+- **Columna izquierda:** caja **Recompensas del canal**. Título, dos **botones de
+  ícono** (**Recargar** y **Ver todas las recompensas**) y **Nueva recompensa**
+  fijos arriba; el formulario y la lista scrollean dentro. La lista se muestra como
+  **tarjetas compactas** (nombre que hace wrap, costo, etiqueta de estado y botones
+  Editar/Borrar en una fila); las columnas Texto y Regla salen de la vista (el dato se
+  conserva). El **markup de la tarjeta se define una sola vez** (`rewardCardHtml()` en
+  `web/app.js`): lo usan el panel vertical y la **ventana grande de recompensas**
+  (botón Ver todas), que ocupa casi toda la pantalla (`calc(100vw - 3rem)` ×
+  `calc(100vh - 3rem)`) y muestra todas en una grilla con el mismo ancho
+  (`var(--reward-card-width)` = 286 px) y la misma interactividad (delegación de
+  eventos). El encabezado de la ventana lleva, a la derecha del título, un **control de
+  orden** (desplegable **Fecha añadida** / **Puntos** + botón de dirección ↑/↓, con la
+  misma estética que el filtro de la biblioteca). El orden es **solo de la ventana**
+  (el panel vertical conserva el orden del servidor) y se guarda en `localStorage`
+  (`viurewards.rewardsSort`); por defecto, fecha añadida más reciente primero. Las
+  recompensas sin fecha local ("de otra app") van siempre al final y muestran "sin
+  fecha".
 - **Columna central:** dos cajas apiladas, **Agregar un clip** (fija) y **Biblioteca**
   (título fijo; la grilla scrollea dentro).
-- **Columna derecha:** **una sola caja** con el selector **Cola | Historial** dentro;
-  el contenido de la pestaña scrollea dentro. Los cuatro controles de la cola
+- **Columna derecha:** **una sola caja** con el **selector compacto y centrado**
+  **Cola | Historial** dentro; el contenido de la pestaña scrollea dentro. El selector
+  es de **ancho de contenido** (`fit-content` + `margin-inline: auto`), con las dos
+  pestañas del **mismo ancho** (`--queue-tab-min`) y navegación por flechas
+  (`role="tablist"`/`role="tab"`). Los cuatro controles de la cola
   (Saltar/Pausar/Reanudar/Vaciar) van en una sola fila, sin wrap (Vaciar en estilo
   peligro). El panel **no** repite el aviso de overlay desconectado. El Historial usa
   **filas de dos líneas** (título/recompensa + resultado; usuario · hora en 24 h
@@ -344,6 +359,24 @@ clave del overlay.
   `event`). Ver `src/server/web-assets.test.ts`.
 - **Sin `@fastify/cookie`**: el parseo y la serialización de cookies son propios
   (`src/server/cookies.ts`) para no sumar una dependencia sin consultar.
+- **Markup de la tarjeta de recompensa compartido (retoces de UI)**: el panel
+  vertical y la ventana grande necesitan la **misma** tarjeta. Como Alpine local
+  (3.14.9, sin build) no tiene parciales ni componentes reutilizables, se eligió una
+  **función de renderizado** (`rewardCardHtml(reward)` en `web/app.js`) que devuelve
+  el HTML y se pinta con `x-html` en los dos contenedores; la interactividad va por
+  **delegación de eventos** (`data-action` + `@click`/`@change` en la tarjeta). Los
+  datos externos (título, color, mensajes) se **escapan** con `escapeHtml()` porque
+  `x-html` no escapa. Así el markup de la tarjeta se define **una sola vez**.
+- **Control de orden solo en la ventana grande**: el requisito es que el panel
+  vertical conserve su orden (el del servidor, por `created_at`) y que el orden de la
+  ventana se recuerde entre aperturas. Por eso el estado (`rewardsSort`) vive en el
+  componente pero `sortedRewardsForWindow` es un **getter** que copia y ordena sin
+  mutar `this.rewards`; la elección se persiste en `localStorage`
+  (`viurewards.rewardsSort`) y no se envía al servidor. Se agregó `createdAt` a la
+  API de recompensas (la columna `rewards.created_at` ya existía desde la migración
+  v6, no se creó ninguna migración nueva); las recompensas "de otra app" no tienen
+  fila local, así que su `createdAt` es `null` y van al final con el texto "sin
+  fecha".
 - **Sin `@types/better-sqlite3`**: hay una declaración ambiental mínima en
   `src/types/better-sqlite3.d.ts`.
 - **Título de la recompensa en el Historial (Etapa 2B)**: el evento lo guarda como

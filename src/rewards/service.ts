@@ -606,6 +606,7 @@ export class RewardService {
       exitAnimation: local.exitAnimation,
       state,
       error: local.lastError,
+      createdAt: local.createdAt,
     };
   }
 
@@ -635,6 +636,7 @@ export class RewardService {
       state: "foreign",
       error: null,
       synced: true,
+      createdAt: null,
     };
   }
 }

@@ -46,7 +46,11 @@ Ventana angosta (menos de 1024 px, por ejemplo un dock de OBS): se muestra **una
 
 ## 4. Panel izquierdo: Recompensas
 
-La columna es **una caja** con scroll vertical interno (nunca horizontal). Arriba, fijos: el título, **Recargar** y **Nueva recompensa**; el contenido (formulario y lista) scrollea dentro de la caja.
+La columna es **una caja** con scroll vertical interno (nunca horizontal). Arriba, fijos: el título **Recompensas del canal**, dos botones de **ícono** y **Nueva recompensa**; el contenido (formulario y lista) scrollea dentro de la caja.
+
+- **Recargar (ícono):** dos flechas circulares, con `aria-label`/`title` "Recargar recompensas". Mientras carga gira (animación CSS) y el botón queda deshabilitado con `aria-busy`; con `prefers-reduced-motion: reduce` no gira y se muestra con opacidad reducida. Misma acción que antes: vuelve a contrastar las recompensas con Kick.
+- **Ver todas las recompensas (ícono):** un marco en L en la esquina superior derecha con una flecha diagonal; `title`/`aria-label` "Ver todas las recompensas". Abre la **ventana grande de recompensas** (sección 4.1). Queda **deshabilitado sin Kick vinculado** (mismo gris que el resto del panel) con la explicación en el `title`; con caída temporal de Kick (sin conexión) sigue habilitado y muestra las recompensas guardadas con el aviso de sin conexión.
+- Los dos íconos van a la derecha del título, con `gap` `var(--space-2)` y alineados verticalmente con él; el título no se parte en el ancho actual de la columna.
 
 Lista de recompensas con un botón "Nueva recompensa". Hasta la Etapa 4, la lista se muestra como **tarjetas compactas** con nombre (puede hacer wrap), costo, etiqueta de estado y los botones Editar/Borrar en una fila; las columnas Texto y Regla se quitan de la vista (el dato se conserva).
 
@@ -77,6 +81,37 @@ Espaciado: entre líneas de texto `var(--space-2)`; antes de la fila inferior `v
 
 **Sin Kick vinculado** (no vinculado o requiere volver a vincular): el panel completo queda en gris, sin nada interactivo, con un mensaje y un atajo a Ajustes → Kick. Si la caída es temporal (red o Kick caído), se muestran las recompensas guardadas con un aviso de "sin conexión" y los toggles bloqueados.
 
+### 4.1 Ventana grande de recompensas
+
+Al apretar **Ver todas las recompensas** se abre una **ventana flotante que ocupa casi toda la pantalla** (mismo sistema que Ajustes: modal sobre el fondo oscurecido).
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Recompensas del canal (12)         Ordenar por: [Fecha añadida ▾] [↓]   X  │
+├────────────────────────────────────────────────────────────────────────────┤
+│ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐                    │
+│ │ tarjeta   │ │ tarjeta   │ │ tarjeta   │ │ tarjeta   │  ← misma tarjeta   │
+│ └───────────┘ └───────────┘ └───────────┘ └───────────┘    que el panel   │
+│ ┌───────────┐ ┌───────────┐                                                │
+│ └───────────┘ └───────────┘                                                │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+- **Marco:** `width: calc(100vw - 3rem)` y `height: calc(100vh - 3rem)`, **sin tope de ancho fijo**, centrada. El **encabezado** es fijo: título **"Recompensas del canal (N)"** con la cantidad entre paréntesis a la izquierda; el **control de orden** (ver abajo) y el botón **X** de cerrar a la derecha. El **cuerpo scrollea por dentro** (solo vertical, nunca horizontal, con el scroll fino de la app) y usa padding `var(--space-6)`.
+- **Grilla:** `repeat(auto-fill, var(--reward-card-width))`, `justify-content: start`, `gap: var(--space-4)`. Muestra **todas** las recompensas con las **mismas tarjetas** que el panel vertical, idénticas en aspecto y **tamaño** (`var(--reward-card-width) = 286px`), en todos los estados. En pantallas anchas con pocas recompensas la grilla queda alineada arriba a la izquierda; si se ve desbalanceado, la alternativa es centrarla (`justify-content: center`), pero se deja a la izquierda para mantener el ancla visual.
+- **Markup compartido:** hay **una sola definición** del markup de la tarjeta (`rewardCardHtml()` en `web/app.js`). Como Alpine local (3.14, sin build) no tiene parciales ni componentes, el panel vertical y la ventana lo pintan con `x-html` y la interactividad va por **delegación de eventos** (`data-action`) en la tarjeta: interruptor de activar/desactivar (con su flujo de canjes pendientes), cuadradito de color (guarda al aceptar), Editar, Borrar, Recrear y Quitar de la app. Una sola lista de datos y un solo Recargar: lo que se cambia en la ventana se ve de inmediato en el panel vertical y al revés (sin segundo polling ni segunda copia del estado).
+- **Control de orden (solo la ventana):** mismo estilo que el filtro **Todos / Video / Audio** de la biblioteca (`.segmented`: mismo borde, fondo, radios, padding, tipografía y estados activo/hover), a la derecha del título y antes de la X: un **desplegable "Ordenar por"** con dos criterios (**Fecha añadida** y **Puntos**) y, a su lado, un **botón de dirección** con un ícono SVG de flecha (↑ ascendente / ↓ descendente) y `aria-label` "Orden ascendente"/"Orden descendente".
+  - **Por defecto:** Fecha añadida, **más reciente primero** (descendente). **Puntos:** por costo; en caso de empate, por **nombre** (alfabético, sin distinguir mayúsculas ni tildes). Ambos criterios admiten las dos direcciones.
+  - **Fecha añadida** usa `rewards.created_at` (la fecha local de creación, `createdAt` en la API). Las recompensas **sin fila local** (las "De otra app") no tienen fecha: van **siempre al final** de la lista, en ambas direcciones, ordenadas por nombre, y con "Fecha añadida" seleccionado muestran el texto secundario **"sin fecha"** en lugar de inventar una.
+  - El desplegable es accesible: abre con clic o Enter/Espacio (`role="listbox"`/`role="option"` con `aria-selected`), navega con flechas, cierra con Esc o clic afuera, y devuelve el foco al botón que lo abrió.
+  - La elección (criterio y dirección) se guarda en **`localStorage` de ese navegador** (`viurewards.rewardsSort`, con `try/catch`; valores inválidos caen al valor por defecto) y se recuerda entre aperturas. **Solo afecta a la ventana grande**; el panel vertical conserva el orden del servidor (por `created_at` ascendente).
+- **Capas:** Editar y Crear abren la ventana de edición **por encima** de la ventana grande; las confirmaciones de desactivar y borrar también. **Esc cierra de a una capa**, en orden: desplegable de orden → confirmaciones → ventana de edición → ventana grande → desplegable de Descargas → Ajustes. Clic afuera cierra la ventana grande solo si no hay otra capa abierta encima. Al cerrarla, el foco vuelve al botón que la abrió.
+- **Estado vacío:** "Todavía no creaste ninguna" y el control de orden deshabilitado. Si la plataforma deja de estar vinculada con la ventana abierta, la ventana se cierra sola.
+- **Responsive:** debajo de 1024 px ocupa casi toda la pantalla (margen de 1rem) y la grilla pasa a una columna centrada si el ancho no alcanza para una tarjeta; el encabezado se acomoda en dos filas si no entra (título arriba, orden y cerrar abajo); sin scroll horizontal en ninguna resolución. En el modo de una columna por vez (barra de pestañas) el botón funciona igual.
+- **Accesibilidad:** `role="dialog"`, `aria-modal="true"`, `aria-labelledby` apuntando al título, foco inicial en el botón de cerrar, trampa de foco simple (Tab cicla dentro) y foco visible.
+
+**Estado:** implementado (ventana grande con markup de tarjeta compartido y control de orden persistido).
+
 ## 5. Panel central
 
 Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Biblioteca** (título fijo; la grilla de clips scrollea dentro de la caja). Scroll vertical interno, nunca horizontal.
@@ -101,7 +136,22 @@ Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Bib
 
 ## 6. Panel derecho: Cola e Historial
 
-**Una sola caja** con scroll vertical interno (nunca horizontal). Arriba, dentro de la caja, el selector **Cola | Historial**; debajo, el contenido de la pestaña, que scrollea dentro de la caja.
+**Una sola caja** con scroll vertical interno (nunca horizontal). Arriba, dentro de la caja, el **selector compacto Cola | Historial**, centrado horizontalmente; debajo, el contenido de la pestaña, que scrollea dentro de la caja.
+
+**Selector Cola | Historial** (compacto y centrado, no de ancho completo):
+
+```
+┌──────────────────────────────────────┐
+│          ┌───────┬───────────┐        │
+│          │ Cola  │ Historial │        │  centrado, ancho de contenido
+│          └───────┴───────────┘        │  (inline-flex / fit-content)
+└──────────────────────────────────────┘
+```
+- Contenedor de **ancho de contenido** (`width: fit-content; margin-inline: auto`), **no** de ancho completo (sin `width: 100%` ni `flex: 1`).
+- Las dos pestañas con el **mismo ancho** (grilla de 2 columnas iguales con un mínimo cómodo `var(--queue-tab-min)`), textos centrados y sin partirse (`white-space: nowrap`); así el botón verde activo **no cambia de tamaño** al alternar.
+- Se conserva el estilo del contenedor (borde, fondo, radios, padding) y el de la pestaña activa (verde). La cabecera del panel usa `padding-block: var(--space-3)`.
+- Accesibilidad: `role="tablist"` con `aria-label`, dos `role="tab"` con `aria-selected`, y **navegación por flechas** izquierda/derecha entre las dos pestañas (misma acción que el clic).
+- Funciona con el panel angosto (ancho de dock de OBS, menos de 1024 px, una columna por vez): el selector sigue centrado y no se parte.
 
 - **Cola:** botones Saltar, Pausar, Reanudar, Vaciar y Cortar audios en una sola fila (sin wrap). Muestra el clip en reproducción y los que esperan. **Nombre del ítem (decision):** el servidor resuelve el **nombre del clip** en un solo lugar (`title`, o `"Clip no disponible"` si el clip ya no existe, **nunca el id**) para todos los caminos (canje real, simulador, Probar alerta, reencolado). La UI muestra **"nombre del clip · título de la recompensa"** cuando el contexto de la recompensa difiere del nombre del clip (p. ej. `Goku Ahhh! · test123`); si no hay título de recompensa o coincide con el del clip, muestra solo el nombre. El texto largo **salta de línea** dentro de la caja (`overflow-wrap: anywhere`), nunca desborda ni muestra el id. Cada ítem de **solo audio** lleva un ícono de parlante junto al nombre. Saltar es la forma de destrabar el clip en curso; Vaciar solo limpia la espera. El panel **no** muestra el aviso de overlay desconectado: eso lo informa el indicador del encabezado (con tooltip "Revisá la fuente en OBS"). **Cortar audios** corta todas las voces superpuestas de los overlays conectados (modo `overlap`); no toca la cola.
 - **Historial:** **filas de dos líneas**, sin truncar. Línea 1: el título de la recompensa (guardado como texto en el evento, para leerse aunque la recompensa ya no exista; si el evento no lo trae, el tipo en español) y el resultado como etiqueta (`Disparó`, `Disparó · superpuesto`, `Omitido`, etc.). Línea 2: usuario · hora · motivo si lo hay (`cooldown, faltan N s`, `sin overlay conectado`, `sin clip`), en texto secundario. Hora en formato 24 h corto (por ejemplo 18:59).

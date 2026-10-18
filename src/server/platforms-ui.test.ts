@@ -299,13 +299,17 @@ describe("UI del dashboard (plataformas)", () => {
   });
 
   it("el cuadradito de color de la tarjeta usa change (no input) y una sola solicitud", () => {
-    expect(html).toMatch(/@change="applyRewardColor\(reward, \$event\)"/);
-    expect(html).not.toMatch(/@input="applyRewardColor/);
+    // La tarjeta comparte su markup (rewardCardHtml): el input de color usa
+    // data-action="color-input" y el change se atiende por delegación (no por
+    // input, que se dispara mientras se arrastra).
+    expect(app).toMatch(/data-action="color-input"/);
+    expect(app).toMatch(/onRewardCardChange\(reward, event\)/);
+    expect(app).not.toMatch(/addEventListener\(["']input["']/);
+    expect(app).toContain("rewardColorSaving");
     // Botón accesible con aria-label "Cambiar color".
-    expect(html).toMatch(/aria-label="Cambiar color"/);
+    expect(app).toContain('aria-label="Cambiar color"');
     expect(defines(app, "openRewardColor"), "app.js no define openRewardColor()").toBe(true);
     expect(defines(app, "applyRewardColor"), "app.js no define applyRewardColor()").toBe(true);
-    expect(app).toContain("rewardColorSaving");
   });
 
   it("la tarjeta no muestra 'Clip no disponible' para las recompensas de otra app", () => {
@@ -352,7 +356,8 @@ describe("UI del dashboard (plataformas)", () => {
     // Superponer fuerza y bloquea "solo audio".
     expect(app).toContain("rewardAudioOnlyLocked");
     expect(app).toContain("syncRewardAudioOnly");
-    expect(html).toMatch(/x-show="reward\.audioOnly"/);
+    // El parlante de la tarjeta se dibuja en el markup compartido.
+    expect(app).toMatch(/reward\.audioOnly/);
   });
 
   // --- Correcciones de la UI (revisión en el navegador) ---------------------
@@ -377,28 +382,101 @@ describe("UI del dashboard (plataformas)", () => {
     expect(methodRefsWithoutCall(html, methods)).toEqual([]);
   });
 
+  it("el markup de la tarjeta de recompensa se define una sola vez y lo usan los dos lugares", () => {
+    // Una sola definición (rewardCardHtml en app.js) y dos contenedores (panel
+    // vertical y ventana grande) que la pintan con x-html.
+    expect(defines(app, "rewardCardHtml")).toBe(true);
+    const uses = [...html.matchAll(/x-html="rewardCardHtml\(reward/g)];
+    expect(uses.length).toBe(2);
+    // El markup viejo (clases de tarjeta) ya no está duplicado en index.html.
+    expect(html).not.toMatch(/class="reward-card-top"/);
+    expect(html).not.toMatch(/class="reward-card-bottom"/);
+    expect(html).not.toMatch(/class="reward-name"/);
+  });
+
+  it("la ventana grande de recompensas tiene el marco y la accesibilidad pedidos", () => {
+    expect(html).toMatch(/<template x-if="rewardsWindowOpen">/);
+    expect(html).toMatch(/class="modal-window rewards-window"/);
+    expect(html).toMatch(/role="dialog"[\s\S]*aria-modal="true"[\s\S]*aria-labelledby="rewards-window-title"/);
+    expect(html).toContain('id="rewards-window-title"');
+    expect(html).toMatch(/@keydown\.tab="trapRewardsWindowFocus\(\$event\)"/);
+    expect(defines(app, "trapRewardsWindowFocus")).toBe(true);
+    expect(defines(app, "closeRewardsWindowBackdrop")).toBe(true);
+    // Estado vacío y grilla.
+    expect(html).toContain("Todavía no creaste ninguna");
+    expect(html).toMatch(/class="reward-grid"/);
+  });
+
+  it("la grilla y el panel comparten el ancho de tarjeta por variable CSS", () => {
+    const css = read("style.css");
+    expect(css).toMatch(/--reward-card-width:/);
+    expect(css).toMatch(/\.reward-grid\s*\{[^}]*repeat\(auto-fill, var\(--reward-card-width\)\)/s);
+    expect(css).toMatch(/\.reward-grid\s*\{[^}]*justify-content:\s*start/s);
+    expect(css).toMatch(/\.reward-grid\s*\{[^}]*gap:\s*var\(--space-4\)/s);
+    expect(css).toMatch(/\.reward-list \.reward-card,[\s\S]*\.reward-grid \.reward-card\s*\{[^}]*width:\s*var\(--reward-card-width\)/s);
+    // La ventana grande ocupa casi toda la pantalla (sin tope de ancho fijo).
+    expect(css).toMatch(/\.rewards-window\s*\{[^}]*width:\s*calc\(100vw - 3rem\)/s);
+    expect(css).toMatch(/\.rewards-window\s*\{[^}]*height:\s*calc\(100vh - 3rem\)/s);
+    expect(css).not.toMatch(/\.rewards-window\s*\{[^}]*max-width/s);
+  });
+
+  it("el control de orden de la ventana reutiliza la estética del selector de la biblioteca", () => {
+    // El disparador y el botón de dirección usan la clase base `.segmented`
+    // (mismo borde, fondo, radios, padding y activo/hover), sin estilos nuevos.
+    expect(html).toMatch(/class="segmented rewards-sort-trigger"/);
+    expect(html).toMatch(/class="segmented rewards-sort-dir"/);
+    // El desplegable ofrece los dos criterios.
+    expect(html).toMatch(/role="listbox"[^>]*aria-label="Ordenar por"/s);
+    expect(defines(app, "rewardSortLabel")).toBe(true);
+    expect(app).toMatch(/Fecha añadida/);
+    expect(app).toMatch(/Puntos/);
+    // Dirección con aria-label y estado claro.
+    expect(html).toMatch(/:aria-label="rewardsSortDirectionLabel"/);
+    expect(defines(app, "toggleRewardsSortDirection")).toBe(true);
+    expect(app).toMatch(/get rewardsSortDirectionLabel\(\)/);
+    // El desplegable es accesible (aria-expanded, listbox/option, aria-selected).
+    expect(html).toMatch(/:aria-expanded="rewardsSortOpen \? 'true' : 'false'"/);
+    expect(html).toMatch(/role="option"/);
+    expect(html).toMatch(/:aria-selected="rewardsSort\.field === field/);
+  });
+
+  it("el control de orden se guarda en localStorage y la ventana ordena solo a ella", () => {
+    expect(app).toContain("viurewards.rewardsSort");
+    expect(app).toMatch(/get sortedRewardsForWindow\(\)/);
+    expect(defines(app, "selectRewardsSort")).toBe(true);
+    // La ventana usa la lista ordenada; el panel vertical usa `rewards` directo.
+    expect(html).toMatch(/x-for="reward in sortedRewardsForWindow"/);
+    expect(html).toMatch(/x-for="reward in rewards"/);
+  });
+
   it("la fila inferior de la tarjeta tiene botones e interruptor en el mismo contenedor", () => {
-    // Un solo `.reward-card-bottom` con las acciones y el switch dentro, y el
-    // estilo los separa a los extremos (space-between).
-    expect(html).toMatch(/class="reward-card-bottom"/);
-    expect(html).toMatch(/class="reward-card-actions"/);
-    const block = html.slice(html.indexOf('class="reward-card-bottom"'));
-    const end = block.indexOf("</div>", block.indexOf("switch-knob"));
+    // El markup compartido arma un solo `.reward-card-bottom` con las acciones y
+    // el switch dentro; el estilo los separa a los extremos (space-between).
+    expect(app).toContain('class="reward-card-bottom"');
+    expect(app).toContain('class="reward-card-actions"');
+    const block = app.slice(app.indexOf('class="reward-card-bottom"'));
+    const end = block.indexOf("data-action=\"toggle\"");
     const row = block.slice(0, end);
-    expect(row).toContain("Editar");
-    expect(row).toContain("Borrar");
-    expect(row).toMatch(/role="switch"/);
+    expect(row).toContain('data-action="edit"');
+    expect(row).toContain('data-action="delete"');
+    expect(block).toMatch(/role=\"switch\"/);
     const css = read("style.css");
     const rule = css.match(/\.reward-card-bottom\s*\{[^}]*\}/)?.[0] ?? "";
     expect(rule).toMatch(/justify-content:\s*space-between/);
   });
 
   it("la etiqueta de estado no comparte fila con los botones ni con el interruptor", () => {
-    // La tarjeta pone la etiqueta en su propia línea (`.reward-card-state`) y la
-    // fila inferior solo tiene acciones + switch.
-    expect(html).toMatch(/class="reward-card-state"/);
-    const bottom = html.slice(html.indexOf('class="reward-card-bottom"'));
-    const row = bottom.slice(0, bottom.indexOf("</div>", bottom.indexOf("switch-knob")));
+    // La tarjeta pone la etiqueta en su propia línea (`.reward-card-state`), que
+    // se cierra antes de la fila inferior.
+    expect(app).toContain('class="reward-card-state"');
+    const block = app.slice(app.indexOf('class="reward-card-state"'));
+    const stateEnd = block.indexOf("</div>");
+    const stateLine = block.slice(0, stateEnd);
+    expect(stateLine).toContain("rewardStateLabel");
+    expect(stateLine).not.toContain('data-action="toggle"');
+    // La fila inferior (actions + switch) aparece después, en su propio bloque.
+    const bottom = app.slice(app.indexOf('class="reward-card-bottom"'));
+    const row = bottom.slice(0, bottom.indexOf("data-action=\"toggle\""));
     expect(row).not.toContain("rewardStateLabel");
   });
 
@@ -464,6 +542,72 @@ describe("UI del dashboard (plataformas)", () => {
     expect(html).toMatch(/x-show="[^"]*params[^"]*audioOnly"/);
     const css = read("style.css");
     expect(css).toMatch(/\.queue-item-name\s*\{[^}]*overflow-wrap:\s*anywhere/s);
+  });
+
+  it("el selector Cola / Historial es compacto y centrado, no de ancho completo", () => {
+    // El contenedor usa su propio ancho (fit-content) y se centra; NO se estira
+    // a todo el ancho de la caja (sin width: 100% ni flex: 1).
+    expect(html).toMatch(/class="segmented queue-tabs"[^>]*role="tablist"/);
+    const css = read("style.css");
+    const rule = css.match(/\.queue-tabs\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/width:\s*fit-content/);
+    expect(rule).toMatch(/margin-inline:\s*auto/);
+    expect(rule).not.toMatch(/width:\s*100%/);
+    expect(rule).not.toMatch(/flex:\s*1\b/);
+  });
+
+  it("las dos pestañas del selector comparten el mismo ancho", () => {
+    // Grilla de dos columnas iguales, con un mínimo cómodo por variable, para
+    // que el botón activo no cambie de tamaño al alternar.
+    const css = read("style.css");
+    const rule = css.match(/\.queue-tabs\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(rule).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(var\(--queue-tab-min\),\s*1fr\)\)/);
+    expect(css).toMatch(/--queue-tab-min:/);
+    const tabRule = css.match(/\.queue-tabs button\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(tabRule).toMatch(/white-space:\s*nowrap/);
+    expect(tabRule).toMatch(/text-align:\s*center/);
+  });
+
+  it("el selector Cola / Historial expone los roles de pestañas y las flechas", () => {
+    // role=tablist con su etiqueta, dos role=tab con aria-selected, y navegación
+    // por flechas izquierda/derecha entre las dos pestañas.
+    expect(html).toMatch(/role="tablist"/);
+    const tabs = [...html.matchAll(/role="tab"/g)];
+    expect(tabs.length).toBe(2);
+    expect(html).toMatch(/:aria-selected="rightTab === 'queue'"/);
+    expect(html).toMatch(/:aria-selected="rightTab === 'history'"/);
+    expect(html).toMatch(/@keydown\.arrow-left[^>]*setRightTab/);
+    expect(html).toMatch(/@keydown\.arrow-right[^>]*setRightTab/);
+    expect(app).toMatch(/setRightTab\(/);
+  });
+
+  it("el encabezado de Recompensas usa íconos, no un botón de texto Recargar", () => {
+    // Ya no hay un botón de texto "Recargar": ahora es un ícono con aria-label.
+    expect(html).not.toMatch(/>\s*Recargar\s*</);
+    expect(html).toMatch(/aria-label="Recargar recompensas"/);
+    expect(html).toMatch(/aria-label="Ver todas las recompensas"/);
+    expect(html).toMatch(/class="reward-head-actions"/);
+  });
+
+  it("Recargar gira mientras carga (aria-busy) y respeta prefers-reduced-motion", () => {
+    expect(html).toMatch(/:class="{ spinning: rewardReloading }"/);
+    expect(html).toMatch(/:aria-busy="rewardReloading \? 'true' : 'false'"/);
+    expect(app).toMatch(/rewardReloading: false/);
+    expect(app).toMatch(/this\.rewardReloading = true/);
+    expect(app).toMatch(/this\.rewardReloading = false/);
+    const css = read("style.css");
+    expect(css).toMatch(/\.icon-btn\.spinning svg\s*\{[^}]*animation:/s);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{[^}]*\.icon-btn\.spinning svg\s*\{[^}]*animation:\s*none/s);
+  });
+
+  it("el botón Ver todas queda deshabilitado sin Kick vinculado", () => {
+    // El botón de la ventana grande depende de rewardsLocked (sin vínculo o
+    // requiere revincular); con caída temporal sigue habilitado.
+    const block = html.slice(html.indexOf("Ver todas las recompensas") - 400, html.indexOf("Ver todas las recompensas") + 200);
+    expect(block).toMatch(/:disabled="rewardsLocked"/);
+    expect(html).toMatch(/openRewardsWindow\(\)/);
+    expect(defines(app, "openRewardsWindow")).toBe(true);
+    expect(defines(app, "closeRewardsWindow")).toBe(true);
   });
 
   it("cada indicador del encabezado abre Ajustes en su pestaña", () => {

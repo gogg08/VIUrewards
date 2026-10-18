@@ -198,14 +198,59 @@
             <div class="box-head">
               <div class="box-title-row">
                 <h2>Recompensas del canal</h2>
-                <button
-                  class="small"
-                  @click="loadRewards(activePlatform)"
-                  :disabled="rewardsLocked"
-                  title="Contrastar las recompensas con Kick"
-                >
-                  Recargar
-                </button>
+                <div class="reward-head-actions">
+                  <!-- Recargar: ícono propio, gira mientras se contrasta con Kick. -->
+                  <button
+                    type="button"
+                    class="icon-btn ghost"
+                    :class="{ spinning: rewardReloading }"
+                    @click="loadRewards(activePlatform)"
+                    :disabled="rewardsLocked || rewardReloading"
+                    :aria-busy="rewardReloading ? 'true' : 'false'"
+                    title="Recargar recompensas"
+                    aria-label="Recargar recompensas"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                      <path d="M21 3v5h-5" />
+                    </svg>
+                  </button>
+                  <!-- Ver todas: abre la ventana grande con la grilla de tarjetas. -->
+                  <button
+                    type="button"
+                    class="icon-btn ghost"
+                    @click="openRewardsWindow()"
+                    :disabled="rewardsLocked"
+                    :title="rewardsLocked ? 'Vinculá tu cuenta de Kick para ver todas las recompensas' : 'Ver todas las recompensas'"
+                    aria-label="Ver todas las recompensas"
+                  >
+                    <svg
+                      viewBox="0 0 24 24"
+                      width="18"
+                      height="18"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M14 4h6v6" />
+                      <path d="M20 4 11 13" />
+                      <path d="M9 4H4v16h16v-5" />
+                    </svg>
+                  </button>
+                </div>
               </div>
               <button class="primary block" x-show="!rewardsLocked" @click="newReward()">Nueva recompensa</button>
             </div>
@@ -233,127 +278,12 @@
 
                   <div class="reward-list" x-show="rewards.length > 0">
                     <template x-for="reward in rewards" :key="reward.id">
-                      <div class="reward-card">
-                        <div class="reward-card-top">
-                          <span class="reward-name" x-text="reward.title"></span>
-                          <!-- Cuadradito de color clicable: abre el selector nativo y
-                               guarda solo al terminar (evento change). -->
-                          <button
-                            type="button"
-                            class="reward-swatch"
-                            :class="{ saving: rewardColorSaving === reward.id }"
-                            :style="'background-color: ' + reward.color"
-                            :disabled="!rewardColorEditable(reward)"
-                            :title="rewardColorEditable(reward) ? 'Cambiar color' : rewardToggleHint(reward)"
-                            aria-label="Cambiar color"
-                            @click="openRewardColor(reward, $event)"
-                          ></button>
-                          <input
-                            type="color"
-                            class="reward-color-input"
-                            :value="reward.color"
-                            x-cloak
-                            aria-hidden="true"
-                            tabindex="-1"
-                            @change="applyRewardColor(reward, $event)"
-                          />
-                        </div>
-
-                        <!-- Resumen en una línea: costo · modo · parlante (solo audio). -->
-                        <div class="reward-card-line">
-                          <span class="muted" x-text="reward.cost + ' pts'"></span>
-                          <span class="muted" x-show="rewardModeLabel(reward)" x-text="rewardModeLabel(reward)"></span>
-                          <!-- Ícono de parlante cuando la alerta es solo audio. -->
-                          <span
-                            class="reward-audio-icon"
-                            x-show="reward.audioOnly"
-                            title="Solo audio"
-                            aria-label="Solo audio"
-                          >
-                            <svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" aria-hidden="true">
-                              <path d="M4 9v6h4l5 4V5L8 9H4zm12.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z" />
-                            </svg>
-                          </span>
-                        </div>
-
-                        <!-- Clip: nombre y duración (solo si apunta a un clip local). -->
-                        <div class="reward-card-line" x-show="reward.clipId">
-                          <span class="muted" x-text="rewardClipLabel(reward)"></span>
-                        </div>
-
-                        <!-- Etiqueta de estado, en su propia línea. -->
-                        <div class="reward-card-state">
-                          <span class="badge" :class="rewardStateBadgeClass(reward)" x-text="rewardStateLabel(reward)"></span>
-                          <span
-                            class="badge off"
-                            x-show="!reward.synced && reward.state !== 'offline'"
-                            title="Los datos todavía no se sincronizaron con Kick"
-                          >
-                            Sin sincronizar
-                          </span>
-                        </div>
-
-                        <!-- Acciones extra de "Falta en Kick". -->
-                        <div class="reward-card-extra" x-show="reward.state === 'missing' || reward.state === 'offline'">
-                          <template x-if="reward.state === 'missing'">
-                            <button class="small" @click="recreateReward(activePlatform, reward)">Recrear</button>
-                          </template>
-                          <!-- Con Kick sin conexión también se puede quitar de la app:
-                               el borrado es local y no necesita la API. -->
-                          <button class="small" @click="detachReward(activePlatform, reward)">Quitar de la app</button>
-                        </div>
-
-                        <hr class="reward-card-sep" />
-
-                        <!-- Fila inferior: Editar/Borrar a la izquierda, interruptor a la derecha. -->
-                        <div class="reward-card-bottom">
-                          <div class="reward-card-actions">
-                            <button
-                              class="small"
-                              x-show="reward.state !== 'missing'"
-                              @click="editReward(reward)"
-                              :disabled="!rewardEditable(reward)"
-                              :title="rewardEditable(reward) ? 'Editar' : rewardToggleHint(reward)"
-                            >
-                              Editar
-                            </button>
-                            <button
-                              class="small danger"
-                              x-show="reward.state !== 'missing'"
-                              @click="deleteReward(reward)"
-                              :disabled="!rewardEditable(reward)"
-                              :title="rewardEditable(reward) ? 'Borrar' : rewardToggleHint(reward)"
-                            >
-                              Borrar
-                            </button>
-                          </div>
-
-                          <button
-                            type="button"
-                            role="switch"
-                            class="switch"
-                            :class="{ on: reward.enabled }"
-                            :aria-checked="reward.enabled ? 'true' : 'false'"
-                            :aria-label="'Activar o desactivar ' + reward.title"
-                            :disabled="rewardToggleBlocked(reward)"
-                            :title="rewardToggleBlocked(reward) ? rewardToggleHint(reward) : 'Activar o desactivar'"
-                            @click="toggleReward(activePlatform, reward)"
-                          >
-                            <span class="switch-knob"></span>
-                          </button>
-                        </div>
-
-                        <!-- Datos sin sincronizar (fila importada, todavía sin respuesta de Kick). -->
-                        <p class="hint" x-show="!reward.synced && reward.state !== 'offline'">
-                          Datos sin sincronizar con Kick.
-                        </p>
-                        <!-- Mensaje de la última operación fallida. -->
-                        <p class="error" x-show="reward.state === 'apply_failed' && reward.error" x-text="reward.error"></p>
-                        <!-- Explicación de las recompensas de otra app. -->
-                        <p class="hint" x-show="reward.state === 'foreign'">
-                          La creó otra aplicación; Kick no permite editarla desde acá.
-                        </p>
-                      </div>
+                      <div
+                        class="reward-card"
+                        @click="onRewardCardClick(reward, $event)"
+                        @change="onRewardCardChange(reward, $event)"
+                        x-html="rewardCardHtml(reward)"
+                      ></div>
                     </template>
                   </div>
                 </div>
@@ -503,10 +433,28 @@
         <!-- -------- Panel derecho: Cola e Historial -------- -->
         <aside class="col col-right" :class="{ 'narrow-hidden': mobileTab !== 'queue' }">
           <div class="box box-grow">
-            <div class="box-head">
-              <div class="segmented">
-                <button :class="{ active: rightTab === 'queue' }" @click="setRightTab('queue')">Cola</button>
-                <button :class="{ active: rightTab === 'history' }" @click="setRightTab('history')">Historial</button>
+            <div class="box-head box-head-center">
+              <div class="segmented queue-tabs" role="tablist" aria-label="Cola e Historial">
+                <button
+                  role="tab"
+                  :aria-selected="rightTab === 'queue'"
+                  :class="{ active: rightTab === 'queue' }"
+                  @click="setRightTab('queue')"
+                  @keydown.arrow-left.prevent="setRightTab('history')"
+                  @keydown.arrow-right.prevent="setRightTab('queue')"
+                >
+                  Cola
+                </button>
+                <button
+                  role="tab"
+                  :aria-selected="rightTab === 'history'"
+                  :class="{ active: rightTab === 'history' }"
+                  @click="setRightTab('history')"
+                  @keydown.arrow-left.prevent="setRightTab('queue')"
+                  @keydown.arrow-right.prevent="setRightTab('history')"
+                >
+                  Historial
+                </button>
               </div>
             </div>
 
@@ -1312,6 +1260,130 @@
           </div>
         </div>
       </div>
+      </template>
+
+      <!-- ================= Ventana grande de recompensas ================= -->
+      <template x-if="rewardsWindowOpen">
+        <div class="modal" x-cloak @click="closeRewardsWindowBackdrop($event)">
+          <div
+            class="modal-window rewards-window"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="rewards-window-title"
+            @keydown.tab="trapRewardsWindowFocus($event)"
+          >
+            <div class="modal-head rewards-window-head">
+              <h2 id="rewards-window-title">
+                Recompensas del canal <span class="muted" x-text="'(' + rewards.length + ')'"></span>
+              </h2>
+              <div class="rewards-window-tools">
+                <!-- Ordenar por: mismo estilo base que el selector de la biblioteca. -->
+                <div class="dropdown" @click.outside="closeRewardsSortIfBackdrop($event)">
+                  <button
+                    type="button"
+                    class="segmented rewards-sort-trigger"
+                    :disabled="rewards.length === 0"
+                    aria-haspopup="listbox"
+                    :aria-expanded="rewardsSortOpen ? 'true' : 'false'"
+                    @click="toggleRewardsSortOpen()"
+                    @keydown.escape.prevent="closeRewardsSort()"
+                    title="Ordenar por"
+                  >
+                    <span class="rewards-sort-caption">Ordenar por:</span>
+                    <span x-text="rewardSortLabel(rewardsSort.field)"></span>
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M6 9l6 6 6-6" />
+                    </svg>
+                  </button>
+                  <div class="dropdown-menu rewards-sort-menu" x-show="rewardsSortOpen" x-cloak>
+                    <ul class="rewards-sort-list" role="listbox" aria-label="Ordenar por">
+                      <template x-for="field in ['created', 'cost']" :key="field">
+                        <li
+                          role="option"
+                          tabindex="0"
+                          :aria-selected="rewardsSort.field === field ? 'true' : 'false'"
+                          :class="{ active: rewardsSort.field === field }"
+                          class="rewards-sort-option"
+                          @click="selectRewardsSort(field)"
+                          @keydown.enter.prevent="selectRewardsSort(field)"
+                          @keydown.space.prevent="selectRewardsSort(field)"
+                          @keydown.up.prevent="selectRewardsSort(field === 'cost' ? 'created' : 'cost')"
+                          @keydown.down.prevent="selectRewardsSort(field === 'cost' ? 'created' : 'cost')"
+                          x-text="rewardSortLabel(field)"
+                        ></li>
+                      </template>
+                    </ul>
+                  </div>
+                </div>
+                <!-- Dirección: el ícono indica ascendente (↑) o descendente (↓). -->
+                <button
+                  type="button"
+                  class="segmented rewards-sort-dir"
+                  :disabled="rewards.length === 0"
+                  @click="toggleRewardsSortDirection()"
+                  :title="rewardsSortDirectionLabel"
+                  :aria-label="rewardsSortDirectionLabel"
+                >
+                  <svg
+                    x-show="rewardsSort.direction === 'asc'"
+                    viewBox="0 0 24 24"
+                    width="16"
+                    height="16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 19V5" />
+                    <path d="M5 12l7-7 7 7" />
+                  </svg>
+                  <svg
+                    x-show="rewardsSort.direction === 'desc'"
+                    viewBox="0 0 24 24"
+                    width="16"
+                    height="16"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M12 5v14" />
+                    <path d="M19 12l-7 7-7-7" />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  class="icon-btn ghost"
+                  @click="closeRewardsWindow()"
+                  title="Cerrar"
+                  aria-label="Cerrar"
+                >
+                  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M6 6 18 18" />
+                    <path d="M18 6 6 18" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+            <div class="modal-body rewards-window-body">
+              <p class="empty" x-show="rewards.length === 0">Todavía no creaste ninguna.</p>
+              <div class="reward-grid" x-show="rewards.length > 0">
+                <template x-for="reward in sortedRewardsForWindow" :key="reward.id">
+                  <div
+                    class="reward-card"
+                    @click="onRewardCardClick(reward, $event)"
+                    @change="onRewardCardChange(reward, $event)"
+                    x-html="rewardCardHtml(reward, rewardsSort.field === 'created')"
+                  ></div>
+                </template>
+              </div>
+            </div>
+          </div>
+        </div>
       </template>
 
       <!-- ================= Ventana de recompensa (crear/editar) ================= -->
