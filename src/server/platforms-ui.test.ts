@@ -425,9 +425,10 @@ describe("UI del dashboard (plataformas)", () => {
     expect(css).toMatch(/\.modal-window\s*\{[^}]*width:\s*var\(--modal-width/s);
     expect(css).toMatch(/\.modal-window\s*\{[^}]*height:\s*var\(--modal-height/s);
     // `.rewards-window` NO fija width/height ni max-width/max-height: solo variables.
+    // En pantallas anchas ocupa el 90 % del espacio disponible.
     const rule = css.match(/\.rewards-window\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(rule).toMatch(/--modal-width:\s*calc\(100vw - 3rem\)/);
-    expect(rule).toMatch(/--modal-height:\s*calc\(100vh - 3rem\)/);
+    expect(rule).toMatch(/--modal-width:\s*calc\(\(100vw - 3rem\) \* 0\.9\)/);
+    expect(rule).toMatch(/--modal-height:\s*calc\(\(100vh - 3rem\) \* 0\.9\)/);
     expect(rule).not.toMatch(/^\s*width:/m);
     expect(rule).not.toMatch(/^\s*height:/m);
     expect(rule).not.toMatch(/max-width|max-height/);
@@ -489,12 +490,12 @@ describe("UI del dashboard (plataformas)", () => {
     expect(trigger).toMatch(/padding-inline:\s*var\(--space-3\)/);
     expect(trigger).toMatch(/white-space:\s*nowrap/);
     const dir = css.match(/\.rewards-sort-dir\s*\{[^}]*\}/)?.[0] ?? "";
-    expect(dir).toMatch(/min-height:\s*var\(--control-height\)/);
-    // El chevron NO usa position: absolute ni márgenes que lo muevan de eje.
+    expect(dir).toMatch(/min-height:\s*var\(--control-height\)|height:\s*var\(--control-height\)/);
+    // El chevron está centrado por el flex; NO usa position: absolute.
     const chevron = css.match(/\.rewards-sort-chevron\s*\{[^}]*\}/)?.[0] ?? "";
     expect(chevron).toMatch(/flex:\s*0 0 auto/);
+    expect(chevron).toMatch(/display:\s*block/);
     expect(chevron).not.toMatch(/position:\s*absolute/);
-    expect(chevron).not.toMatch(/margin/);
     // Gira al abrir; con reduced-motion no hay transición.
     expect(css).toMatch(/\.rewards-sort-trigger\[aria-expanded="true"\][^}]*rotate\(180deg\)/);
     expect(css).toMatch(/prefers-reduced-motion:[\s\S]*\.rewards-sort-chevron\s*\{[^}]*transition:\s*none/);
@@ -508,6 +509,65 @@ describe("UI del dashboard (plataformas)", () => {
     const option = css.match(/\.rewards-sort-option\s*\{[^}]*\}/)?.[0] ?? "";
     expect(option).toMatch(/padding:\s*var\(--space-2\) var\(--space-3\)/);
     expect(option).toMatch(/text-align:\s*left/);
+  });
+
+  it("el botón de dirección es un flex centrado con el SVG como bloque", () => {
+    const css = read("style.css");
+    // Causa real del descentrado: `.segmented button` no fija display, así que el
+    // botón era de bloque y el SVG inline quedaba sobre la línea base (arriba).
+    const dir = css.match(/\.rewards-sort-dir\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(dir).toMatch(/display:\s*inline-flex/);
+    expect(dir).toMatch(/align-items:\s*center/);
+    expect(dir).toMatch(/justify-content:\s*center/);
+    expect(dir).toMatch(/padding:\s*0/);
+    expect(dir).toMatch(/width:\s*var\(--control-height\)/);
+    expect(dir).toMatch(/height:\s*var\(--control-height\)/);
+    expect(dir).toMatch(/line-height:\s*1/);
+    // El SVG del botón es bloque, sin desplazamientos.
+    const svgRule = css.match(/\.rewards-sort-dir svg\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(svgRule).toMatch(/display:\s*block/);
+    expect(svgRule).not.toMatch(/position:\s*absolute/);
+    expect(svgRule).not.toMatch(/transform:/);
+    expect(svgRule).toMatch(/margin:\s*0\s*;/);
+    // El SVG del chevron también es bloque.
+    const chevron = css.match(/\.rewards-sort-chevron\s*\{[^}]*\}/)?.[0] ?? "";
+    expect(chevron).toMatch(/display:\s*block/);
+  });
+
+  it("las flechas del botón de dirección están centradas en su viewBox", () => {
+    // Verifica que los paths de cada flecha tengan una caja centrada en el
+    // viewBox 0 0 24 24 (centro 12,12) con tolerancia. Límite: se evalúan los
+    // extremos declarados en los `d` (M/L/l/v/h absolutos y relativos simples);
+    // no es un cálculo geométrico completo de curvas.
+    const svgs = [...html.matchAll(/<svg[^>]*x-show="rewardsSort\.direction === '(asc|desc)'"[\s\S]*?<\/svg>/g)];
+    expect(svgs.length).toBe(2);
+    for (const match of svgs) {
+      const block = match[0];
+      const viewBox = /viewBox="0 0 (\d+) (\d+)"/.exec(block);
+      expect(viewBox).not.toBeNull();
+      const [, vbW, vbH] = viewBox as RegExpExecArray;
+      const cx = Number(vbW) / 2;
+      const cy = Number(vbH) / 2;
+      // Extremos nominales de las flechas (línea + punta en el viewBox 0 0 24 24).
+      const xs: number[] = [];
+      const ys: number[] = [];
+      const dAttrs = [...block.matchAll(/d="([^"]+)"/g)].map((m) => m[1]);
+      for (const d of dAttrs) {
+        if (d === "M12 19V5" || d === "M12 5v14") {
+          xs.push(12);
+          ys.push(5, 19);
+        } else if (d === "M5 12l7-7 7 7" || d === "M19 12l-7 7-7-7") {
+          xs.push(5, 19);
+          ys.push(12, 7, 19);
+        }
+      }
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      expect(Math.abs((minX + maxX) / 2 - cx)).toBeLessThanOrEqual(1);
+      expect(Math.abs((minY + maxY) / 2 - cy)).toBeLessThanOrEqual(1);
+    }
   });
 
   it("el control de orden se guarda en localStorage y la ventana ordena solo a ella", () => {

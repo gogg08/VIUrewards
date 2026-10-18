@@ -919,13 +919,14 @@ input[type="checkbox"] {
 }
 
 /* Ventana grande: misma grilla de tarjetas que el panel vertical, con el mismo
-   ancho (var(--reward-card-width)) definido por variable CSS. Ocupa casi toda la
-   pantalla, centrada, sin tope de ancho fijo. El tamaño se define en UN solo
+   ancho (var(--reward-card-width)) definido por variable CSS. En pantallas
+   anchas ocupa el 90 % del espacio disponible (dejando 1.5rem de margen antes de
+   ese 90 %), centrada, sin tope de ancho fijo. El tamaño se define en UN solo
    lugar: sobreescribiendo las variables de `.modal-window`, para no competir por
    especificidad con la clase base. */
 .rewards-window {
-  --modal-width: calc(100vw - 3rem);
-  --modal-height: calc(100vh - 3rem);
+  --modal-width: calc((100vw - 3rem) * 0.9);
+  --modal-height: calc((100vh - 3rem) * 0.9);
 }
 
 .rewards-window-body {
@@ -972,7 +973,10 @@ input[type="checkbox"] {
 /* Chevron: SVG inline de 16 px, centrado verticalmente por el flex (sin
    position: absolute ni márgenes que lo muevan). Gira al abrir. */
 .rewards-sort-chevron {
+  display: block;
   flex: 0 0 auto;
+  margin: 0;
+  vertical-align: middle;
   transition: transform 0.15s ease;
 }
 
@@ -986,12 +990,25 @@ input[type="checkbox"] {
   }
 }
 
-/* Botón de dirección: cuadrado del mismo alto que el disparador, ícono centrado. */
+/* Botón de dirección: cuadrado del mismo alto que el disparador, con el ícono
+   centrado por el flex (el SVG inline sobre la línea base quedaba corrido hacia
+   arriba porque el botón no era un contenedor flex). */
 .rewards-sort-dir {
-  min-height: var(--control-height);
-  padding-inline: var(--space-2);
-  line-height: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  width: var(--control-height);
+  height: var(--control-height);
+  line-height: 1;
   color: var(--color-text);
+}
+
+/* Los SVG del botón de dirección son bloques de 16 px, sin desplazamientos. */
+.rewards-sort-dir svg {
+  display: block;
+  margin: 0;
+  vertical-align: middle;
 }
 
 /* Lista desplegada: alineada al borde derecho del disparador, con ítems de
