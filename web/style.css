@@ -107,6 +107,8 @@
   --logo-height-guide: 40px;
   /* Ancho máximo de la columna de lectura de la guía. */
   --guide-width: 760px;
+  /* Círculo numerado del índice de la guía. */
+  --guide-step-badge: 30px;
 
   /* Controles nativos (scroll, selects, inputs, selector de color) en variante
      oscura. Un tema claro futuro puede sobreescribirlo. */
@@ -2599,7 +2601,8 @@ table.grid td.actions button {
   background: var(--color-bg);
 }
 
-/* Barra superior: "Volver" a la izquierda y el logo (más chico) centrado. */
+/* Barra superior: "Volver" a la izquierda y el logo (más chico) centrado.
+   El logo va en el flujo y se achica antes de chocar con el botón. */
 .guide-bar {
   position: relative;
   display: flex;
@@ -2610,20 +2613,66 @@ table.grid td.actions button {
   margin: 0 auto var(--space-5);
 }
 
+/* "Volver": botón de borde suave (sigue siendo un enlace). */
 .guide-back {
   position: absolute;
   left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--control-height);
+  padding-inline: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-text);
   font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
   white-space: nowrap;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.guide-back-icon {
+  display: block;
+  flex: none;
+}
+
+.guide-back:hover,
+.guide-back:focus-visible {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.guide-back:active {
+  background: var(--color-accent-soft-border);
 }
 
 .guide-brand {
   justify-content: center;
+  min-width: 0;
 }
 
 /* El logo de la guía es más chico que el del login. */
 .guide-brand .brand-logo {
   height: var(--logo-height-guide);
+}
+
+/* Ventana angosta: el botón deja de estar superpuesto para que no choque con
+   el logo, y el logo se achica un poco más. */
+@media (max-width: 520px) {
+  .guide-bar {
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+
+  .guide-back {
+    position: static;
+  }
+
+  .guide-brand .brand-logo {
+    height: calc(var(--logo-height-guide) - 6px);
+  }
 }
 
 .guide {
@@ -2642,7 +2691,7 @@ table.grid td.actions button {
   font-size: var(--text-lg);
 }
 
-/* Índice con enlaces ancla (navegable con teclado; el foco lo da el sistema). */
+/* Índice con enlaces ancla: cada paso es un botón (navegable con teclado). */
 .guide-index {
   margin: var(--space-5) 0;
   padding: var(--space-4);
@@ -2652,21 +2701,82 @@ table.grid td.actions button {
 }
 
 .guide-index h2 {
-  margin: 0 0 var(--space-2);
+  margin: 0 0 var(--space-3);
   font-size: var(--text-base);
   color: var(--color-muted);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
 
-.guide-index ol {
+.guide-index-list {
+  display: grid;
+  gap: var(--space-3);
   margin: 0;
-  padding-left: var(--space-5);
+  padding: 0;
+  list-style: none;
 }
 
-.guide-index a {
-  display: inline-block;
-  padding: var(--space-1) 0;
+/* Sin viñeta, pero la semántica de lista se conserva en Safari/VoiceOver. */
+.guide-index-list li::marker {
+  content: "";
+}
+
+/* Una columna por defecto; dos columnas desde 700 px. */
+@media (min-width: 700px) {
+  .guide-index-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.guide-index-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  height: 100%;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-panel-2);
+  color: var(--color-text);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.guide-index-link:hover,
+.guide-index-link:focus-visible {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.guide-index-link:active {
+  background: var(--color-accent-soft-border);
+}
+
+/* Círculo numerado: acento de fondo y tinta del acento encima. */
+.guide-index-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: var(--guide-step-badge);
+  height: var(--guide-step-badge);
+  border-radius: var(--radius-pill);
+  background: var(--color-accent);
+  color: var(--color-accent-ink);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-bold);
+}
+
+.guide-index-badge svg {
+  display: block;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .guide-back,
+  .guide-index-link {
+    transition: none;
+  }
 }
 
 /* Cada paso es una tarjeta. */

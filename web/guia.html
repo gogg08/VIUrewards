@@ -26,7 +26,19 @@
   <body>
     <div class="guide-wrap" x-data="guideApp()">
       <div class="guide-bar">
-        <a class="guide-back" href="/">← Volver</a>
+        <a class="guide-back" href="/" aria-label="Volver al inicio">
+          <svg class="guide-back-icon" viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+            <path
+              d="M10.5 3.5 6 8l4.5 4.5"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.6"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span>Volver</span>
+        </a>
         <!-- Logo con modos configurables (Automático/Dinámico/Estático). -->
         <div class="brand guide-brand" x-data="logoBadge()">
           <img
@@ -48,16 +60,32 @@
           detectar los canjes. Se hace una sola vez.
         </p>
 
-        <nav class="guide-index" aria-label="Índice de la guía">
-          <h2>Pasos</h2>
-          <ol>
-            <li><a href="#guia-paso-1">Entrá a la configuración de desarrollador</a></li>
-            <li><a href="#guia-paso-2">Creá la app</a></li>
-            <li><a href="#guia-paso-3">Copiá tus credenciales</a></li>
-            <li><a href="#guia-paso-4">Cargalas en VIUrewards</a></li>
-            <li><a href="#guia-paso-5">Aceptá los permisos</a></li>
-            <li><a href="#guia-paso-6">Verificá la conexión</a></li>
-            <li><a href="#guia-problemas">Problemas comunes</a></li>
+        <nav class="guide-index" aria-label="Índice de la guía" aria-labelledby="guia-indice-titulo">
+          <h2 id="guia-indice-titulo">PASOS</h2>
+          <ol class="guide-index-list">
+            <li><a class="guide-index-link" href="#guia-paso-1"><span class="guide-index-badge" aria-hidden="true">1</span><span>Entrá a la configuración de desarrollador</span></a></li>
+            <li><a class="guide-index-link" href="#guia-paso-2"><span class="guide-index-badge" aria-hidden="true">2</span><span>Creá la app</span></a></li>
+            <li><a class="guide-index-link" href="#guia-paso-3"><span class="guide-index-badge" aria-hidden="true">3</span><span>Copiá tus credenciales</span></a></li>
+            <li><a class="guide-index-link" href="#guia-paso-4"><span class="guide-index-badge" aria-hidden="true">4</span><span>Cargalas en VIUrewards</span></a></li>
+            <li><a class="guide-index-link" href="#guia-paso-5"><span class="guide-index-badge" aria-hidden="true">5</span><span>Aceptá los permisos</span></a></li>
+            <li><a class="guide-index-link" href="#guia-paso-6"><span class="guide-index-badge" aria-hidden="true">6</span><span>Verificá la conexión</span></a></li>
+            <li>
+              <a class="guide-index-link" href="#guia-problemas">
+                <span class="guide-index-badge guide-index-badge--help" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" width="14" height="14" focusable="false">
+                    <path
+                      d="M8 2.5a5.5 5.5 0 0 1 0 11a5.5 5.5 0 0 1 0-11Zm0 7.6v.6M8 5.2a1.7 1.7 0 0 1 .9 3.1c-.5.3-.9.6-.9 1.1"
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="1.4"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                </span>
+                <span>Problemas comunes</span>
+              </a>
+            </li>
           </ol>
         </nav>
 

@@ -218,4 +218,79 @@ describe("página de la guía (/guia) (Parte 2)", () => {
     // Scroll suave solo si el sistema lo permite.
     expect(css).toMatch(/@media \(prefers-reduced-motion: no-preference\)/);
   });
+
+  it("\"Volver\" es un enlace con aspecto de botón, flecha SVG y aria-label", () => {
+    // Sigue siendo un enlace a "/" y no usa el carácter "←".
+    expect(html).toMatch(/<a class="guide-back" href="\/" aria-label="Volver al inicio">/);
+    expect(html).not.toContain("←");
+    // La flecha es un SVG inline con currentColor (sin imagen externa).
+    const back = html.slice(html.indexOf('class="guide-back"'));
+    const anchor = back.slice(0, back.indexOf("</a>"));
+    expect(anchor).toMatch(/<svg\b/);
+    expect(anchor).toMatch(/stroke="currentColor"/);
+    expect(anchor).toMatch(/aria-hidden="true"/);
+    expect(anchor).toMatch(/width="16" height="16"/);
+    // Estilos de botón por variables, sin literales.
+    expect(css).toMatch(/\.guide-back \{[^}]*display: inline-flex/);
+    expect(css).toMatch(/\.guide-back \{[^}]*min-height: var\(--control-height\)/);
+    expect(css).toMatch(/\.guide-back \{[^}]*border: 1px solid var\(--color-border\)/);
+    expect(css).toMatch(/\.guide-back \{[^}]*border-radius: var\(--radius\)/);
+    expect(css).toMatch(/\.guide-back \{[^}]*background: transparent/);
+    expect(css).toMatch(/\.guide-back \{[^}]*color: var\(--color-text\)/);
+    expect(css).toMatch(/\.guide-back \{[^}]*text-decoration: none/);
+    expect(css).toMatch(/\.guide-back:hover,\s*\n\.guide-back:focus-visible \{[^}]*border-color: var\(--color-accent\)/);
+    expect(css).toMatch(/\.guide-back:focus-visible \{[^}]*background: var\(--color-accent-soft\)/);
+    // La flecha no usa position absolute ni márgenes sueltos.
+    expect(css).toMatch(/\.guide-back-icon \{[^}]*display: block/);
+    expect(css).toMatch(/\.guide-back-icon \{[^}]*flex: none/);
+  });
+
+  it("las entradas del índice son botones dentro del <nav> y de una lista ordenada", () => {
+    const nav = html.slice(html.indexOf('<nav class="guide-index"'));
+    const navBody = nav.slice(0, nav.indexOf("</nav>"));
+    expect(navBody).toMatch(/<ol class="guide-index-list">/);
+    // Todas las entradas del índice son enlaces con la clase de botón.
+    const links = [...navBody.matchAll(/<a class="guide-index-link" href="#([\w-]+)">/g)].map((m) => m[1]);
+    expect(links.length).toBe(7);
+    for (const id of links) {
+      expect(html, `falta el id #${id}`).toMatch(new RegExp(`id="${id}"`));
+    }
+    // El título de la sección queda como encabezado y el nav lo referencia.
+    expect(navBody).toMatch(/<h2 id="guia-indice-titulo">PASOS<\/h2>/);
+    expect(html).toMatch(/<nav class="guide-index"[^>]*aria-labelledby="guia-indice-titulo"/);
+    // Círculo numerado con acento y tinta del acento (y la variante de ayuda).
+    expect(css).toMatch(/\.guide-index-badge \{[^}]*background: var\(--color-accent\)/);
+    expect(css).toMatch(/\.guide-index-badge \{[^}]*color: var\(--color-accent-ink\)/);
+    expect(navBody).toMatch(/guide-index-badge guide-index-badge--help/);
+    // La entrada se ve como botón: borde, radio y superficie del tema.
+    expect(css).toMatch(/\.guide-index-link \{[^}]*display: flex/);
+    expect(css).toMatch(/\.guide-index-link \{[^}]*border: 1px solid var\(--color-border\)/);
+    expect(css).toMatch(/\.guide-index-link \{[^}]*border-radius: var\(--radius\)/);
+    expect(css).toMatch(/\.guide-index-link \{[^}]*color: var\(--color-text\)/);
+    expect(css).toMatch(/\.guide-index-link \{[^}]*text-decoration: none/);
+    expect(css).toMatch(/\.guide-index-link \{[^}]*height: 100%/);
+    // Una columna por defecto y dos desde 700 px (misma altura en la fila).
+    expect(css).toMatch(/@media \(min-width: 700px\) \{\s*\.guide-index-list \{[^}]*grid-template-columns: repeat\(2/);
+    expect(css).toMatch(/\.guide-index-list \{[^}]*display: grid/);
+    // Transición corta, anulada con prefers-reduced-motion.
+    expect(css).toMatch(/\.guide-index-link \{[^}]*transition: border-color/);
+    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.guide-back,\s*\n  \.guide-index-link \{\s*\n    transition: none/);
+  });
+
+  it("el índice y \"Volver\" no usan estilos inline y el orden de scripts no cambia", () => {
+    const nav = html.slice(html.indexOf('<nav class="guide-index"'));
+    const navBody = nav.slice(0, nav.indexOf("</nav>"));
+    expect(navBody).not.toMatch(/\sstyle="|#[0-9a-fA-F]{3,8}\b|rgba?\(/);
+    expect(html.slice(html.indexOf('class="guide-back"') - 20)).not.toMatch(/^[^>]*style="/);
+    // Los scripts siguen en el mismo orden: theme.js en el head, después los
+    // componentes y Alpine al final.
+    const themeAt = html.indexOf("<script src=\"/web/theme.js\"></script>");
+    const logoAt = html.indexOf("/web/logo.js");
+    const guiaAt = html.indexOf("/web/guia.js");
+    const alpineAt = html.indexOf("/web/alpine.min.js");
+    expect(themeAt).toBeGreaterThan(-1);
+    expect(themeAt).toBeLessThan(logoAt);
+    expect(logoAt).toBeLessThan(guiaAt);
+    expect(guiaAt).toBeLessThan(alpineAt);
+  });
 });

@@ -566,16 +566,40 @@ Esquema:
 
 ```
 .guide-wrap (columna centrada, --guide-width: 760px)
-├── .guide-bar      → enlace "← Volver" a "/" + logo (--logo-height-guide, 40 px)
+├── .guide-bar      → botón "← Volver" (a "/") a la izquierda + logo (--logo-height-guide, 40 px)
 └── main.guide
     ├── h1  "Guía: conectar VIUrewards con Kick" + introducción
-    ├── nav.guide-index   → índice con anclas a cada paso
+    ├── nav.guide-index (aria-labelledby)  → "PASOS" + lista ordenada de entradas
+    │     que se ven como botones (#guia-indice-titulo, .guide-index-list,
+    │     .guide-index-link, .guide-index-badge)
     ├── .guide-step × N   → tarjetas: número + título + texto + capturas + avisos
     │     (ids guia-paso-1 … guia-paso-6)
     ├── details.guide-faq → Problemas comunes (pregunta/respuesta desplegable)
     └── .guide-warn.danger → Seguridad (aviso final)
 ```
 
+- **"Volver" como botón.** Sigue siendo `<a href="/">` con `aria-label="Volver al
+  inicio"`, pero se ve como un botón de borde suave: `inline-flex`, `align-items:
+  center`, flecha **SVG inline** de 16 px con `currentColor` (sin el carácter "←"),
+  `min-height: var(--control-height)`, `padding-inline: var(--space-3)`, `border: 1px
+  solid var(--color-border)`, `border-radius: var(--radius)`, **fondo transparente** y
+  texto en `var(--color-text)` con `font-weight` medio. Hover y foco: borde del acento y
+  `var(--color-accent-soft)`; activo con `--color-accent-soft-border`; el foco usa el
+  anillo estándar de la app. En la fila superior está superpuesto a la izquierda con el
+  logo centrado; desde **520 px** hacia abajo pasa al flujo (`flex-wrap`,
+  `justify-content: space-between`) y el logo se achica para no superponerse.
+- **Índice "PASOS" como botones.** Sigue siendo un `<nav>` con una **lista ordenada** y
+  enlaces ancla (`<a href="#guia-paso-N">`). Cada entrada es un botón: `display: flex`,
+  `gap: var(--space-3)`, `padding: var(--space-3) var(--space-4)`, `border: 1px solid
+  var(--color-border)`, `border-radius: var(--radius)`, fondo `var(--color-panel-2)` y
+  texto en `var(--color-text)` (no en el acento). A la izquierda va un **círculo
+  numerado** de `var(--guide-step-badge)` (30 px) con fondo `var(--color-accent)` y
+  número en `var(--color-accent-ink)`; "Problemas comunes" usa un **ícono de ayuda SVG**
+  en el mismo círculo (mismo color, sin otra paleta). Hover y foco: borde del acento y
+  `var(--color-accent-soft)`; transición corta, anulada por `prefers-reduced-motion`.
+  **Una columna** por defecto y **dos desde 700 px** (`grid` con
+  `repeat(2, minmax(0, 1fr))`); `height: 100%` iguala las alturas en cada fila y
+  `overflow-wrap: anywhere` evita desbordes con títulos largos.
 - **Avisos** con tres estilos (`.guide-warn.info`, `.attention` = `--color-warn`,
   `.danger` = `--color-danger`), con **ícono SVG inline + texto** (nunca solo color).
 - **Cuadro de código** (`.code-row`/`.code-value`) para valores que se copian (la
