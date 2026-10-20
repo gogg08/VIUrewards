@@ -82,6 +82,7 @@ import { createClipRebuilder } from "../media/rebuild.ts";
 import { detectBinaries } from "../media/binaries.ts";
 import { runProcess } from "../media/run-process.ts";
 import { candidatesBytes, cleanupCandidates, libraryUsage, readToolVersions, updateYtdlp } from "./tools.ts";
+import { listGuideShots } from "./guide-shots.ts";
 import {
   buildSupportSummary,
   createFileLogger,
@@ -932,6 +933,21 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       .send(readFileSync(path, "utf8"));
 
   app.get("/login", async (_request, reply) => sendHtml(reply, join(webDir, "login.html")));
+
+  // Guía pública para conectar Kick (no exige sesión ni la clave del overlay y
+  // no inyecta ningún dato de la cuenta). Es un `sendHtml` más: sale con
+  // `no-store`, igual que el resto de las páginas servidas por la app.
+  app.get("/guia", async (_request, reply) => sendHtml(reply, join(webDir, "guia.html")));
+
+  // Lista PÚBLICA y de solo lectura de las capturas que EXISTEN en
+  // `web/assets/guide/`. Devuelve solo nombres que matchean el patrón acordado
+  // (sin rutas ni metadatos), así la guía no pide imágenes ausentes (y no hay
+  // 404). Se sirve ANTES del estático `/web/`; no toca el disco fuera de esa
+  // carpeta ni acepta input del cliente.
+  app.get<{ Querystring: { lang?: string } }>("/api/guide-shots", async () => ({
+    ok: true,
+    shots: listGuideShots(webDir),
+  }));
 
   app.get("/", async (request, reply) => {
     if (hasValidSession(request)) return sendHtml(reply, join(webDir, "index.html"));

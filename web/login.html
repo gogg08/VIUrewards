@@ -6,6 +6,8 @@
     <title>VIUrewards · acceso</title>
     <!-- Evita el 404 de /favicon.ico. -->
     <link rel="icon" href="data:," />
+    <!-- El tema se aplica antes de pintar (sin destello): ver docs/dashboard.md. -->
+    <script src="/web/theme.js"></script>
     <link rel="stylesheet" href="/web/style.css" />
     <!--
       Orden importante: los scripts que definen el componente van ANTES de
@@ -25,10 +27,10 @@
         <div class="brand" x-data="logoBadge()">
           <img
             class="brand-logo"
-            src="/web/assets/VIUrewards.png"
+            src="/web/assets/VIUrewards-dark.png"
             :src="logoSrc"
             alt="VIUrewards"
-            @error="logoFailed = true"
+            @error="onLogoError()"
             x-show="!logoFailed"
           />
           <span class="brand-text" x-show="logoFailed" x-cloak>VIUrewards</span>
@@ -51,7 +53,11 @@
 
           <p class="error" x-show="error" x-text="error"></p>
 
-          <button class="primary" type="submit" :disabled="busy" x-text="buttonLabel">Entrar</button>
+          <!-- La guía de Kick abre en la misma pestaña, como botón secundario. -->
+          <div class="auth-actions">
+            <button class="primary" type="submit" :disabled="busy" x-text="buttonLabel">Entrar</button>
+            <a class="btn-secondary" href="/guia" aria-label="Guía para conectar Kick">Guía</a>
+          </div>
         </form>
       </div>
     </div>

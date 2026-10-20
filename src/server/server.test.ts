@@ -79,6 +79,51 @@ describe("GET /overlay con token", () => {
   });
 });
 
+describe("página de la guía pública (/guia)", () => {
+  it("se sirve sin sesión con el HTML de la guía", async () => {
+    const { server } = await withServer();
+    const response = await server.app.inject({ method: "GET", url: "/guia" });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["content-type"]).toContain("text/html");
+    expect(response.body).toContain("Guía: conectar VIUrewards con Kick");
+  });
+
+  it("sale con no-store (no queda pegada una versión vieja)", async () => {
+    const { server } = await withServer();
+    const response = await server.app.inject({ method: "GET", url: "/guia" });
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
+  it("no inyecta ningún dato de la cuenta (sin tokens ni claves)", async () => {
+    const { server } = await withServer();
+    const response = await server.app.inject({ method: "GET", url: "/guia" });
+    expect(response.body).not.toContain(server.getOverlayKey());
+  });
+
+  it("no relaja el resto: /api sigue pidiendo sesión (401)", async () => {
+    const { server } = await withServer();
+    for (const url of ["/api/state", "/api/clips", "/api/settings"]) {
+      const response = await server.app.inject({ method: "GET", url });
+      expect(response.statusCode, `${url} debería requerir sesión`).toBe(401);
+    }
+  });
+
+  it("/api/guide-shots es pública, solo devuelve nombres válidos y no hay 404 con la carpeta vacía", async () => {
+    const { server } = await withServer();
+    // Sin sesión: igual responde 200 con la lista (vacía si no hay capturas).
+    const response = await server.app.inject({ method: "GET", url: "/api/guide-shots" });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.ok).toBe(true);
+    expect(Array.isArray(body.shots)).toBe(true);
+    for (const name of body.shots) {
+      expect(/^guia-\d\d-[a-z0-9-]+\.(png|webp|jpg)$/.test(name), `nombre inválido: ${name}`).toBe(true);
+      expect(name).not.toContain("/");
+      expect(name).not.toContain("..");
+    }
+  });
+});
+
 describe("caché de los estáticos", () => {
   it("/web se sirve con no-cache (revalida en cada carga)", async () => {
     const { server } = await withServer();
@@ -1385,6 +1430,31 @@ describe("configuración, recorte y contraseña (parte B)", () => {
     expect(good.statusCode).toBe(200);
     expect(good.json().settings.globalVolume).toBe(50);
     expect(good.json().restartRequired).toBe(true);
+  });
+
+  it("guarda la pestaña Alertas completa (política de omitidos y canjes viejos)", async () => {
+    const { server, cookie } = await withServer();
+    const saved = await server.app.inject({
+      method: "POST",
+      url: "/api/settings",
+      headers: { cookie },
+      payload: {
+        globalVolume: 80,
+        defaultMaxDurationSec: 20,
+        maxAudioVoices: 6,
+        redemptionsOldMinutes: 15,
+        redemptionsOnSkip: "reject",
+        redemptionsOldAction: "process",
+      },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.json().settings.redemptionsOnSkip).toBe("reject");
+    expect(saved.json().settings.redemptionsOldAction).toBe("process");
+    expect(saved.json().settings.redemptionsOldMinutes).toBe(15);
+
+    // Persiste: al releer sigue guardado (no se revierte solo).
+    const info = await server.app.inject({ method: "GET", url: "/api/settings", headers: { cookie } });
+    expect(info.json().settings.redemptionsOldAction).toBe("process");
   });
 
   it("vacía la cola con /api/clear dejando el clip actual", async () => {

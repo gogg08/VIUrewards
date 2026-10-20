@@ -6,7 +6,7 @@
    ========================================================================== */
 
 :root {
-  /* --- Paleta (tema oscuro por defecto) --- */
+  /* --- Paleta (tema Noche = aspecto actual; valor por defecto sin JS) --- */
   --color-bg: #12141a;
   --color-bg-2: #0d0f14;
   --color-panel: #1b1e27;
@@ -18,11 +18,25 @@
   --color-muted: #9aa1b4;
   --color-accent: #53fc18;
   --color-accent-ink: #0b1a06;
+  /* Acento derivado (hover/activo/fondo suave/borde); los sobreescribe theme.js
+     según el tema y el acento elegido. Acá quedan los valores del acento por
+     defecto para el caso sin JS. */
+  --color-accent-hover: #62fc30;
+  --color-accent-active: #44e00c;
+  --color-accent-soft: #26381c;
+  --color-accent-soft-border: #3f5a2c;
+  /* Colores SEMÁNTICOS que NO dependen del acento: el peligro y el aviso
+     mantienen su significado en cualquier tema y acento. Los estados
+     "positivos" (habilitada, conectado) SÍ siguen al acento: ver `--color-success`
+     más abajo y `.ok`. */
   --color-danger: #ff5b6a;
   --color-danger-ink: #2a0a0e;
   --color-warn: #ffcc66;
   --color-warn-ink: #1a1400;
   --color-warn-bg: rgba(255, 204, 102, 0.12);
+  /* Alias del acento: los estados "positivos" siguen al acento (ver .ok). */
+  --color-success: var(--color-accent);
+  --color-success-ink: var(--color-accent-ink);
   --color-scrim: rgba(0, 0, 0, 0.55);
   --color-player: #000000;
   --color-focus: #53fc18;
@@ -59,6 +73,7 @@
   --text-base: 0.95rem;
   --text-lg: 1.05rem;
   --text-xl: 1.3rem;
+  --text-2xl: 1.7rem;
   --leading: 1.45;
   --weight-normal: 400;
   --weight-medium: 500;
@@ -85,12 +100,135 @@
      mismo). Sale de: col-left 320 − bordes y padding de la caja (2 + 2×16). */
   --reward-card-width: 286px;
   /* Altura del logo (52 px; el diseño original pedía 32–40, ampliado a pedido);
-     se achica en ventana angosta. */
+     se achica en ventana angosta. El login usa la suya, más grande y centrado. */
   --logo-height: 52px;
+  --logo-height-login: 72px;
+  /* Logo de la guía: más chico que el del login. */
+  --logo-height-guide: 40px;
+  /* Ancho máximo de la columna de lectura de la guía. */
+  --guide-width: 760px;
 
   /* Controles nativos (scroll, selects, inputs, selector de color) en variante
      oscura. Un tema claro futuro puede sobreescribirlo. */
   color-scheme: dark;
+}
+
+/* ==========================================================================
+   Temas (Parte 2)
+   Tres juegos de variables bajo [data-theme]. `data-theme` lo pone el script del
+   <head> (o el sistema en "Automático"). Noche replica exactamente el aspecto
+   anterior. Los derivados del acento (--color-accent* / --color-focus) los
+   sobreescribe theme.js; acá quedan los del acento por defecto para el caso sin
+   JS. Los colores de estado (danger/warn/success) son semánticos: NO cambian
+   entre temas salvo un ajuste de contraste donde hace falta.
+   ========================================================================== */
+
+/* --- Noche (oscuro medio; valor por defecto) --- */
+:root[data-theme="night"] {
+  --color-bg: #12141a;
+  --color-bg-2: #0d0f14;
+  --color-panel: #1b1e27;
+  --color-panel-2: #222634;
+  --color-panel-3: #2b3142;
+  --color-border: #2e3342;
+  --color-border-strong: #3b4256;
+  --color-text: #e8eaf0;
+  --color-muted: #9aa1b4;
+  --color-accent: #53fc18;
+  --color-accent-ink: #0b1a06;
+  --color-accent-hover: #62fc30;
+  --color-accent-active: #44e00c;
+  --color-accent-soft: #26381c;
+  --color-accent-soft-border: #3f5a2c;
+  --color-danger: #ff5b6a;
+  --color-danger-ink: #2a0a0e;
+  --color-warn: #ffcc66;
+  --color-warn-ink: #1a1400;
+  --color-warn-bg: rgba(255, 204, 102, 0.12);
+  /* Alias del acento: los estados "positivos" siguen al acento (ver .ok). */
+  --color-success: var(--color-accent);
+  --color-success-ink: var(--color-accent-ink);
+  --color-scrim: rgba(0, 0, 0, 0.55);
+  --color-player: #000000;
+  --color-focus: #53fc18;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.5);
+  --scrollbar-thumb: #3b4256;
+  --scrollbar-thumb-hover: #4d5670;
+  --scrollbar-track: transparent;
+  color-scheme: dark;
+}
+
+/* --- OLED (fondo negro puro; bordes algo más visibles para no perderse) --- */
+:root[data-theme="oled"] {
+  --color-bg: #000000;
+  --color-bg-2: #050505;
+  --color-panel: #0b0b0d;
+  --color-panel-2: #121214;
+  --color-panel-3: #1a1a1e;
+  --color-border: #26262c;
+  --color-border-strong: #3a3a42;
+  --color-text: #dcdce2;
+  --color-muted: #8b8b96;
+  --color-accent: #69fc36;
+  --color-accent-ink: #000000;
+  --color-accent-hover: #7dfc52;
+  --color-accent-active: #55e022;
+  --color-accent-soft: #18240f;
+  --color-accent-soft-border: #2f3f1d;
+  --color-danger: #ff6b78;
+  --color-danger-ink: #2a0a0e;
+  --color-warn: #ffd479;
+  --color-warn-ink: #1a1400;
+  --color-warn-bg: rgba(255, 212, 121, 0.12);
+  /* Alias del acento: los estados "positivos" siguen al acento (ver .ok). */
+  --color-success: var(--color-accent);
+  --color-success-ink: var(--color-accent-ink);
+  --color-scrim: rgba(0, 0, 0, 0.72);
+  --color-player: #000000;
+  --color-focus: #69fc36;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.7);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.8);
+  --scrollbar-thumb: #3a3a42;
+  --scrollbar-thumb-hover: #4f4f59;
+  --scrollbar-track: transparent;
+  color-scheme: dark;
+}
+
+/* --- Día (fondo blanco cálido; texto gris muy oscuro; sombras suaves) --- */
+:root[data-theme="day"] {
+  --color-bg: #f1efe9;
+  --color-bg-2: #eae7df;
+  --color-panel: #fbfaf7;
+  --color-panel-2: #f4f2ec;
+  --color-panel-3: #e8e5dc;
+  --color-border: #dcdad1;
+  --color-border-strong: #c4c1b6;
+  --color-text: #26251f;
+  --color-muted: #6b6960;
+  --color-accent: #299702;
+  --color-accent-ink: #000000;
+  --color-accent-hover: #23a002;
+  --color-accent-active: #1f7d02;
+  --color-accent-soft: #e5f2dc;
+  --color-accent-soft-border: #bfe0ab;
+  --color-danger: #c0182b;
+  --color-danger-ink: #ffffff;
+  --color-warn: #8a5300;
+  --color-warn-ink: #fff8ec;
+  --color-warn-bg: rgba(138, 83, 0, 0.12);
+  /* Alias del acento: los estados "positivos" siguen al acento (ver .ok). */
+  --color-success: var(--color-accent);
+  --color-success-ink: var(--color-accent-ink);
+  --color-scrim: rgba(38, 37, 31, 0.4);
+  --color-player: #000000;
+  --color-focus: #299702;
+  --shadow-sm: 0 1px 2px rgba(38, 37, 31, 0.08);
+  --shadow-md: 0 10px 30px rgba(38, 37, 31, 0.14);
+  --scrollbar-thumb: #c4c1b6;
+  --scrollbar-thumb-hover: #a9a69a;
+  --scrollbar-track: transparent;
+  color-scheme: light;
 }
 
 /* --- Scroll (fino y oscuro en todos los navegadores) --- */
@@ -195,7 +333,8 @@ button.primary {
 }
 
 button.primary:hover:not(:disabled) {
-  filter: brightness(1.08);
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
 }
 
 /* Peligro: acciones destructivas. */
@@ -317,6 +456,9 @@ input[type="checkbox"] {
   margin: var(--space-2) 0;
 }
 
+/* Estados "positivos" (habilitada, conectado): siguen al ACENTO, no a un verde
+   fijo. Con un acento rojo se ven rojos, y se acepta. La tinta sale de
+   `--color-accent-ink`. `--color-success` queda como alias del acento. */
 .ok {
   color: var(--color-accent);
   font-size: var(--text-sm);
@@ -422,9 +564,69 @@ input[type="checkbox"] {
   max-width: 380px;
 }
 
+/* En el login el logo va centrado y más grande que en el dashboard; su altura
+   propia (--logo-height-login) y `display: block` + `margin-inline: auto` lo
+   centran sin tocar los modos del logo ni el respaldo de texto. */
+.auth-wrap .brand {
+  justify-content: center;
+  margin-bottom: var(--space-4);
+}
+
+.auth-wrap .brand-logo {
+  height: var(--logo-height-login);
+  margin-inline: auto;
+}
+
+.auth-wrap .brand-text {
+  text-align: center;
+}
+
 .auth-wrap .card h1 {
   margin: 0 0 var(--space-1);
   font-size: var(--text-xl);
+}
+
+/* Fila de acciones del login: "Entrar" a la izquierda y "Guía" al extremo
+   opuesto. En ancho muy chico pasan a una columna cada uno, sin partirse. */
+.auth-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+@media (max-width: 360px) {
+  .auth-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+/* "Guía": botón secundario con borde y texto del acento y fondo transparente
+   (así coincide con la tarjeta en cualquier tema). Misma caja que "Entrar". */
+a.btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font: inherit;
+  font-size: var(--text-base);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-accent);
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+a.btn-secondary:hover {
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent-hover);
+}
+
+a.btn-secondary:active {
+  background: var(--color-accent-soft-border);
 }
 
 /* --- Lista de opciones (Apariencia) -------------------------------------- */
@@ -459,6 +661,121 @@ input[type="checkbox"] {
 
 .option-text .hint {
   margin-top: 0;
+}
+
+/* --- Apariencia: Tema y acento (Parte 2) --------------------------------- */
+
+.fieldset {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.fieldset > legend {
+  padding: 0;
+  font-weight: var(--weight-medium);
+  margin-bottom: var(--space-1);
+}
+
+/* Vista previa del tema: recuadro con fondo, superficie y acento. */
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: var(--space-2);
+}
+
+.theme-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.theme-option.active {
+  border-color: var(--color-accent);
+}
+
+.theme-preview {
+  position: relative;
+  flex: 0 0 auto;
+  width: 2.2rem;
+  height: 1.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-strong);
+  overflow: hidden;
+  background: var(--theme-preview-bg, var(--color-bg));
+}
+
+.theme-preview-panel {
+  position: absolute;
+  inset: 3px 3px 3px 40%;
+  border-radius: 3px;
+  background: var(--theme-preview-panel, var(--color-panel));
+}
+
+.theme-preview-accent {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--theme-preview-accent, var(--color-accent));
+}
+
+/* Fondos propios de cada tema para la vista previa (no dependen del tema activo). */
+.theme-preview-night {
+  --theme-preview-bg: #12141a;
+  --theme-preview-panel: #222634;
+  --theme-preview-accent: #53fc18;
+}
+
+.theme-preview-oled {
+  --theme-preview-bg: #000000;
+  --theme-preview-panel: #121214;
+  --theme-preview-accent: #69fc36;
+}
+
+.theme-preview-day {
+  --theme-preview-bg: #f1efe9;
+  --theme-preview-panel: #f4f2ec;
+  --theme-preview-accent: #299702;
+}
+
+/* Paleta de acento. */
+.accent-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.accent-swatch {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 2px solid transparent;
+  background: var(--swatch);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px var(--color-border-strong);
+}
+
+.accent-swatch.active {
+  border-color: var(--color-text);
+}
+
+/* En la fila del hex, el botón Restablecer no debe estirarse. */
+.color-row button {
+  flex: 0 0 auto;
 }
 
 /* ==========================================================================
@@ -1289,6 +1606,28 @@ input[type="checkbox"] {
   padding: var(--space-1);
 }
 
+/* Fila del acento (Ajustes → Apariencia): [hex fijo] [picker] [toggle] [Restablecer].
+   El hex tiene ancho fijo (~9-10ch), no `flex: 1`, y la fila hace wrap para que no
+   se rompa en pantallas angostas. El toggle se agrupa con su etiqueta. */
+.color-row--accent {
+  flex-wrap: wrap;
+}
+
+.color-row--accent .color-hex {
+  flex: 0 0 auto;
+  width: 10ch;
+}
+
+.color-row--accent .switch-label {
+  color: var(--color-muted);
+  font-size: var(--text-sm);
+  margin-right: var(--space-2);
+}
+
+.switch-label {
+  user-select: none;
+}
+
 .pending-failed {
   margin: var(--space-2) 0 0;
   padding-left: var(--space-5);
@@ -1395,7 +1734,7 @@ input[type="checkbox"] {
 }
 
 .dot {
-  display: inline-block;
+  display: block;
   width: 0.55rem;
   height: 0.55rem;
   border-radius: var(--radius-pill);
@@ -1408,6 +1747,33 @@ input[type="checkbox"] {
 }
 
 .dot.error {
+  background: var(--color-danger);
+}
+
+/* Línea de estado (punto + texto) usada en Ajustes → Overlay y OBS. El punto y
+   el texto se alinean verticalmente por el flex; el color de AMBOS sigue a la
+   MISMA clase de estado en el contenedor (.ok acento, .error peligro). */
+.status-line {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0;
+  font-size: var(--text-sm);
+}
+
+.status-line.ok {
+  color: var(--color-accent);
+}
+
+.status-line.ok .dot {
+  background: var(--color-accent);
+}
+
+.status-line.error {
+  color: var(--color-danger);
+}
+
+.status-line.error .dot {
   background: var(--color-danger);
 }
 
@@ -1673,7 +2039,7 @@ table.grid {
 table.grid th,
 table.grid td {
   text-align: left;
-  padding: var(--space-2) var(--space-3);
+  padding: 11px 14px;
   border-bottom: 1px solid var(--color-border);
   vertical-align: top;
   overflow-wrap: anywhere;
@@ -1683,6 +2049,7 @@ table.grid th {
   color: var(--color-muted);
   font-weight: var(--weight-medium);
   white-space: nowrap;
+  padding-bottom: var(--space-3);
 }
 
 table.grid tr:last-child td {
@@ -1698,6 +2065,24 @@ table.grid td.actions {
 table.grid td.actions button {
   padding: var(--space-1) var(--space-2);
   font-size: var(--text-xs);
+}
+
+/* Bloque "Canjes pendientes antiguos" (Ajustes → Alertas): la tabla scrollea
+   en horizontal dentro de su contenedor y las acciones quedan separadas. */
+.old-redemptions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.old-redemptions .table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.old-redemptions-actions {
+  margin-top: var(--space-3);
+  gap: var(--space-3);
 }
 
 .progress {
@@ -1948,28 +2333,49 @@ table.grid td.actions button {
   grid-template-columns: 200px minmax(0, 1fr);
 }
 
+/* La ventana de Ajustes tiene altura ESTABLE entre pestañas: el contenido de
+   cada panel scrollea adentro y la ventana no cambia de tamaño ni salta. */
+.settings-window {
+  --modal-height: min(80dvh, 640px);
+}
+
 .tabs {
   display: flex;
   flex-direction: column;
+  align-items: stretch;
+  align-content: start;
+  align-self: start;
+  flex: none;
   gap: var(--space-1);
   padding: var(--space-3);
   border-right: 1px solid var(--color-border);
   overflow-y: auto;
 }
 
+/* MISMA caja SIEMPRE para todas las pestañas: el borde (transparente en las
+   inactivas), el padding, el line-height y la altura mínima no cambian al
+   activarse; la activa solo cambia color/fondo/borde-color. */
 .tabs button {
   text-align: left;
-  border-color: transparent;
+  border: 1px solid transparent;
   background: transparent;
   color: var(--color-muted);
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-sm);
+  line-height: 1.4;
+  min-height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .tabs button.active {
   background: var(--color-panel-2);
   color: var(--color-text);
   font-weight: var(--weight-medium);
+  border-color: var(--color-border);
 }
 
 .tab-panels {
@@ -1992,6 +2398,17 @@ table.grid td.actions button {
   display: grid;
   gap: var(--space-3);
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+/* Campos de Seguridad: ancho cómodo tope, alineados con el botón. En angosto
+   siguen al 100 % del contenedor. */
+.password-form input {
+  width: 100%;
+  max-width: 360px;
+}
+
+.password-form-actions {
+  max-width: 360px;
 }
 
 .divider {
@@ -2091,6 +2508,329 @@ table.grid td.actions button {
     grid-template-columns: var(--reward-card-width);
     justify-content: center;
   }
+}
+
+/* --- Responsive de la barra superior y la ventana de Ajustes ------------- */
+
+/* En <= 720px la navegación de Ajustes pasa a UNA fila con scroll horizontal:
+   la altura es constante entre pestañas. */
+@media (max-width: 720px) {
+  .tabs {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+  }
+
+  .tabs button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}
+
+/* En <= 600px la barra se acomoda: el logo desaparece y los indicadores no se
+   parten; el panel de descargas se acota al viewport. */
+@media (max-width: 600px) {
+  .topbar {
+    flex-wrap: wrap;
+    height: auto;
+    min-height: var(--topbar-height);
+    padding: var(--space-2) var(--space-3);
+    row-gap: var(--space-2);
+  }
+
+  .brand {
+    display: none;
+  }
+
+  .status-pill {
+    white-space: nowrap;
+    height: 1.9rem;
+    padding: 0 var(--space-2);
+    gap: var(--space-1);
+  }
+
+  /* Panel de Descargas: fijo, acotado al viewport, con scroll propio. */
+  .dropdown-menu-wide {
+    position: fixed;
+    left: 8px;
+    right: 8px;
+    top: calc(var(--topbar-height) + var(--space-2));
+    width: auto;
+    min-width: 0;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100dvh - 80px);
+    overflow-y: auto;
+  }
+}
+
+/* En <= 480px los indicadores muestran solo el punto y el nombre corto; el
+   estado queda en color, title y aria-label. Salir pasa a ícono. */
+@media (max-width: 480px) {
+  .status-pill-state {
+    display: none;
+  }
+
+  .logout-btn {
+    padding: 0 var(--space-2);
+    min-width: var(--control-height);
+    font-size: 0;
+  }
+
+  .logout-btn::before {
+    content: "⎋";
+    font-size: var(--text-base);
+  }
+}
+
+/* ==========================================================================
+   Guía pública (/guia)
+   Columna centrada de lectura cómoda. Todos los colores son variables: se ve
+   bien en los tres temas. Solo lectura, sin sesión.
+   ========================================================================== */
+
+.guide-wrap {
+  min-height: 100vh;
+  padding: var(--space-5) var(--space-4) var(--space-7);
+  background: var(--color-bg);
+}
+
+/* Barra superior: "Volver" a la izquierda y el logo (más chico) centrado. */
+.guide-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  max-width: var(--guide-width);
+  margin: 0 auto var(--space-5);
+}
+
+.guide-back {
+  position: absolute;
+  left: 0;
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.guide-brand {
+  justify-content: center;
+}
+
+/* El logo de la guía es más chico que el del login. */
+.guide-brand .brand-logo {
+  height: var(--logo-height-guide);
+}
+
+.guide {
+  max-width: var(--guide-width);
+  margin: 0 auto;
+}
+
+.guide h1 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-2xl);
+}
+
+.guide-intro {
+  margin-top: 0;
+  color: var(--color-muted);
+  font-size: var(--text-lg);
+}
+
+/* Índice con enlaces ancla (navegable con teclado; el foco lo da el sistema). */
+.guide-index {
+  margin: var(--space-5) 0;
+  padding: var(--space-4);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+}
+
+.guide-index h2 {
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-base);
+  color: var(--color-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.guide-index ol {
+  margin: 0;
+  padding-left: var(--space-5);
+}
+
+.guide-index a {
+  display: inline-block;
+  padding: var(--space-1) 0;
+}
+
+/* Cada paso es una tarjeta. */
+.guide-card {
+  margin-bottom: var(--space-4);
+  padding: var(--space-5);
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  scroll-margin-top: var(--space-4);
+}
+
+.guide-card h2 {
+  margin: 0 0 var(--space-3);
+  font-size: var(--text-xl);
+}
+
+.guide-step {
+  display: inline-block;
+  margin-right: var(--space-2);
+  padding: 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  border-radius: var(--radius-pill);
+  vertical-align: middle;
+}
+
+.guide-list {
+  margin: var(--space-2) 0;
+  padding-left: var(--space-5);
+}
+
+.guide-list li {
+  margin-bottom: var(--space-2);
+}
+
+/* El único scroll con desplazamiento suave, y solo si el sistema lo permite. */
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Cuadro de código para valores que se copian. */
+.code-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  margin: var(--space-3) 0;
+}
+
+.code-value {
+  flex: 1 1 18rem;
+  min-width: 0;
+  padding: var(--space-3);
+  background: var(--color-bg-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  overflow-wrap: anywhere;
+}
+
+/* Avisos: info (acento), atención (warn) y peligro (danger). Cada uno lleva
+   un ícono además del color, para no depender solo del color. */
+.guide-warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid;
+  border-radius: var(--radius);
+  font-size: var(--text-sm);
+}
+
+.guide-warn .guide-icon {
+  flex: 0 0 auto;
+  margin-top: 0.15em;
+}
+
+.guide-warn.info {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+
+.guide-warn.attention {
+  color: var(--color-warn);
+  border-color: var(--color-warn);
+  background: var(--color-warn-bg);
+}
+
+.guide-warn.danger {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+  background: transparent;
+}
+
+/* Capturas opcionales: solo se muestran si el archivo existe. */
+.guide-shot {
+  margin: var(--space-4) 0 0;
+}
+
+.guide-shot img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  cursor: zoom-in;
+}
+
+.guide-shot figcaption {
+  margin-top: var(--space-2);
+  font-size: var(--text-sm);
+  color: var(--color-muted);
+}
+
+.guide-foot {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-xs);
+  color: var(--color-muted);
+}
+
+/* Preguntas frecuentes (desplegables accesibles). */
+.guide-faq {
+  margin-bottom: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-panel-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.guide-faq > summary {
+  cursor: pointer;
+  font-weight: var(--weight-medium);
+}
+
+.guide-faq > p {
+  margin: var(--space-2) 0 0;
+}
+
+/* Visor de capturas (lightbox). Se cierra con Esc o un clic afuera. */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-4);
+  background: var(--color-scrim);
+  cursor: zoom-out;
+}
+
+.lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-panel);
 }
 
 /* Alpine oculta los bloques hasta que su componente arranca. */

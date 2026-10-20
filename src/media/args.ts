@@ -34,8 +34,14 @@ export function buildYtdlpArgs(
     "mp4",
     "--max-filesize",
     String(Math.floor(options.maxBytes)),
+    // Filtro de duración TOLERANTE a que el campo no exista (`<=?`): si yt-dlp
+    // no conoce la duración (típico en algunos reels de Instagram), el video NO
+    // se rechaza por duración; se valida después con la duración real del
+    // archivo (ffprobe). Con `<=` a secas, un `duration` ausente hace fallar el
+    // filtro y el reel se rechaza con "does not pass filter" aunque dure pocos
+    // segundos. Ver docs/media-limits.md.
     "--match-filter",
-    `duration <= ${options.maxDurationSec}`,
+    `duration <=? ${options.maxDurationSec}`,
     "--write-info-json",
     "-o",
     outputTemplate,

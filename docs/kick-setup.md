@@ -141,7 +141,8 @@ Ciclo de vida de un canje:
   - **Rechazarlo** (el espectador recupera sus puntos **si Kick lo permite** —
     `TODO(verificar)`, ver `docs/kick-research.md` §8.2).
 - **Canjes viejos al iniciar**: según **"Canjes con más de N minutos"** (por
-  defecto 10) y **"Qué hacer con canjes viejos"** (ignorar / rechazar / procesar).
+  defecto 10) y **"Qué hacer con canjes viejos"** (procesar, por defecto /
+  rechazar / ignorar).
   Si se **ignoran**, aparecen en el dashboard con los botones **"Rechazar todos"**
   y **"Procesar ahora"**.
 

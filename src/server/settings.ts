@@ -118,6 +118,35 @@ export const SETTINGS_LIMITS = {
 
 const MAX_DOMAINS = 50;
 
+/**
+ * Lista de dominios por defecto de VERSIONES ANTERIORES (antes de sumar
+ * instagram.com). Se conserva para MIGRAR instalaciones existentes: si la lista
+ * guardada es EXACTAMENTE esta, se actualiza a la actual agregando instagram.com;
+ * si el usuario la personalizó (quitó/agregó dominios), no se toca.
+ */
+const PREVIOUS_DEFAULT_ALLOWED_DOMAINS: readonly string[] = [
+  "youtube.com",
+  "youtu.be",
+  "tiktok.com",
+  "clips.twitch.tv",
+  "kick.com",
+];
+
+/** ¿Son la misma lista de dominios, en el mismo orden y sin repetidos? */
+function sameDomainList(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((domain, index) => domain === b[index]);
+}
+
+/**
+ * Migra una lista de dominios guardada: si es EXACTAMENTE la lista por defecto
+ * anterior, la actualiza a la actual (agrega instagram.com). Cualquier lista
+ * personalizada se devuelve sin cambios.
+ */
+export function migrateAllowedDomains(saved: readonly string[]): string[] {
+  if (sameDomainList(saved, PREVIOUS_DEFAULT_ALLOWED_DOMAINS)) return [...DEFAULT_ALLOWED_DOMAINS];
+  return [...saved];
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   globalVolume: 100,
   defaultMaxDurationSec: 30,
@@ -343,7 +372,10 @@ function readDomains(db: SqliteDatabase): string[] {
   if (raw === null) return [...DEFAULT_ALLOWED_DOMAINS];
   const domains = normalizeDomains(raw.split(","));
   const valid = domains.filter(isValidDomainName);
-  return valid.length > 0 ? valid : [...DEFAULT_ALLOWED_DOMAINS];
+  if (valid.length === 0) return [...DEFAULT_ALLOWED_DOMAINS];
+  // Migración: si la lista guardada es la default ANTERIOR (sin instagram.com),
+  // se actualiza; si el usuario la personalizó, se respeta tal cual.
+  return migrateAllowedDomains(valid);
 }
 
 /** Lee la configuración aplicada; cae a los valores por defecto si falta o es inválida. */

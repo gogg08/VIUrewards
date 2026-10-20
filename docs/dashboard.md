@@ -85,17 +85,125 @@ una **barra de pestañas fija** arriba (Recompensas, Clips, Cola).
   **filas de dos líneas** (título/recompensa + resultado; usuario · hora en 24 h
   corto · motivo).
 - **Ajustes** es una **ventana flotante** con pestañas a la izquierda (Kick, Overlay
-  y OBS, Alertas, Biblioteca y descargas, Seguridad, Apariencia —vacía por ahora— y
-  Avanzado). Se cierra con Esc, con la X o con clic afuera; si hay cambios sin
+  y OBS, Alertas, Biblioteca y descargas, Seguridad, Apariencia y Avanzado). Se cierra con Esc, con la X o con clic afuera; si hay cambios sin
   guardar, avisa **y dice qué pestaña** los tiene. Cada pestaña tiene su propio botón
   de guardado o su acción inmediata; el aviso de "sin guardar" es **por pestaña**
-  (guardar una no limpia el de otra). En esta etapa el contenido se movió a su pestaña
-  **sin rediseñar cada una** (la sección 7.3 de `UI-DESIGN.md` define el contenido
-  final, Etapa 5).
+  (guardar una no limpia el de otra). La pestaña **Apariencia** elige el tema, el color
+  de acento y el modo del logo, y aplica al instante (sin Guardar); su contenido se
+define en la sección 7.3 de `UI-DESIGN.md`.
 
 El **sistema de diseño** vive en `web/style.css` y está hecho **solo con variables
 CSS** (colores, espaciados, radios y tipografías). Ningún componente escribe colores
-literales, así los temas futuros (OLED, noche, día) son otro juego de valores.
+literales, así los temas (**Noche**, **OLED** y **Día**, más **Automático**) son otro
+juego de valores (ver "Temas, acento y logo").
+
+## Temas, acento y logo
+
+El aspecto del dashboard se elige en **Ajustes → Apariencia** y se aplica **al
+instante**, sin botón Guardar. La preferencia es **de cada navegador** (`localStorage`,
+claves `viurewards.theme` y `viurewards.accent`), **no** de la instalación: no va a la
+base de datos.
+
+**Temas** (`web/style.css`, juegos de variables CSS):
+
+- **Noche** (por defecto): reproduce el aspecto anterior exactamente.
+- **OLED**: fondo negro puro.
+- **Día**: claro.
+- **Automático**: sigue al sistema (`prefers-color-scheme`); oscuro → Noche, claro →
+  Día. El modo oscuro del sistema **nunca** usa OLED (OLED es una elección explícita).
+
+Cada tema fija `color-scheme` (`dark` en Noche/OLED, `light` en Día) y sus propias
+variables de scrollbar y de sombra. Los colores de estado (`danger`/`warn`/éxito) **no**
+dependen del acento.
+
+El tema se aplica con `web/theme.js`, cargado **sincrónicamente** en el `<head>` (antes
+de la hoja de estilos) en `index.html` y `login.html`, para que no haya un destello del
+tema por defecto al abrir; pone `data-theme` y las variables de acento en `<html>`.
+
+**Color de acento.** Paleta de **7 preajustes** (Verde por defecto, Violeta, Azul, Rosa,
+Naranja, Cian y **Gris claro**, este último pensado para OLED) más un **selector libre**
+con hex validado (`#RRGGBB`). El acento se usa en el botón primario, la pestaña/segmento
+activo, el interruptor encendido, el anillo de foco, los enlaces, los elementos activos y
+los **estados positivos** (habilitada/conectado). El color del texto sobre el acento se
+elige por contraste (negro o blanco), siempre.
+
+**Contraste del acento.** Por **defecto** el acento se **ajusta** solo: si el color no
+alcanza 2:1 contra el fondo del tema, se corrige. Un interruptor **"Ajustar contraste"**
+(por defecto **encendido**, en `localStorage`; clave ausente o valor inválido = encendido,
+solo `false`/`0`/`off` lo apaga) cambia esto: encendido, `viuAccentForTheme(hex, theme,
+fixContrast)` aplica la corrección **más suave posible** y lleva el acento **hasta 2:1**
+contra el fondo (el umbral es la constante única `ACCENT_MIN_CONTRAST`; si el acento ya
+cumple, se devuelve idéntico). No garantiza 3:1: el umbral se eligió para que el acento se
+distinga del fondo, no para legibilidad de texto. Apagado, si el contraste acento/fondo es
+**< 2:1** se muestra una **advertencia con el ratio** que sugiere activar el toggle; no
+bloquea ni cambia el color. **Restablecer** vuelve el acento al verde por defecto y el
+toggle a su default (encendido). Los estados positivos **siguen al acento**
+(`--color-success` es un alias de `--color-accent`): con un acento rojo "Habilitada" y
+"Conectado" se ven rojos. `danger` y `warn` siguen semánticos y no cambian.
+
+**Logo por tema.** El logo busca un archivo distinto según el tema en `web/assets/`
+(`VIUrewards-dark.webp`/`.png` para Noche y OLED, `VIUrewards-light.webp`/`.png` para
+Día), combinado con sus tres modos (Automático, Dinámico, Estático). El juego **oscuro**
+es el **canónico**: es el `src` fijo del HTML (dashboard, login y guía) y el respaldo si
+el claro no carga (`logo.js` lo recuerda, sin repetir el 404).
+
+Todo el tema es **solo del dashboard**: el **overlay de OBS es transparente y no tiene
+tema ni acento**, y no se tocó.
+
+En **Ajustes → Apariencia**, el tema y la paleta son grupos de radio (`radiogroup` +
+`radio` + `aria-checked`) con **foco visible y navegación por flechas** (←/↑ y →/↓
+mueven el foco y aplican el valor como un clic); solo el elegido entra en el orden de
+tabulación.
+
+Los tests de lógica (`src/server/theme-logic.test.ts`) y los estáticos
+(`src/server/theme-ui.test.ts`) cubren el contraste, la elección de la tinta, la
+validación del hex, el respaldo de `localStorage` y que cada tema defina las mismas
+variables. Un **humo con Playwright** para el cambio de tema todavía está pendiente
+(la suite `test:e2e` aún no cubre temas).
+
+## Responsive y alineaciones
+
+Reglas de acomodo en `web/style.css` (solo estilos/markup, sin cambios de lógica):
+
+- **Estado Overlay/Kick:** el punto y el texto comparten la clase de estado del contenedor
+  (`.status-line.ok` = acento, `.status-line.error` = peligro) y se alinean con flex; la
+  barra superior y Plataformas usan el mismo componente (`.status-pill` + `.dot`).
+- **Seguridad:** los tres campos de contraseña tienen `max-width: 360px` y el botón queda
+  alineado con ellos.
+- **Barra superior (<= 600 px):** se oculta el logo, los pills no se parten y permiten
+  `wrap`; en **<= 480 px** muestran solo punto + nombre corto (el estado va en color,
+  `title` y `aria-label`) y Salir pasa a ícono.
+- **Panel Descargas (<= 600 px):** `fixed`, acotado al viewport
+  (`max-width: calc(100vw - 16px)`, `max-height: calc(100dvh - 80px)`, `overflow-y: auto`).
+- **Ajustes:** las pestañas tienen la misma caja siempre (borde transparente base, altura
+  mínima fija) y la navegación no se estira; en **<= 720 px** pasan a una fila con scroll
+  horizontal; el modal tiene **altura estable** entre pestañas (`min(80dvh, 640px)`).
+
+El **humo con Playwright** para estos casos (viewport de 360x780 que abra Descargas y
+Ajustes → Seguridad, verifique que nada excede el viewport y que la altura del modal es
+igual entre pestañas) queda **pendiente**: la suite `test:e2e` corre sin navegador.
+
+## Login y página pública de la guía
+
+El **login** (`web/login.html`) tiene el logo **centrado y más grande**
+(`--logo-height-login: 72px`) y un botón/enlace **Guía** (`<a href="/guia">`) en el
+extremo opuesto de **Entrar** (también en el modo de primer uso), con apariencia de botón
+secundario (borde y texto con el acento, **fondo transparente**, misma caja que Entrar).
+
+La página **`/guia`** explica, sin sesión, cómo conectar VIUrewards con Kick (crear la app
+en `kick.com/settings/developer`, la redirect URI exacta, las credenciales, los permisos y
+problemas comunes). Es **pública y de solo lectura**: no exige sesión, no usa cookies, no
+llama a ninguna API protegida y no recibe datos sensibles del servidor. El único enlace
+externo es `kick.com`.
+
+La **redirect URI** se calcula en el navegador (`web/guia.js`) como
+`http://localhost:<puerto>/callback`, tomando el puerto de `window.location.port` (y `80`
+si está vacío) — con `localhost`, no `127.0.0.1`, porque Kick lo rechaza.
+
+Las **capturas** son opcionales: la página pide la lista al servidor
+(`GET /api/guide-shots`) y muestra **solo** los archivos que existen, así que si todavía no
+hay ninguna no aparece un hueco y **no hay 404 ni errores en consola**. Los nombres y el
+tamaño recomendado están en `docs/guia-capturas.md`.
 
 ## Qué permite hoy (Fase 3 completa)
 
@@ -125,8 +233,15 @@ literales, así los temas futuros (OLED, noche, día) son otro juego de valores.
 - **Configuración general**: volumen global (0-100%) que multiplica el de cada
   alerta; duración máxima por defecto de una alerta; límites de descarga
   (duración y tamaño máximos, que el módulo de media relee **en cada descarga**);
-  whitelist de dominios editable; puerto; **cambiar contraseña** y **regenerar la
-  clave del overlay**.
+  whitelist de dominios editable (por defecto: youtube.com, youtu.be,
+  tiktok.com, **instagram.com**, clips.twitch.tv y kick.com); puerto; **cambiar
+  contraseña** y **regenerar la clave del overlay**.
+- **Duración desconocida**: algunos reels de Instagram no traen `duration` en la
+  extracción. El filtro de yt-dlp es **tolerante** a un valor desconocido
+  (`duration <=? N`), así que esos videos se descargan y la duración real se
+  valida **después** con ffprobe; si supera el límite, el archivo se borra y la
+  descarga falla. Un fallo real (login requerido, rate limit) muestra su motivo,
+  no un mensaje de duración. Ver `docs/media-limits.md`.
 - **Overlay para OBS**: la URL se muestra **enmascarada** por defecto, con botones
   **Mostrar** y **Copiar**, y un aviso de no mostrarla en pantalla durante el
   stream.
@@ -246,7 +361,10 @@ archivo seguía en `media/`, pero desaparecía de la biblioteca).
   solo lectura (solo `.jpg`) y no permiten path traversal.
 - **Whitelist de dominios**: al editarla se rechazan IPs (y por lo tanto rangos
   privados), `localhost`, nombres sin punto, caracteres inválidos y labels mal
-  formados. Nunca puede usarse para apuntar a servicios internos.
+  formados. Nunca puede usarse para apuntar a servicios internos. Al sumar
+  `instagram.com` a la lista por defecto, las instalaciones existentes **migran
+  solo si su lista guardada es exactamente la anterior** (sin `instagram.com`);
+  una lista personalizada no se toca.
 
 ## API (interna, requiere sesión)
 
@@ -284,6 +402,13 @@ Etapa 5 (Parte C): `GET /api/logs` (últimas N líneas del log, con `limit` y
 `level`; **redactadas** antes de salir) y `GET /api/support/summary` (resumen de
 soporte sin secretos). Ambas exigen sesión (401) y las de estado también validan
 el origen cuando corresponde.
+
+**Públicas (sin sesión)**: `GET /callback` (OAuth de Kick, valida solo `state` + PKCE) y
+las de la guía: `GET /guia` (sirve `web/guia.html`, con `Cache-Control: no-cache`) y
+`GET /api/guide-shots` (lista de solo lectura de las capturas existentes en
+`web/assets/guide/`, solo nombres que matchean `^guia-\d\d-[a-z0-9-]+\.(png|webp|jpg)$`,
+`[]` si la carpeta no existe o no se puede leer, sin rutas ni metadatos). Ninguna de las
+dos habilitó nada más: el resto de `/api/*` sigue en 401 sin sesión.
 
 ## Log del servidor
 

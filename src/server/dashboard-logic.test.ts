@@ -30,10 +30,32 @@ function makeApp(port = "8787", storage?: { getItem?: (k: string) => string | nu
       },
       location: { href: "", port },
       confirm: () => true,
+      // theme.js usa matchMedia y dispatchEvent al cargarse.
+      matchMedia: () => ({ matches: false, addEventListener: () => {} }),
+      dispatchEvent: () => {},
     },
     // `api()` usa el `fetch` GLOBAL del contexto; lo exponemos para reemplazarlo.
     fetch: () => Promise.reject(new Error("no fetch")),
-    document: { getElementById: () => null, activeElement: null, querySelector: () => null },
+    document: {
+      getElementById: () => null,
+      activeElement: null,
+      querySelector: () => null,
+      documentElement: {
+        _attrs: {},
+        getAttribute: (name: string) => (name in (context as never as { document: { documentElement: { _attrs: Record<string, string> } } }).document.documentElement._attrs ? (context as never as { document: { documentElement: { _attrs: Record<string, string> } } }).document.documentElement._attrs[name] : null),
+        setAttribute: (name: string, value: string) => {
+          (context as never as { document: { documentElement: { _attrs: Record<string, string> } } }).document.documentElement._attrs[name] = value;
+        },
+        style: { setProperty: () => {} },
+      },
+    },
+    CustomEvent: function (this: { type: string; detail: unknown }, type: string, init?: { detail?: unknown }) {
+      this.type = type;
+      this.detail = init?.detail;
+    },
+    Image: function () {
+      return {};
+    },
     setTimeout,
     clearTimeout,
     setInterval,
@@ -46,9 +68,12 @@ function makeApp(port = "8787", storage?: { getItem?: (k: string) => string | nu
     Object,
     Array,
     JSON,
+    parseInt,
     URLSearchParams,
     navigator: { clipboard: { writeText: () => Promise.resolve() } },
   });
+  // `app.js` lee el global `VIUTheme`, que define `theme.js`; se carga primero.
+  runInContext(readFileSync(join(webDir, "theme.js"), "utf8"), context);
   const source = readFileSync(join(webDir, "app.js"), "utf8");
   runInContext(source, context);
   const factory = runInContext("dashboardApp()", context) as Record<string, unknown>;
@@ -690,5 +715,155 @@ describe("Parte 1: cooldown con espera (poner en cola)", () => {
     const app = makeApp();
     const badge = app.outcomeBadgeClass as (outcome: string) => string;
     expect(badge("waiting")).toBe("warn");
+  });
+});
+
+describe("Parte 2: tema y acento", () => {
+  it("setTheme guarda la preferencia y aplica el tema", () => {
+    const written: Record<string, string> = {};
+    const app = makeApp("8787", { setItem: (k, v) => (written[k] = v) });
+    (app.setTheme as (mode: string) => void).call(app, "oled");
+    expect(app.themePreference).toBe("oled");
+    expect(written["viurewards.theme"]).toBe("oled");
+  });
+
+  it("setAccent acepta un hex válido y rechaza uno inválido con aviso", () => {
+    const written: Record<string, string> = {};
+    const app = makeApp("8787", { setItem: (k, v) => (written[k] = v) });
+    (app.setAccent as (hex: string) => void).call(app, "#a78bfa");
+    expect(app.accent).toBe("#a78bfa");
+    expect(app.accentError).toBe("");
+    expect(written["viurewards.accent"]).toBe("#a78bfa");
+    (app.setAccent as (hex: string) => void).call(app, "no-es-hex");
+    expect(app.accent).toBe("#a78bfa");
+    expect(String(app.accentError)).toContain("hex");
+  });
+
+  it("accentIsActive compara con el color elegido y resetAccent vuelve al verde", () => {
+    const app = makeApp();
+    (app.setAccent as (hex: string) => void).call(app, "#60a5fa");
+    const isActive = app.accentIsActive as (hex: string) => boolean;
+    expect(isActive.call(app, "#60a5fa")).toBe(true);
+    expect(isActive.call(app, "#53fc18")).toBe(false);
+    (app.resetAccent as () => void).call(app);
+    expect(app.accent).toBe("#53fc18");
+  });
+
+  it("la preferencia se lee con el helper de theme.js (tema y acento guardados)", () => {
+    const stored: Record<string, string> = {
+      "viurewards.theme": "day",
+      "viurewards.accent": "#f472b6",
+    };
+    // El factory lee la misma clave que usa `init()`; se verifica el round-trip.
+    const app = makeApp("8787", { getItem: (k) => (k in stored ? stored[k] : null) });
+    expect(app.themePreference).toBe("auto");
+    (app.setTheme as (mode: string) => void).call(app, "day");
+    (app.setAccent as (hex: string) => void).call(app, "#f472b6");
+    expect(app.themePreference).toBe("day");
+    expect(app.accent).toBe("#f472b6");
+  });
+
+  it("cycleTheme recorre los temas en rueda con las flechas", () => {
+    const app = makeApp();
+    const cycle = app.cycleTheme as (option: string, delta: number) => void;
+    (app.setTheme as (mode: string) => void).call(app, "auto");
+    cycle.call(app, "auto", 1);
+    expect(app.themePreference).toBe("night");
+    cycle.call(app, "day", 1);
+    expect(app.themePreference).toBe("auto"); // vuelve al principio
+    cycle.call(app, "auto", -1);
+    expect(app.themePreference).toBe("day"); // hacia atrás
+  });
+
+  it("cycleAccent recorre la paleta y accentSwatchTabindex marca un solo swatch", () => {
+    const app = makeApp();
+    (app.setAccent as (hex: string) => void).call(app, "#53fc18");
+    const cycle = app.cycleAccent as (hex: string, delta: number) => void;
+    cycle.call(app, "#53fc18", 1);
+    expect(app.accent).toBe("#a78bfa");
+    const tabindex = app.accentSwatchTabindex as (hex: string) => number;
+    expect(tabindex.call(app, "#a78bfa")).toBe(0);
+    expect(tabindex.call(app, "#53fc18")).toBe(-1);
+    // Con un color libre fuera de la paleta, el primero sigue siendo alcanzable.
+    (app.setAccent as (hex: string) => void).call(app, "#123456");
+    expect(tabindex.call(app, "#53fc18")).toBe(0);
+    expect(tabindex.call(app, "#a78bfa")).toBe(-1);
+  });
+
+  it("'Ajustar contraste' arranca ENCENDIDO y accentWarning solo avisa con el toggle apagado", () => {
+    // Almacén real en memoria: así `apply()` lee lo que el método acaba de escribir.
+    const store: Record<string, string> = { "viurewards.theme": "night" };
+    const app = makeApp("8787", {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => {
+        store[k] = v;
+      },
+    });
+    // Default ENCENDIDO (sin clave guardada).
+    expect(app.accentContrastFix).toBe(true);
+    // Un acento de bajo contraste sobre el fondo de Noche: con el toggle encendido
+    // NO se avisa (se corrige solo).
+    (app.setAccent as (hex: string) => void).call(app, "#101018");
+    expect(app.activeTheme).toBe("night");
+    expect(app.accentWarning).toBe(false);
+    // Al apagarlo, aparece el aviso de bajo contraste.
+    (app.setAccentContrastFix as (n: boolean) => void).call(app, false);
+    expect(app.accentContrastFix).toBe(false);
+    expect(store["viurewards.accentContrastFix"]).toBe("false");
+    expect(app.accentWarning).toBe(true);
+    // Se enciende de nuevo y desaparece el aviso.
+    (app.setAccentContrastFix as (n: boolean) => void).call(app, true);
+    expect(store["viurewards.accentContrastFix"]).toBe("true");
+    expect(app.accentWarning).toBe(false);
+  });
+
+  it("con el default encendido, el verde en Día no dispara la advertencia", () => {
+    // El verde exacto contrasta poco sobre Día, pero con el toggle encendido se
+    // corrige solo, así que no hay nada que avisar.
+    const store: Record<string, string> = { "viurewards.theme": "day" };
+    const app = makeApp("8787", {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => {
+        store[k] = v;
+      },
+    });
+    (app.setAccent as (hex: string) => void).call(app, "#53fc18");
+    expect(app.activeTheme).toBe("day");
+    expect(app.accentContrastFix).toBe(true);
+    expect(app.accentWarning).toBe(false);
+  });
+
+  it("Restablecer vuelve el acento al verde y el toggle a su default encendido", () => {
+    const store: Record<string, string> = { "viurewards.theme": "night" };
+    const app = makeApp("8787", {
+      getItem: (k) => (k in store ? store[k] : null),
+      setItem: (k, v) => {
+        store[k] = v;
+      },
+    });
+    (app.setAccent as (hex: string) => void).call(app, "#123456");
+    (app.setAccentContrastFix as (n: boolean) => void).call(app, false);
+    (app.resetAccent as () => void).call(app);
+    expect(app.accent).toBe("#53fc18");
+    expect(app.accentContrastFix).toBe(true);
+    expect(store["viurewards.accent"]).toBe("#53fc18");
+    expect(store["viurewards.accentContrastFix"]).toBe("true");
+  });
+
+  it("accentContrastText devuelve el ratio con dos decimales", () => {
+    const app = makeApp();
+    (app.setAccent as (hex: string) => void).call(app, "#101018");
+    expect(String(app.accentContrastText)).toMatch(/^\d+\.\d{2}$/);
+  });
+
+  it("el gris claro es un preset más y entra en la rueda de las flechas", () => {
+    const app = makeApp();
+    const palette = app.accentPalette as Array<{ id: string; hex: string }>;
+    expect(palette).toHaveLength(7);
+    expect(palette.some((color) => color.hex === "#d1d5db")).toBe(true);
+    // Desde el último preset, la flecha hacia adelante vuelve al verde.
+    (app.setAccent as (hex: string) => void).call(app, "#d1d5db");
+    (app.cycleAccent as (hex: string, d: number) => void).call(app, "#d1d5db", 1);
+    expect(app.accent).toBe("#53fc18");
   });
 });

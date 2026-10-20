@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 
-import { buildFfmpegArgs, buildYtdlpArgs } from "./args.ts";
+import { buildFfmpegArgs, buildFfprobeArgs, buildYtdlpArgs } from "./args.ts";
 import { detectBinaries, type FindBinaryOptions } from "./binaries.ts";
 import { writeProcessLog } from "./logs.ts";
 import { runProcess, type ProcessResult, type RunProcess } from "./run-process.ts";
@@ -170,6 +170,14 @@ function downloadFailureMessage(
   }
 }
 
+/**
+ * Mensaje para el usuario cuando la duración REAL del archivo (medida con
+ * ffprobe) supera el límite. La duración se conoce, así que se muestra.
+ */
+function tooLongMessage(maxDurationSec: number, durationSec: number): string {
+  return `El video dura ${durationSec} s y el límite es ${maxDurationSec} s (límite configurado).`;
+}
+
 /** Registra el proceso en disco (best-effort) y devuelve el fallo tipado. */
 function logFailure(
   logsDir: string,
@@ -189,6 +197,63 @@ function logFailure(
   return failure(reason, message);
 }
 
+/** ¿El `format_name` del contenedor está dentro de una lista corta y explícita? */
+const ALLOWED_OUTPUT_FORMATS = new Set(["mov", "mp4", "m4a", "3gp", "3g2", "mj2", "ipod"]);
+
+interface FfprobeOutput {
+  streams?: { codec_type?: string }[];
+  format?: { duration?: string; format_name?: string };
+}
+
+export interface ProbedClip {
+  /** Duración real del archivo, en segundos. `null` si ffprobe no la conoce. */
+  durationSec: number | null;
+  hasVideo: boolean;
+  hasAudio: boolean;
+}
+
+/**
+ * Analiza el archivo YA convertido con ffprobe para conocer su duración REAL.
+ * A diferencia del `duration` que pueda traer el info.json de yt-dlp (que puede
+ * faltar o venir `null`, típico en algunos reels de Instagram), el archivo que
+ * acabamos de escribir siempre se puede medir. Devuelve `null` si ffprobe falla
+ * o el contenedor no está permitido: en ese caso no se aplica el límite de
+ * duración (nunca se rechaza por un dato que no pudimos conocer).
+ */
+async function probeOutputDuration(
+  ffprobeBin: string,
+  filePath: string,
+  run: RunProcess,
+  timeoutMs: number,
+): Promise<ProbedClip | null> {
+  const args = buildFfprobeArgs(filePath);
+  const result = await run(ffprobeBin, args, { timeoutMs });
+  if (result.timedOut || result.code !== 0) return null;
+  let parsed: FfprobeOutput;
+  try {
+    parsed = JSON.parse(result.stdout) as FfprobeOutput;
+  } catch {
+    return null;
+  }
+  const formatName = parsed.format?.format_name;
+  if (
+    formatName &&
+    !formatName
+      .split(",")
+      .map((name) => name.trim().toLowerCase())
+      .some((name) => ALLOWED_OUTPUT_FORMATS.has(name))
+  ) {
+    return null;
+  }
+  const streams = parsed.streams ?? [];
+  const duration = Number(parsed.format?.duration);
+  return {
+    durationSec: Number.isFinite(duration) && duration > 0 ? duration : null,
+    hasVideo: streams.some((s) => s.codec_type === "video"),
+    hasAudio: streams.some((s) => s.codec_type === "audio"),
+  };
+}
+
 /** Archivo descargado por yt-dlp: `<id>.src.<ext>` (nunca el título del video). */
 function findDownloadedSource(mediaDir: string, id: string): string | null {
   const prefix = `${id}.src.`;
@@ -199,10 +264,21 @@ function findDownloadedSource(mediaDir: string, id: string): string | null {
   return match ? join(mediaDir, match) : null;
 }
 
-/** Traduce la salida de yt-dlp a un código de error cuando no hay archivo descargado. */
+/**
+ * Traduce la salida de yt-dlp a un código de error cuando no hay archivo
+ * descargado.
+ *
+ * Importante: como el filtro de duración ahora es TOLERANTE a un `duration`
+ * desconocido (`duration <=? N`), un rechazo del filtro solo ocurre cuando la
+ * duración SÍ se conoce y supera el límite. Aun así, no mapeamos CIEGAMENTE
+ * "does not pass filter" a TOO_LONG: el texto puede aparecer por otros filtros, y
+ * los fallos reales (login requerido, rate limit de Instagram, etc.) deben
+ * conservar su motivo. Solo lo tratamos como TOO_LONG si el stderr menciona el
+ * filtro de duración; el resto cae a DOWNLOAD_FAILED.
+ */
 function classifyYtdlpFailure(result: ProcessResult): MediaErrorCode {
   const output = `${result.stdout}\n${result.stderr}`.toLowerCase();
-  if (output.includes("does not pass filter")) return "TOO_LONG";
+  if (output.includes("does not pass filter") && output.includes("duration")) return "TOO_LONG";
   if (output.includes("max-filesize") || output.includes("larger than")) return "TOO_BIG";
   return "DOWNLOAD_FAILED";
 }
@@ -347,8 +423,27 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     );
   }
 
+  // Duración REAL del archivo que acabamos de escribir (ffprobe). El `duration`
+  // del info.json de yt-dlp puede faltar o ser `null` (típico en algunos reels
+  // de Instagram), así que no alcanza para aplicar el límite. Medimos el archivo
+  // y solo rechazamos cuando la duración SE CONOCE y supera el límite.
+  const probed = await probeOutputDuration(
+    detection.binaries.ffprobe,
+    outputPath,
+    run,
+    timeoutMs,
+  );
+  if (probed && probed.durationSec !== null && probed.durationSec > maxDurationSec) {
+    const measured = Math.round(probed.durationSec);
+    rmSync(outputPath, { force: true });
+    rmSync(`${outputPath}.part`, { force: true });
+    return failure("TOO_LONG", tooLongMessage(maxDurationSec, measured));
+  }
+
   const sizeBytes = statSync(outputPath).size;
-  const durationSec = Math.round(info?.duration ?? 0);
+  const durationSec =
+    probed && probed.durationSec !== null ? Math.round(probed.durationSec) : Math.round(info?.duration ?? 0);
+  const hasVideo = probed ? probed.hasVideo : true;
   const title = info?.title ?? id;
 
   const meta: ClipMeta = {
@@ -372,5 +467,5 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     timeoutMs,
   });
 
-  return { ok: true, clip: { id, path: outputPath, durationSec, sizeBytes, title, hasVideo: true, local: false } };
+  return { ok: true, clip: { id, path: outputPath, durationSec, sizeBytes, title, hasVideo, local: false } };
 }

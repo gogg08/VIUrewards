@@ -85,14 +85,32 @@ describe("assets del dashboard", () => {
   });
 
   it("el logo está en los dos formatos y se carga en dashboard y login", () => {
-    expect(existsSync(join(webDir, "assets/VIUrewards.png"))).toBe(true);
-    expect(existsSync(join(webDir, "assets/VIUrewards.webp"))).toBe(true);
+    // El PNG base (el que el HTML pone como `src` inicial) existe.
+    expect(existsSync(join(webDir, "assets/VIUrewards-dark.png"))).toBe(true);
+    expect(existsSync(join(webDir, "assets/VIUrewards-dark.webp"))).toBe(true);
+    expect(existsSync(join(webDir, "assets/VIUrewards-light.png"))).toBe(true);
+    expect(existsSync(join(webDir, "assets/VIUrewards-light.webp"))).toBe(true);
+    const logo = read("logo.js");
     for (const page of PAGES) {
       const html = read(page.file);
       expect(html, `${page.file} no usa el logo`).toContain("logoBadge()");
-      expect(html, `${page.file} no apunta al PNG del logo`).toContain("/web/assets/VIUrewards.png");
+      // El HTML apunta al juego oscuro: es el archivo real de respaldo (y el de
+      // Noche/OLED). El juego claro lo elige logo.js según el tema.
+      expect(html, `${page.file} no apunta al PNG del logo`).toMatch(
+        /src="\/web\/assets\/VIUrewards-dark\.png"/,
+      );
       expect(html, `${page.file} no tiene el alt del logo`).toContain('alt="VIUrewards"');
+      // El juego claro NO se referencia desde el HTML: lo elige logo.js.
+      expect(html, `${page.file} referencia el logo claro (no debe hacerlo)`).not.toMatch(
+        /(?:src|href)="[^"]*VIUrewards-light\./,
+      );
     }
+    // logo.js define los juegos por tema (oscuro para night/oled, claro para day)
+    // y cae al juego oscuro si el claro no existe.
+    expect(logo).toContain("/web/assets/VIUrewards-dark.png");
+    expect(logo).toContain("/web/assets/VIUrewards-dark.webp");
+    expect(logo).toContain("/web/assets/VIUrewards-light.png");
+    expect(logo).toContain("/web/assets/VIUrewards-light.webp");
   });
 
   it("logo.js se carga antes del script del componente en cada página", () => {

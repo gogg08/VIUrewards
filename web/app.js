@@ -161,6 +161,17 @@ function dashboardApp() {
     downloadErrorUnseen: false,
     // Modo del logo (Parte C): "auto" | "dynamic" | "static". Vive en localStorage.
     logoMode: "auto",
+    // Tema y acento (Parte 2): preferencias de ESTE navegador, en localStorage.
+    // `themePreference` es lo elegido (auto|night|oled|day); `activeTheme` es el
+    // tema efectivo ya aplicado (noche/oled/día) y `accent` el hex elegido.
+    themePreference: "auto",
+    activeTheme: "night",
+    accent: VIUTheme.DEFAULT_ACCENT,
+    accentPalette: VIUTheme.PALETTE,
+    accentError: "",
+    // "Ajustar contraste" (por defecto ENCENDIDO): con el toggle apagado el acento
+    // se aplica EXACTO y solo se avisa si contrasta poco; encendido se corrige.
+    accentContrastFix: true,
 
     queue: { status: "idle", current: null, pending: [], size: 0, cooldownWait: [], overlay: { connected: false, clients: 0 } },
 
@@ -395,6 +406,12 @@ function dashboardApp() {
       return this.queue.overlay && this.queue.overlay.connected ? "Overlay conectado" : "Overlay sin conexión";
     },
 
+    // Palabra de estado sin el nombre, para la barra angosta (el nombre se
+    // muestra aparte; en <= 480px solo queda el punto + nombre corto).
+    get overlayStatusState() {
+      return this.queue.overlay && this.queue.overlay.connected ? "conectado" : "sin conexión";
+    },
+
     get overlayStatusClass() {
       return this.queue.overlay && this.queue.overlay.connected ? "ok" : "error";
     },
@@ -418,6 +435,11 @@ function dashboardApp() {
       if (platform.state === "connected") return "ok";
       if (platform.state === "requires_relink") return "error";
       return "";
+    },
+
+    // Palabra de estado sin el prefijo "Kick: ", para la barra angosta.
+    get kickStatusState() {
+      return this.kickStatusLabel.replace(/^Kick:\s*/, "");
     },
 
     get downloadStatusClass() {
@@ -575,6 +597,117 @@ function dashboardApp() {
       VIULogo.writeMode(mode);
     },
 
+    // --- Tema y acento (Parte 2) --------------------------------------------
+
+    // Aplica el tema elegido: lo guarda, recalcula el tema efectivo y lo aplica
+    // junto con el acento. Todo al instante, sin guardar.
+    setTheme(preference) {
+      this.themePreference = preference;
+      VIUTheme.writeTheme(preference);
+      this.applyTheme();
+    },
+
+    // Cambia el acento (paleta o selector libre). Un hex inválido no se aplica y
+    // deja un aviso discreto.
+    setAccent(hex) {
+      const normalized = VIUTheme.normalizeHex(hex);
+      if (!normalized) {
+        this.accentError = "El color debe ser un hex #RRGGBB.";
+        return;
+      }
+      this.accentError = "";
+      this.accent = normalized;
+      VIUTheme.writeAccent(normalized);
+      this.applyTheme();
+    },
+
+    // Restablece el acento al verde por defecto y el toggle a su default (encendido).
+    resetAccent() {
+      this.setAccent(VIUTheme.DEFAULT_ACCENT);
+      this.setAccentContrastFix(true);
+    },
+
+    // Enciende o apaga "Ajustar contraste": se guarda y se vuelve a aplicar.
+    setAccentContrastFix(enabled) {
+      this.accentContrastFix = !!enabled;
+      VIUTheme.writeContrastFix(this.accentContrastFix);
+      this.applyTheme();
+    },
+
+    // Navegación por flechas del grupo de temas (patrón radiogroup): mueve el
+    // foco y aplica el tema al instante, como un clic.
+    cycleTheme(option, delta) {
+      const values = ["auto", "night", "oled", "day"];
+      const index = values.indexOf(option);
+      if (index === -1) return;
+      const next = values[(index + delta + values.length) % values.length];
+      this.setTheme(next);
+      this._focusRadio("theme", next);
+    },
+
+    // Navegación por flechas de la paleta de acento.
+    cycleAccent(hex, delta) {
+      const ids = this.accentPalette.map((color) => color.hex);
+      const index = ids.indexOf(hex);
+      if (index === -1) return;
+      const next = ids[(index + delta + ids.length) % ids.length];
+      this.setAccent(next);
+      this._focusRadio("accent", next);
+    },
+
+    // Enfoca el radio correspondiente tras moverlo con las flechas (el foco
+    // sigue al valor elegido, como pide el patrón de radiogroup).
+    _focusRadio(group, value) {
+      try {
+        const element = document.querySelector(`[data-radio-group="${group}"][data-radio-value="${value}"]`);
+        if (element && typeof element.focus === "function") element.focus();
+      } catch (error) {
+        /* Sin DOM consultable: no es crítico. */
+      }
+    },
+
+    // ¿El acento elegido contrasta poco contra el fondo del tema activo? Solo
+    // se avisa con "Ajustar contraste" APAGADO (encendido, se corrige solo y no
+    // hay nada que avisar). El aviso no bloquea ni cambia el color.
+    get accentWarning() {
+      return !this.accentContrastFix && VIUTheme.accentContrastWarning(this.accent, this.activeTheme);
+    },
+
+    // Ratio de contraste del acento exacto contra el fondo del tema activo, con
+    // dos decimales, para el texto de la advertencia.
+    get accentContrastText() {
+      const ratio = VIUTheme.accentContrastRatio(this.accent, this.activeTheme);
+      return ratio === null ? "" : ratio.toFixed(2);
+    },
+
+    // Aplica el tema y el acento a <html> y refleja el tema efectivo en el estado.
+    applyTheme() {
+      const applied = VIUTheme.apply();
+      this.activeTheme = applied.theme;
+    },
+
+    // Paleta: cada color se marca activo si coincide con el acento elegido.
+    accentIsActive(hex) {
+      return VIUTheme.normalizeHex(hex) === this.accent;
+    },
+
+    // Un solo swatch de la paleta entra en el orden de tabulación (el elegido);
+    // si el acento es un color libre fuera de la paleta, entra el primero, para
+    // que el grupo nunca quede inalcanzable con el teclado.
+    accentSwatchTabindex(hex) {
+      if (this.accentIsActive(hex)) return 0;
+      const anyActive = this.accentPalette.some((color) => this.accentIsActive(color.hex));
+      return !anyActive && this.accentPalette[0] && this.accentPalette[0].hex === hex ? 0 : -1;
+    },
+
+    // Color de previsualización del tema para la vista previa de la paleta de
+    // temas (fondo, superficie, texto y acento propio del tema elegido).
+    themePreview(theme) {
+      const bg = VIUTheme.THEME_BG[theme] || VIUTheme.THEME_BG.night;
+      const accent = theme === "day" ? "#299702" : theme === "oled" ? "#69fc36" : "#53fc18";
+      return { bg, accent };
+    },
+
     setRightTab(tab) {
       this.rightTab = tab;
     },
@@ -659,6 +792,12 @@ function dashboardApp() {
 
     async init() {
       this.logoMode = VIULogo.readMode();
+      // Tema y acento: preferencia guardada y aplicación inmediata (theme.js ya
+      // pudo haber aplicado antes de pintar; esto sincroniza el estado del panel).
+      this.themePreference = VIUTheme.readTheme();
+      this.accent = VIUTheme.readAccent();
+      this.accentContrastFix = VIUTheme.readContrastFix();
+      this.applyTheme();
       this.settingsTab = readSettingsTab() ?? this.settingsTab;
       await Promise.all([
         this.loadClips(),

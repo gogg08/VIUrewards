@@ -45,7 +45,10 @@ describe("buildYtdlpArgs", () => {
     const sizeIndex = args.indexOf("--max-filesize");
     expect(args[sizeIndex + 1]).toBe(String(5 * 1024 * 1024));
     const filterIndex = args.indexOf("--match-filter");
-    expect(args[filterIndex + 1]).toBe("duration <= 90");
+    // Filtro TOLERANTE (`<=?`): un `duration` desconocido (típico en algunos
+    // reels de Instagram) no debe hacer fallar el filtro; se valida después con
+    // la duración real del archivo. Ver docs/media-limits.md.
+    expect(args[filterIndex + 1]).toBe("duration <=? 90");
   });
 
   it("no incluye opciones que ejecuten comandos", () => {

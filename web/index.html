@@ -6,6 +6,13 @@
     <title>VIUrewards</title>
     <!-- Evita el 404 de /favicon.ico. -->
     <link rel="icon" href="data:," />
+    <!--
+      El tema y el acento se aplican ANTES de pintar: theme.js se carga sin
+      `defer` para que `data-theme` y las variables estén puestas cuando el
+      navegador pinte el primer cuadro (sin destello). Es chico y sin
+      dependencias; no necesita esperar a Alpine.
+    -->
+    <script src="/web/theme.js"></script>
     <link rel="stylesheet" href="/web/style.css" />
     <!--
       Orden importante: app.js (define dashboardApp) va ANTES de alpine.min.js,
@@ -36,10 +43,10 @@
           <div class="brand" x-data="logoBadge()">
             <img
               class="brand-logo"
-              src="/web/assets/VIUrewards.png"
+              src="/web/assets/VIUrewards-dark.png"
               :src="logoSrc"
               alt="VIUrewards"
-              @error="logoFailed = true"
+              @error="onLogoError()"
               x-show="!logoFailed"
             />
             <span class="brand-text" x-show="logoFailed" x-cloak>VIUrewards</span>
@@ -50,9 +57,11 @@
             :class="overlayStatusClass"
             @click="openSettings('overlay')"
             :title="overlayStatusTitle"
+            :aria-label="'Overlay: ' + (queue.overlay && queue.overlay.connected ? 'conectado' : 'sin conexión')"
           >
             <span class="dot"></span>
-            <span x-text="overlayStatusLabel"></span>
+            <span class="status-pill-name">Overlay</span>
+            <span class="status-pill-state" x-text="overlayStatusState"></span>
           </button>
 
           <button
@@ -62,7 +71,8 @@
             title="Estado de Kick. Abre Ajustes → Kick."
           >
             <span class="dot"></span>
-            <span x-text="kickStatusLabel"></span>
+            <span class="status-pill-name">Kick</span>
+            <span class="status-pill-state" x-text="kickStatusState"></span>
           </button>
         </div>
 
@@ -179,7 +189,7 @@
               />
             </svg>
           </button>
-          <button @click="logout()">Salir</button>
+          <button class="logout-btn" @click="logout()" aria-label="Salir">Salir</button>
         </div>
       </header>
 
@@ -564,7 +574,7 @@
 
       <!-- ================= Ajustes (ventana flotante) ================= -->
       <div class="modal" x-show="settingsOpen" x-cloak @click="closeIfBackdrop($event)">
-        <div class="modal-window" role="dialog" aria-modal="true" aria-label="Ajustes">
+        <div class="modal-window settings-window" role="dialog" aria-modal="true" aria-label="Ajustes">
           <div class="modal-head">
             <h2>Ajustes</h2>
             <button class="ghost" @click="closeSettings()" aria-label="Cerrar">✕</button>
@@ -723,9 +733,9 @@
                   <button @click="toggleOverlay()" x-text="overlayRevealed ? 'Ocultar' : 'Mostrar'"></button>
                   <button @click="copyOverlay()" x-text="copied ? '¡Copiado!' : 'Copiar'"></button>
                 </div>
-                <p class="ok">
-                  <span class="dot" :class="overlayStatusClass"></span>
-                  <span x-text="overlayStatusLabel"></span>
+                <p class="status-line" :class="overlayStatusClass">
+                  <span class="dot"></span>
+                  <span class="status-line-label" x-text="overlayStatusLabel"></span>
                   <span class="muted" x-show="overlay.version" x-text="' · versión ' + overlay.version"></span>
                 </p>
                 <div class="row">
@@ -820,7 +830,7 @@
                   </label>
                 </div>
 
-                <div x-show="oldRedemptions.length > 0">
+                <div class="old-redemptions" x-show="oldRedemptions.length > 0">
                   <h3>Canjes pendientes antiguos (<span x-text="oldRedemptions.length"></span>)</h3>
                   <p class="muted">Canjes que quedaron pendientes y superan la antigüedad configurada.</p>
                   <div class="table-wrap">
@@ -847,7 +857,7 @@
                       </tbody>
                     </table>
                   </div>
-                  <div class="row">
+                  <div class="row old-redemptions-actions">
                     <button class="danger" @click="rejectAllOld(activePlatform)">Rechazar todos</button>
                     <button @click="processOld(activePlatform)">Procesar ahora</button>
                     <span class="error" x-show="redemptionMessage" x-text="redemptionMessage"></span>
@@ -987,7 +997,7 @@
               <!-- ---- Seguridad ---- -->
               <section x-show="settingsTab === 'security'" class="stack">
                 <h3>Seguridad</h3>
-                <div class="stack">
+                <div class="stack password-form">
                   <input
                     type="password"
                     placeholder="Contraseña actual"
@@ -1006,7 +1016,7 @@
                     x-model="passwordForm.repeat"
                     autocomplete="new-password"
                   />
-                  <div class="row">
+                  <div class="row password-form-actions">
                     <button class="primary" @click="changePassword()">Cambiar contraseña</button>
                     <span class="ok" x-show="passwordSaved">Contraseña actualizada. Las demás sesiones se cerraron.</span>
                     <span class="error" x-show="passwordMessage" x-text="passwordMessage"></span>
@@ -1017,48 +1027,162 @@
               <!-- ---- Apariencia ---- -->
               <section x-show="settingsTab === 'appearance'" class="stack">
                 <h3>Apariencia</h3>
-                <div class="option-list">
-                  <label class="option">
+
+                <!-- Tema -->
+                <fieldset class="fieldset">
+                  <legend>Tema</legend>
+                  <div class="theme-grid" role="radiogroup" aria-label="Tema">
+                    <template x-for="option in [
+                      { value: 'auto', label: 'Automático', hint: 'Sigue al sistema' },
+                      { value: 'night', label: 'Noche', hint: '' },
+                      { value: 'oled', label: 'OLED', hint: '' },
+                      { value: 'day', label: 'Día', hint: '' },
+                    ]" :key="option.value">
+                      <button
+                        type="button"
+                        class="theme-option"
+                        role="radio"
+                        :data-radio-group="'theme'"
+                        :data-radio-value="option.value"
+                        :tabindex="themePreference === option.value ? 0 : -1"
+                        :aria-checked="themePreference === option.value ? 'true' : 'false'"
+                        :class="{ active: themePreference === option.value }"
+                        @click="setTheme(option.value)"
+                        @keydown.arrow-left.prevent="cycleTheme(option.value, -1)"
+                        @keydown.arrow-right.prevent="cycleTheme(option.value, 1)"
+                        @keydown.arrow-up.prevent="cycleTheme(option.value, -1)"
+                        @keydown.arrow-down.prevent="cycleTheme(option.value, 1)"
+                      >
+                        <span
+                          class="theme-preview"
+                          :class="'theme-preview-' + (option.value === 'auto' ? activeTheme : option.value)"
+                          aria-hidden="true"
+                        >
+                          <span class="theme-preview-panel"></span>
+                          <span class="theme-preview-accent"></span>
+                        </span>
+                        <span class="option-text">
+                          <strong x-text="option.label"></strong>
+                          <span class="hint" x-show="option.hint" x-text="option.hint"></span>
+                        </span>
+                      </button>
+                    </template>
+                  </div>
+                  <p class="hint">Se guarda en este navegador y se aplica al instante, sin guardar.</p>
+                </fieldset>
+
+                <!-- Color de acento -->
+                <fieldset class="fieldset">
+                  <legend>Color de acento</legend>
+                  <div class="accent-row" role="radiogroup" aria-label="Color de acento">
+                    <template x-for="color in accentPalette" :key="color.id">
+                      <button
+                        type="button"
+                        class="accent-swatch"
+                        role="radio"
+                        :data-radio-group="'accent'"
+                        :data-radio-value="color.hex"
+                        :tabindex="accentSwatchTabindex(color.hex)"
+                        :style="'--swatch: ' + color.hex"
+                        :aria-checked="accentIsActive(color.hex) ? 'true' : 'false'"
+                        :aria-label="color.label"
+                        :title="color.label"
+                        :class="{ active: accentIsActive(color.hex) }"
+                        @click="setAccent(color.hex)"
+                        @keydown.arrow-left.prevent="cycleAccent(color.hex, -1)"
+                        @keydown.arrow-right.prevent="cycleAccent(color.hex, 1)"
+                        @keydown.arrow-up.prevent="cycleAccent(color.hex, -1)"
+                        @keydown.arrow-down.prevent="cycleAccent(color.hex, 1)"
+                      ></button>
+                    </template>
+                  </div>
+                  <div class="color-row color-row--accent">
                     <input
-                      type="radio"
-                      name="logoMode"
-                      value="auto"
-                      :checked="logoMode === 'auto'"
-                      @change="setLogoMode('auto')"
+                      type="text"
+                      class="color-hex"
+                      maxlength="7"
+                      aria-label="Color de acento en hex"
+                      x-model="accent"
+                      @change="setAccent(accent)"
+                      @input="setAccent(accent)"
+                      placeholder="#RRGGBB"
                     />
-                    <span class="option-text">
-                      <strong>Automático</strong>
-                      <span class="hint">El logo animado los primeros 60 segundos; después, el fijo. Opción por defecto.</span>
-                    </span>
-                  </label>
-                  <label class="option">
                     <input
-                      type="radio"
-                      name="logoMode"
-                      value="dynamic"
-                      :checked="logoMode === 'dynamic'"
-                      @change="setLogoMode('dynamic')"
+                      type="color"
+                      class="color-picker"
+                      aria-label="Elegir color de acento"
+                      :value="accent"
+                      @input="setAccent($event.target.value)"
                     />
-                    <span class="option-text">
-                      <strong>Dinámico</strong>
-                      <span class="hint">El logo animado todo el tiempo.</span>
-                    </span>
-                  </label>
-                  <label class="option">
-                    <input
-                      type="radio"
-                      name="logoMode"
-                      value="static"
-                      :checked="logoMode === 'static'"
-                      @change="setLogoMode('static')"
-                    />
-                    <span class="option-text">
-                      <strong>Estático</strong>
-                      <span class="hint">Siempre el logo fijo, sin animación.</span>
-                    </span>
-                  </label>
-                </div>
-                <p class="hint">Se guarda en este navegador y se aplica al instante, sin guardar.</p>
+                    <button
+                      type="button"
+                      role="switch"
+                      class="switch"
+                      :class="{ on: accentContrastFix }"
+                      :aria-checked="accentContrastFix ? 'true' : 'false'"
+                      title="Corrige la luminosidad del acento para que contraste con el fondo del tema"
+                      aria-label="Ajustar contraste"
+                      @click="setAccentContrastFix(!accentContrastFix)"
+                    >
+                      <span class="switch-knob"></span>
+                    </button>
+                    <span class="switch-label">Ajustar contraste</span>
+                    <button type="button" class="secondary small" @click="resetAccent()">Restablecer</button>
+                  </div>
+                  <span class="error" x-show="accentError" x-text="accentError"></span>
+                  <span class="warn" x-show="accentWarning">
+                    Este color contrasta poco con el fondo del tema (ratio
+                    <span x-text="accentContrastText"></span>:1). Se muestra igual; activá “Ajustar contraste”
+                    para corregirlo automáticamente.
+                  </span>
+                </fieldset>
+
+                <!-- Logo -->
+                <fieldset class="fieldset">
+                  <legend>Logo</legend>
+                  <div class="option-list" role="radiogroup" aria-label="Logo">
+                    <label class="option">
+                      <input
+                        type="radio"
+                        name="logoMode"
+                        value="auto"
+                        :checked="logoMode === 'auto'"
+                        @change="setLogoMode('auto')"
+                      />
+                      <span class="option-text">
+                        <strong>Automático</strong>
+                        <span class="hint">El logo animado los primeros 60 segundos; después, el fijo. Opción por defecto.</span>
+                      </span>
+                    </label>
+                    <label class="option">
+                      <input
+                        type="radio"
+                        name="logoMode"
+                        value="dynamic"
+                        :checked="logoMode === 'dynamic'"
+                        @change="setLogoMode('dynamic')"
+                      />
+                      <span class="option-text">
+                        <strong>Dinámico</strong>
+                        <span class="hint">El logo animado todo el tiempo.</span>
+                      </span>
+                    </label>
+                    <label class="option">
+                      <input
+                        type="radio"
+                        name="logoMode"
+                        value="static"
+                        :checked="logoMode === 'static'"
+                        @change="setLogoMode('static')"
+                      />
+                      <span class="option-text">
+                        <strong>Estático</strong>
+                        <span class="hint">Siempre el logo fijo, sin animación.</span>
+                      </span>
+                    </label>
+                  </div>
+                  <p class="hint">Se guarda en este navegador y se aplica al instante, sin guardar.</p>
+                </fieldset>
               </section>
 
               <!-- ---- Avanzado ---- -->

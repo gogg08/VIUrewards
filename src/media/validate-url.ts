@@ -23,6 +23,7 @@ export const DEFAULT_ALLOWED_DOMAINS: readonly string[] = [
   "youtube.com",
   "youtu.be",
   "tiktok.com",
+  "instagram.com",
   "clips.twitch.tv",
   "kick.com",
 ];

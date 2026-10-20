@@ -206,8 +206,8 @@ describe("UI del dashboard (plataformas)", () => {
     expect(logo).toContain("viurewards.logoMode");
     expect(logo).toContain("localStorage");
     // Rutas locales de /web (nunca un CDN).
-    expect(logo).toContain("/web/assets/VIUrewards.png");
-    expect(logo).toContain("/web/assets/VIUrewards.webp");
+    expect(logo).toContain("/web/assets/VIUrewards-dark.png");
+    expect(logo).toContain("/web/assets/VIUrewards-dark.webp");
     // Duración del ciclo del WebP, medida del archivo (69 cuadros, 5.040 s).
     expect(logo).toContain("VIU_LOGO_CYCLE_MS = 5040");
   });

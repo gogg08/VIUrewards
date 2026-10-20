@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Guía: conectar VIUrewards con Kick</title>
+    <!-- Evita el 404 de /favicon.ico. -->
+    <link rel="icon" href="data:," />
+    <!--
+      El tema y el acento se aplican ANTES de pintar: theme.js se carga sin
+      `defer` para que `data-theme` y las variables estén puestas cuando el
+      navegador pinte el primer cuadro (sin destello). Ver docs/dashboard.md.
+    -->
+    <script src="/web/theme.js"></script>
+    <link rel="stylesheet" href="/web/style.css" />
+    <!--
+      Orden importante: los scripts que definen el componente van ANTES de
+      alpine.min.js, que arranca en un microtask apenas se ejecuta. La
+      redirect URI se calcula con el puerto de la barra de direcciones, así que
+      el script de la guía tiene que existir cuando Alpine evalúa `x-data`.
+    -->
+    <script defer src="/web/logo.js"></script>
+    <script defer src="/web/guia.js"></script>
+    <script defer src="/web/alpine.min.js"></script>
+  </head>
+  <body>
+    <div class="guide-wrap" x-data="guideApp()">
+      <div class="guide-bar">
+        <a class="guide-back" href="/">← Volver</a>
+        <!-- Logo con modos configurables (Automático/Dinámico/Estático). -->
+        <div class="brand guide-brand" x-data="logoBadge()">
+          <img
+            class="brand-logo"
+            src="/web/assets/VIUrewards-dark.png"
+            :src="logoSrc"
+            alt="VIUrewards"
+            @error="onLogoError()"
+            x-show="!logoFailed"
+          />
+          <span class="brand-text" x-show="logoFailed" x-cloak>VIUrewards</span>
+        </div>
+      </div>
+
+      <main class="guide">
+        <h1>Guía: conectar VIUrewards con Kick</h1>
+        <p class="guide-intro">
+          VIUrewards necesita una app de desarrollador propia en tu cuenta de Kick para crear tus recompensas y
+          detectar los canjes. Se hace una sola vez.
+        </p>
+
+        <nav class="guide-index" aria-label="Índice de la guía">
+          <h2>Pasos</h2>
+          <ol>
+            <li><a href="#guia-paso-1">Entrá a la configuración de desarrollador</a></li>
+            <li><a href="#guia-paso-2">Creá la app</a></li>
+            <li><a href="#guia-paso-3">Copiá tus credenciales</a></li>
+            <li><a href="#guia-paso-4">Cargalas en VIUrewards</a></li>
+            <li><a href="#guia-paso-5">Aceptá los permisos</a></li>
+            <li><a href="#guia-paso-6">Verificá la conexión</a></li>
+            <li><a href="#guia-problemas">Problemas comunes</a></li>
+          </ol>
+        </nav>
+
+        <!-- Antes de empezar -->
+        <section class="guide-card" id="guia-antes">
+          <h2>Antes de empezar</h2>
+          <ul class="guide-list">
+            <li>
+              Una cuenta de Kick con <strong>verificación en dos pasos (2FA) activada</strong>: Kick exige 2FA para
+              crear apps de desarrollador.
+            </li>
+            <li>VIUrewards abierto en esta misma PC.</li>
+          </ul>
+        </section>
+
+        <!-- Paso 1 -->
+        <section class="guide-card" id="guia-paso-1">
+          <h2><span class="guide-step">Paso 1</span> Entrá a la configuración de desarrollador</h2>
+          <p>
+            Abrí
+            <a href="https://kick.com/settings/developer" rel="noopener noreferrer">kick.com/settings/developer</a>
+            e iniciá sesión con tu cuenta.
+          </p>
+          <figure class="guide-shot" x-show="shot('guia-01-kick-developer')" x-cloak>
+            <img
+              :src="shotUrl('guia-01-kick-developer')"
+              alt="Configuración de desarrollador de Kick abierta en el navegador"
+              loading="lazy"
+              @click="openLightbox($event.target.src)"
+            />
+            <figcaption>La configuración de desarrollador, dentro de los ajustes de tu cuenta.</figcaption>
+          </figure>
+        </section>
+
+        <!-- Paso 2 -->
+        <section class="guide-card" id="guia-paso-2">
+          <h2><span class="guide-step">Paso 2</span> Creá la app</h2>
+          <p>
+            Poné un nombre a elección (por ejemplo <strong>VIUrewards</strong>) y una descripción: Kick la pide. En
+            <strong>“Redirigir URL”</strong> (en inglés, <em>Redirect URI</em>) pegá <strong>exactamente</strong> este
+            valor:
+          </p>
+          <div class="code-row">
+            <code class="code-value" x-text="redirectUri"></code>
+            <button type="button" class="secondary small" @click="copyRedirect()">Copiar</button>
+          </div>
+          <p class="visually-hidden" role="status" aria-live="polite" x-text="copyMessage"></p>
+          <ul class="guide-list">
+            <li><strong>http</strong> (no https).</li>
+            <li><strong>localhost</strong> (no <code>127.0.0.1</code>).</li>
+            <li>La ruta <strong>/callback</strong>, sin barra final.</li>
+            <li>El <strong>mismo puerto</strong> que ves en la barra de direcciones de esta página.</li>
+          </ul>
+          <p class="guide-warn info">
+            <svg class="guide-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5" />
+              <path d="M12 8h.01" />
+            </svg>
+            <span>
+              Si más adelante cambiás el puerto de VIUrewards, actualizá también este valor en Kick: la URL tiene que
+              coincidir <strong>exactamente</strong>.
+            </span>
+          </p>
+          <figure class="guide-shot" x-show="shot('guia-02-crear-app')" x-cloak>
+            <img
+              :src="shotUrl('guia-02-crear-app')"
+              alt="Formulario de Kick para crear una nueva app"
+              loading="lazy"
+              @click="openLightbox($event.target.src)"
+            />
+            <figcaption>El formulario de “crear app” de Kick.</figcaption>
+          </figure>
+          <figure class="guide-shot" x-show="shot('guia-03-redirect-url')" x-cloak>
+            <img
+              :src="shotUrl('guia-03-redirect-url')"
+              alt="Campo Redirigir URL con la URL de callback pegada"
+              loading="lazy"
+              @click="openLightbox($event.target.src)"
+            />
+            <figcaption>El campo “Redirigir URL” con el valor pegado.</figcaption>
+          </figure>
+          <p class="guide-foot">
+            Los nombres exactos de los botones de la página de Kick pueden cambiar con el tiempo.
+          </p>
+        </section>
+
+        <!-- Paso 3 -->
+        <section class="guide-card" id="guia-paso-3">
+          <h2><span class="guide-step">Paso 3</span> Copiá tus credenciales</h2>
+          <p>
+            Kick genera dos valores: el <strong>“ID del cliente”</strong> (Client ID) y el
+            <strong>“Secreto del Cliente”</strong> (Client Secret).
+          </p>
+          <p class="guide-warn danger">
+            <svg class="guide-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+              <path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+            </svg>
+            <span>
+              El <strong>secreto es como una contraseña</strong>: no lo compartas ni lo muestres en stream. Si se
+              filtra, regeneralo en esa misma pantalla de Kick (“Regenerar”) y volvé a cargarlo en VIUrewards.
+            </span>
+          </p>
+          <figure class="guide-shot" x-show="shot('guia-04-credenciales')" x-cloak>
+            <img
+              :src="shotUrl('guia-04-credenciales')"
+              alt="Client ID y Client Secret generados por Kick"
+              loading="lazy"
+              @click="openLightbox($event.target.src)"
+            />
+            <figcaption>Las credenciales que genera Kick para tu app.</figcaption>
+          </figure>
+          <p class="guide-foot">
+            Los nombres exactos de los botones de la página de Kick pueden cambiar con el tiempo.
+          </p>
+        </section>
+
+        <!-- Paso 4 -->
+        <section class="guide-card" id="guia-paso-4">
+          <h2><span class="guide-step">Paso 4</span> Cargalas en VIUrewards</h2>
+          <p>
+            En VIUrewards, abrí <strong>Ajustes</strong> (el engranaje) → pestaña <strong>Kick</strong>, pegá el
+            Client ID y el Client Secret, y tocá <strong>“Guardar credenciales”</strong>. Después, tocá
+            <strong>“Vincular cuenta”</strong>: se abre Kick.
+          </p>
+          <figure class="guide-shot" x-show="shot('guia-05-ajustes-kick')" x-cloak>
+            <img
+              :src="shotUrl('guia-05-ajustes-kick')"
+              alt="Pestaña Kick de Ajustes en VIUrewards con las credenciales cargadas"
+              loading="lazy"
+              @click="openLightbox($event.target.src)"
+            />
+            <figcaption>La pestaña Kick de Ajustes, con las credenciales cargadas.</figcaption>
+          </figure>
+        </section>
+
+        <!-- Paso 5 -->
+        <section class="guide-card" id="guia-paso-5">
+          <h2><span class="guide-step">Paso 5</span> Aceptá los permisos</h2>
+          <p>
+            Kick muestra que tu app quiere acceder a tu cuenta con estos tres permisos:
+          </p>
+          <ul class="guide-list">
+            <li>
+              <strong>Leer información de usuario</strong> (<code>user:read</code>): Kick lo describe como ver tu
+              nombre de usuario y tu ID de streamer (la documentación menciona además el correo electrónico).
+              VIUrewards lo usa para mostrar con qué cuenta estás conectado.
+            </li>
+            <li>
+              <strong>Leer información de los Puntos del Canal</strong> (<code>channel:rewards:read</code>): para ver
+              tus recompensas y detectar los canjes.
+            </li>
+            <li>
+              <strong>Leer, agregar, editar y borrar recompensas de Puntos del Canal</strong>
+              (<code>channel:rewards:write</code>): para crear, editar, activar, desactivar y borrar recompensas desde
+              VIUrewards.
+            </li>
+          </ul>
+          <p>Tocá <strong>“Permitir acceso”</strong> y Kick te devuelve a VIUrewards.</p>
+          <p class="guide-warn info">
+            <svg class="guide-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5" />
+              <path d="M12 8h.01" />
+            </svg>
+            <span>
+              Kick solo permite editar o borrar las recompensas que creó la misma app: las que creaste a mano en Kick
+              aparecen como <strong>“De otra app”</strong> y no se pueden modificar desde VIUrewards.
+            </span>
+          </p>
+          <figure class="guide-shot" x-show="shot('guia-06-permisos')" x-cloak>
+            <img
+              :src="shotUrl('guia-06-permisos')"
+              alt="Pantalla de Kick con los permisos que pide la app"
+              loading="lazy"
+              @click="openLightbox($event.target.src)"
+            />
+            <figcaption>La pantalla de permisos de Kick.</figcaption>
+          </figure>
+        </section>
+
+        <!-- Paso 6 -->
+        <section class="guide-card" id="guia-paso-6">
+          <h2><span class="guide-step">Paso 6</span> Verificá la conexión</h2>
+          <p>
+            En el encabezado del dashboard debería decir <strong>“Kick: conectado”</strong>. Además, en
+            <strong>Ajustes → Kick</strong>, <strong>“Probar conexión”</strong> tiene que dar OK.
+          </p>
+          <figure class="guide-shot" x-show="shot('guia-07-conectado')" x-cloak>
+            <img
+              :src="shotUrl('guia-07-conectado')"
+              alt="Dashboard de VIUrewards con Kick conectado"
+              loading="lazy"
+              @click="openLightbox($event.target.src)"
+            />
+            <figcaption>Kick conectado, listo para crear recompensas.</figcaption>
+          </figure>
+        </section>
+
+        <!-- Problemas comunes -->
+        <section class="guide-card" id="guia-problemas">
+          <h2>Problemas comunes</h2>
+          <details class="guide-faq">
+            <summary>Me dice “invalid authorization request”</summary>
+            <p>
+              Casi siempre es la Redirigir URL, que no coincide exactamente: revisá las cuatro reglas del
+              <a href="#guia-paso-2">paso 2</a> (http, localhost, /callback y el mismo puerto).
+            </p>
+          </details>
+          <details class="guide-faq">
+            <summary>Cambié el puerto de VIUrewards</summary>
+            <p>Actualizá la URL en Kick con el puerto nuevo y reiniciá VIUrewards.</p>
+          </details>
+          <details class="guide-faq">
+            <summary>Kick: requiere volver a vincular</summary>
+            <p>
+              Kick revocó el acceso o la sesión venció: apretá <strong>“Vincular cuenta”</strong> de nuevo en
+              Ajustes → Kick.
+            </p>
+          </details>
+          <details class="guide-faq">
+            <summary>No puedo crear la app</summary>
+            <p>Activá la verificación en dos pasos (2FA) en tu cuenta de Kick: sin eso, Kick no deja crear apps.</p>
+          </details>
+        </section>
+
+        <!-- Seguridad -->
+        <section class="guide-card" id="guia-seguridad">
+          <h2>Seguridad</h2>
+          <p class="guide-warn danger">
+            <svg class="guide-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+              <path d="M10.3 3.9 2.4 18a2 2 0 0 0 1.7 3h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+            </svg>
+            <span>
+              No muestres <strong>Ajustes → Kick</strong> ni tus credenciales en pantalla durante un stream.
+            </span>
+          </p>
+        </section>
+      </main>
+    </div>
+
+    <!-- Visor de capturas (lightbox simple, se cierra con Esc o un clic). -->
+    <div
+      class="lightbox"
+      x-data="guideApp()"
+      x-show="lightboxSrc"
+      x-cloak
+      @keydown.escape.window="closeLightbox()"
+      @click="closeLightbox()"
+    >
+      <img class="lightbox-img" :src="lightboxSrc" alt="" @click.stop />
+    </div>
+  </body>
+</html>

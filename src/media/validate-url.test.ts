@@ -21,6 +21,17 @@ describe("validateUrl - casos válidos", () => {
     if (result.ok) expect(result.host).toBe("m.youtube.com");
   });
 
+  it("acepta instagram.com, www.instagram.com y las rutas de reels y posts", () => {
+    for (const url of [
+      "https://instagram.com/reel/abc/",
+      "https://www.instagram.com/reel/abc/",
+      "https://www.instagram.com/reels/abc/",
+      "https://www.instagram.com/p/abc/",
+    ]) {
+      expect(validateUrl(url).ok, url).toBe(true);
+    }
+  });
+
   it("normaliza host, puerto por defecto y fragmento", () => {
     const result = validateUrl("https://WWW.YouTube.com:443/watch?v=1#frag");
     expect(result).toEqual({ ok: true, url: "https://www.youtube.com/watch?v=1", host: "www.youtube.com" });

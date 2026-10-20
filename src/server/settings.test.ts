@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { openMemoryDatabase } from "../db/index.ts";
+import { DEFAULT_ALLOWED_DOMAINS } from "../media/validate-url.ts";
 import {
   DEFAULT_SETTINGS,
   isPrivateIpv4,
   isValidDomainName,
+  migrateAllowedDomains,
   readSettings,
+  SETTING_ALLOWED_DOMAINS,
   SETTING_GLOBAL_VOLUME,
   validateSettingsPatch,
   writeSettings,
@@ -46,6 +49,55 @@ describe("readSettings", () => {
     const db = openMemoryDatabase();
     db.prepare("INSERT INTO settings (key, value) VALUES (?, ?)").run(SETTING_GLOBAL_VOLUME, "999");
     expect(readSettings(db).globalVolume).toBe(DEFAULT_SETTINGS.globalVolume);
+  });
+});
+
+describe("dominios permitidos por defecto y migración", () => {
+  // La lista por defecto ANTERIOR (antes de sumar instagram.com).
+  const PREVIOUS_DEFAULT = ["youtube.com", "youtu.be", "tiktok.com", "clips.twitch.tv", "kick.com"];
+
+  it("instagram.com está en los dominios por defecto", () => {
+    expect(DEFAULT_ALLOWED_DOMAINS).toContain("instagram.com");
+    expect(DEFAULT_SETTINGS.allowedDomains).toContain("instagram.com");
+  });
+
+  it("migra la lista por defecto anterior agregando instagram.com", () => {
+    expect(migrateAllowedDomains(PREVIOUS_DEFAULT)).toEqual([...DEFAULT_ALLOWED_DOMAINS]);
+  });
+
+  it("no toca una lista personalizada (quitó o agregó dominios)", () => {
+    const customized = ["youtube.com", "tiktok.com"];
+    expect(migrateAllowedDomains(customized)).toEqual(customized);
+
+    const withExtra = [...PREVIOUS_DEFAULT, "vimeo.com"];
+    expect(migrateAllowedDomains(withExtra)).toEqual(withExtra);
+
+    const reordered = ["kick.com", "youtube.com", "youtu.be", "tiktok.com", "clips.twitch.tv"];
+    expect(migrateAllowedDomains(reordered)).toEqual(reordered);
+  });
+
+  it("readDomains migra solo la lista guardada que es la default anterior", () => {
+    // Guardada como default ANTERIOR => migra.
+    const db1 = openMemoryDatabase();
+    db1
+      .prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
+      .run(SETTING_ALLOWED_DOMAINS, PREVIOUS_DEFAULT.join(","));
+    expect(readSettings(db1).allowedDomains).toEqual([...DEFAULT_ALLOWED_DOMAINS]);
+
+    // Guardada y personalizada => se respeta.
+    const db2 = openMemoryDatabase();
+    db2
+      .prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
+      .run(SETTING_ALLOWED_DOMAINS, "youtube.com,tiktok.com");
+    expect(readSettings(db2).allowedDomains).toEqual(["youtube.com", "tiktok.com"]);
+  });
+
+  it("la lista ya migrada no se vuelve a tocar", () => {
+    const db = openMemoryDatabase();
+    db
+      .prepare("INSERT INTO settings (key, value) VALUES (?, ?)")
+      .run(SETTING_ALLOWED_DOMAINS, DEFAULT_ALLOWED_DOMAINS.join(","));
+    expect(readSettings(db).allowedDomains).toEqual([...DEFAULT_ALLOWED_DOMAINS]);
   });
 });
 

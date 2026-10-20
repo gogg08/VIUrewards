@@ -244,7 +244,7 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña**. Las acci
 3. **Alertas:** volumen global, duración máxima por defecto, **audios simultáneos máximos** (1–20, por defecto 8; si se supera, se corta el audio más antiguo); **canje dentro del cooldown de una recompensa**: "Poner en cola" (por defecto, el canje espera su turno y suena al liberarse) u "Omitir el canje (como antes)", con **máximo de canjes en espera** por recompensa (1–200, por defecto 20) y **espera máxima por canje** en minutos (1–120, por defecto 10); qué hacer con un canje omitido (dejar pendiente por defecto, o rechazar, con la advertencia de que el reembolso no está verificado); canjes pendientes antiguos al iniciar (ignorar, rechazar o procesar), con lista y "Rechazar todos" / "Procesar ahora".
 4. **Biblioteca y descargas:** límites de duración y tamaño (descargas y archivos locales); dominios permitidos (rechaza IPs, `localhost`, nombres sin punto y caracteres inválidos); **yt-dlp** (versión detectada y botón "Actualizar yt-dlp", solo por acción explícita, con el resultado a la vista; si el error de una descarga sugiere actualizar, la fila del panel Descargas lleva acá); **espacio ocupado** por la biblioteca (clips + miniaturas); **"Limpiar caché ahora"** con **vista previa** de qué se borraría (`GET /api/clips/cleanup-preview`) y confirmación; **"Generar miniaturas faltantes"** (reubicado acá) y **"Revisar archivos ahora"** (`POST /api/clips/reconcile`, la misma reconciliación del arranque, que muestra el mismo aviso descartable). El contenido de la pestaña se refresca al abrirla.
 5. **Seguridad:** cambiar contraseña (pide la actual y cierra las demás sesiones).
-6. **Apariencia:** modo del logo (**Automático / Dinámico / Estático**), se guarda en este navegador (`localStorage`, no en la base) y se aplica al instante, sin botón Guardar. Reservada para los temas futuros.
+6. **Apariencia:** **tema** (**Noche** por defecto, **OLED**, **Día** y **Automático**, con vistas previas), **color de acento** (6 preajustes + selector libre con hex validado y "Restablecer") y modo del logo (**Automático / Dinámico / Estático**). Todo se guarda en este navegador (`localStorage`, no en la base) y se aplica al instante, sin botón Guardar. Ver §16.
 7. **Avanzado:** marcado visualmente como **"para casos puntuales"**; puerto (con advertencia: requiere reiniciar y actualizar la redirect URI en Kick y la URL en OBS), intervalo de polling de Kick, margen del watchdog, diagnóstico de Kick (latencia, 429, headers), **visor de logs** y simulador de eventos. El **visor de logs** (solo lectura) muestra las últimas N líneas del log del servidor (`logs/server.log`, por defecto 200, configurable), con **filtro por nivel** (info/aviso/error/debug) y **actualización manual** (botón "Actualizar") o **automática cada 3 s** (interruptor; solo corre mientras la pestaña está abierta). El servidor **redacta los secretos antes de enviar** (`***` para valores conocidos y patrones como `key=`/`token=`/`secret=`/`password=`; nunca salen tokens, claves del overlay ni cookies). Al lado hay **"Copiar para soporte"**: copia al portapapeles un resumen sin secretos (versión de la app y del overlay, versiones de yt-dlp/ffmpeg/ffprobe, sistema, puerto, estado de plataformas y del overlay, últimos errores ya redactados). La lectura del log es acotada: se lee solo el final del archivo (con límite de bytes), nunca entero en memoria.
 
 ## 8. Botón Descargas
@@ -337,3 +337,259 @@ Ventana con pestañas a la izquierda y **botón Guardar por pestaña**. Las acci
 | Cambiar contraseña | Ajustes → Seguridad |
 | Puerto, polling, watchdog, diagnóstico, logs, simulador | Ajustes → Avanzado |
 | Progreso de descargas | Botón Descargas |
+
+## 16. Temas, acento y logo por tema
+
+Los temas son **juegos de variables CSS** (el sistema visual ya estaba hecho así, §11).
+El tema **Noche** es el que reproduce el aspecto anterior **exactamente**; OLED y Día
+son variantes del mismo conjunto de variables.
+
+**Temas** (`web/style.css`):
+
+- `:root[data-theme="night"]` — **por defecto**. Es el aspecto previo, sin cambios.
+- `:root[data-theme="oled"]` — fondo negro puro, pensado para pantallas OLED.
+- `:root[data-theme="day"]` — claro.
+- **Automático** sigue al sistema (`prefers-color-scheme`): oscuro → **Noche**, claro →
+  **Día**. El modo oscuro del sistema **nunca** cae en OLED (OLED es una elección
+  explícita).
+
+Cada tema fija `color-scheme` (**`dark`** en Noche y OLED, **`light`** en Día) para que
+los controles nativos (scroll, selects, inputs numéricos, selector de color) usen su
+variante correcta, y define sus propias variables de scrollbar (`--scrollbar-*`) y de
+sombra. Los estados **positivos** (`--color-success`, `.ok`, `.badge.ok`, el punto de
+conectado `.status-pill.ok .dot`, `.dot.ok`) **siguen al acento**: `--color-success` es un
+**alias de `--color-accent`** (y `--color-success-ink` de `--color-accent-ink`). Con un
+acento rojo esos estados se ven rojos, y se acepta. `danger` y `warn` **no** cambian:
+siguen semánticos (peligro, aviso, "Overlay sin conexión", Borrar).
+
+**Aplicación sin parpadeo.** El tema se aplica con `web/theme.js`, cargado
+**sincrónicamente** en el `<head>` (antes de la hoja de estilos) en `index.html` y
+`login.html`, para que no haya un destello del tema por defecto. El script pone
+`data-theme` y las variables de acento en `<html>`. La preferencia vive en el
+`localStorage` **de cada navegador** (claves `viurewards.theme` y `viurewards.accent`,
+lectura con `try/catch`); un valor inválido cae a los valores por defecto. **No va a la
+base de datos**: es por navegador, no por instalación.
+
+**Color de acento.** Hay **7 preajustes** (Verde `#53fc18` por defecto, Violeta
+`#a78bfa`, Azul `#60a5fa`, Rosa `#f472b6`, Naranja `#fb923c`, Cian `#22d3ee` y **Gris
+claro** `#d1d5db`, este último pensado para OLED) más un `input type="color"` libre con
+campo de hex validado (`#RRGGBB`). El acento se usa en el botón primario, la
+pestaña/segmento activo, el interruptor encendido, el anillo de foco, los enlaces, los
+elementos activos y los **estados positivos** (habilitada/conectado). El color del texto
+**sobre** el acento (`--color-accent-ink`) se elige por contraste (negro o blanco) con
+`viuInkFor`, **siempre**, sin importar el toggle de contraste.
+
+**Contraste del acento ("Ajustar contraste").** Por **defecto** el acento se aplica
+**corregido**: si el color elegido (preset o hex libre) no alcanza **2:1** contra el
+fondo del tema, se ajusta solo. Hay un interruptor **"Ajustar contraste"** (por defecto
+**encendido**, en `localStorage` bajo `viurewards.accentContrastFix`, leído por `theme.js`
+en el `<head>` para que no haya destello):
+
+- **Encendido** (por defecto) — `viuAccentForTheme(hex, theme, fixContrast)` aplica la
+  corrección **más suave posible**: si el acento ya alcanza **2:1**
+  (`ACCENT_MIN_CONTRAST`), se devuelve **idéntico**; si no, aparta la luminosidad HSL
+  (manteniendo tono y saturación) por pasos pequeños, en la dirección que aumenta el
+  contraste con el fondo del tema (hacia arriba en fondos oscuros, hacia abajo en fondos
+  claros), **solo hasta alcanzar el objetivo**. El umbral es una **constante única**
+  (`ACCENT_MIN_CONTRAST = 2`, en `theme.js`) compartida con la advertencia, para que el
+  aviso y la corrección sean coherentes. Se eligió **2:1** (y no 3:1) porque es el mínimo
+  WCAG de contraste **no textual** (1.4.11) para elementos de interfaz: el acento es un
+  color de superficie y estado, no de texto. Omitir el tercer argumento equivale a
+  **encendido**.
+- **Apagado** (solo si el usuario lo desactiva) — el acento se aplica tal cual. Si el
+  contraste acento/fondo del tema activo es **< 2:1** (`ACCENT_MIN_CONTRAST`), se muestra
+  una **advertencia visible** con el **ratio** (a presets y hex libre) que sugiere activar
+  el toggle. No bloquea ni cambia el color.
+
+Se eligió **HSL** (y no OKLCH) para no sumar dependencias. Las variantes derivadas
+(`--color-accent-hover`, `-active`, `-soft`, `-soft-border`) se calculan en `theme.js`
+(no con `color-mix()`), para evitar problemas de soporte entre navegadores.
+
+**Logo por tema.** El logo tiene **un archivo por tema** (opcional: todavía **no** están;
+los aporta el creador) en `web/assets/`:
+
+| Tema | WebP animado | PNG estático |
+|---|---|---|
+| Noche / OLED | `VIUrewards-dark.webp` | `VIUrewards-dark.png` |
+| Día | `VIUrewards-light.webp` | `VIUrewards-light.png` |
+
+Se combinan con los modos ya existentes (**Automático**, **Dinámico** y **Estático**).
+`VIUrewards-dark.*` es el **archivo canónico**: es el `src` fijo del HTML y el respaldo
+si el juego claro no carga (`logo.js` lo recuerda y no repite el 404). Cambiar de tema
+cambia el logo al instante; los dos PNG se precargan.
+
+**Contraste verificado** (pares y valores medidos con el acento **corregido**, es
+decir con "Ajustar contraste" encendido):
+
+| Par | Noche | OLED | Día |
+|---|---|---|---|
+| texto / fondo | 15.31 | 15.38 | 13.36 |
+| atenuado / fondo | 7.13 | 6.23 | 4.79 |
+| tinta de acento / acento | 13.14 | 15.58 | 5.52 |
+| peligro / fondo | 6.10 | 7.63 | 5.36 |
+| aviso / fondo | 12.34 | 14.95 | 5.50 |
+| acento / fondo (corregido) | 13.42 | 15.58 | 2.08 |
+
+Con "Ajustar contraste" **encendido** (por defecto) el acento se corrige solo hasta 2:1.
+**Apagado** el acento es el hex **exacto** y su contraste contra el fondo **no está
+garantizado**: puede quedar por debajo de 2:1 (por ejemplo el verde `#53fc18` sobre el
+fondo claro de Día, o el gris claro `#d1d5db`); en ese caso la interfaz **avisa con el
+ratio** y sugiere activar el toggle. La tinta del acento (`--color-accent-ink`) se elige
+por contraste en ambos modos.
+
+La fila "acento / fondo (corregido)" de la tabla **no garantiza 3:1**: con el toggle
+encendido el acento **solo se corrige hasta 2:1** (el objetivo de interfaz no textual),
+porque la corrección es deliberadamente suave — se busca que el acento se distinga del
+fondo, no la legibilidad de texto sobre él (eso lo cubre `--color-accent-ink`).
+
+Honestidad sobre los bordes: los **bordes decorativos sutiles** (por ejemplo
+`--color-border` contra `--color-panel`) quedan **por debajo de 3:1** a propósito — son
+separadores decorativos, no el único indicio de un control (las superficies se distinguen
+por su relleno).
+
+**Variables por tema** (tabla de verdad; los temas definen las mismas claves):
+
+| Variable | Noche | OLED | Día |
+|---|---|---|---|
+| `--color-bg` | `#12141a` | `#000000` | `#f1efe9` |
+| `--color-bg-2` | `#0d0f14` | `#050505` | `#eae7df` |
+| `--color-panel` | `#1b1e27` | `#0b0b0d` | `#fbfaf7` |
+| `--color-panel-2` | `#222634` | `#121214` | `#f4f2ec` |
+| `--color-panel-3` | `#2b3142` | `#1a1a1e` | `#e8e5dc` |
+| `--color-border` | `#2e3342` | `#26262c` | `#dcdad1` |
+| `--color-border-strong` | `#3b4256` | `#3a3a42` | `#c4c1b6` |
+| `--color-text` | `#e8eaf0` | `#dcdce2` | `#26251f` |
+| `--color-muted` | `#9aa1b4` | `#8b8b96` | `#6b6960` |
+| `--color-accent` | `#53fc18` | `#69fc36` | `#299702` |
+| `--color-accent-ink` | `#0b1a06` | `#000000` | `#000000` |
+| `--color-danger` | `#ff5b6a` | `#ff6b78` | `#c0182b` |
+| `--color-warn` | `#ffcc66` | `#ffd479` | `#8a5300` |
+| `--color-success` | alias de `--color-accent` | alias | alias |
+| `--color-success-ink` | alias de `--color-accent-ink` | alias | alias |
+| `--color-scrim` | `rgba(0,0,0,.55)` | `rgba(0,0,0,.72)` | `rgba(38,37,31,.4)` |
+| `--color-player` | `#000` | — | — |
+| `--scrollbar-thumb` | `#3b4256` | `#3a3a42` | `#c4c1b6` |
+
+**Interfaz (Ajustes → Apariencia).** Tres bloques:
+
+1. **Tema** — las opciones con pequeñas **vistas previas**.
+2. **Color de acento** — la paleta de **7** preajustes, el selector libre y
+   **Restablecer** (vuelve al verde por defecto). La fila es
+   `[hex (ancho fijo ~10ch)] [selector de color] [toggle "Ajustar contraste"]
+   [Restablecer]`, con `wrap` para que no se rompa en pantallas angostas.
+3. **Logo** — los modos ya existentes (Automático / Dinámico / Estático).
+
+Todo se aplica **al instante**, sin botón Guardar (igual que el modo del logo). Por
+accesibilidad, el tema y la paleta son `radiogroup` con `radio` y `aria-checked`, con
+foco visible y **navegación por flechas** (←/↑ y →/↓ mueven el foco y aplican el valor
+como un clic; solo el elegido entra en el orden de tabulación, y si el acento es un color
+libre fuera de la paleta entra el primero para que el grupo nunca quede inalcanzable). Las
+preferencias son **por navegador** (`localStorage`), **no** en la base de datos.
+
+**El overlay de OBS no tiene tema ni acento.** Es transparente y **no** se tocó: el tema
+es solo del dashboard.
+
+**Tests.** Hay tests de **lógica** en `src/server/theme-logic.test.ts` (contraste,
+elección de la tinta, variante por tema, **modo exacto vs. corregido** del acento, el
+**ratio y la advertencia**, lectura/escritura del flag "Ajustar contraste" con
+`localStorage` que falla, validación del hex, Automático → `prefers-color-scheme`) y
+tests **estáticos** en `src/server/theme-ui.test.ts` (cada tema define las mismas
+variables, `--color-success` como alias del acento, los estados positivos con
+`--color-accent`, el toggle en la fila del acento, el preset gris claro, sin colores
+literales, el script en el `<head>`, accesibilidad y el respaldo del logo). Falta un
+**humo con Playwright** para el cambio de tema y el toggle de contraste: existe la suite
+`test:e2e` pero todavía **no** los cubre.
+
+## 17. Responsive y alineaciones
+
+Reglas de acomodo para ventanas angostas y móviles (todo en `web/style.css`, sin
+cambiar la lógica):
+
+- **Punto + texto de estado.** El indicador de estado de Ajustes → **Overlay y OBS** es
+  una **línea de estado** (`.status-line`): `display: flex`, `align-items: center`,
+  `gap` fijo y el punto (`.dot`) con tamaño fijo y sin `margin-top` suelto. El **color del
+  texto y del punto salen de la MISMA clase de estado** en el contenedor (`.status-line.ok`
+  = acento; `.status-line.error` = peligro), nunca de clases separadas. La **barra
+  superior** y **Plataformas (Kick)** usan el mismo componente de punto+texto
+  (`.status-pill` + `.dot.ok`/`.dot.error`).
+- **Canjes pendientes antiguos** (Ajustes → Alertas): celdas con más aire (~11 px vertical,
+  ~14 px horizontal), separadores de fila sutiles y encabezado con margen inferior; la
+  tabla scrollea en horizontal dentro de su contenedor (`overflow-x: auto`) sin romper el
+  modal; las acciones quedan separadas del bloque (margen superior y `gap`).
+- **Campos de Seguridad** (cambiar contraseña): `width: 100%` con `max-width: 360px`, y el
+  botón alineado con ellos; en pantallas angostas siguen al 100 % del contenedor.
+- **Barra superior en móvil (<= 600 px):** el logo se **oculta**, la barra permite
+  `wrap` y los pills no se parten (`white-space: nowrap`, altura fija, padding compacto).
+  En **<= 480 px** los pills muestran solo el **punto + nombre corto** ("Overlay", "Kick")
+  y el estado queda en el color del punto y en `title`/`aria-label`; **Salir** pasa a
+  ícono (con `aria-label`).
+- **Panel de Descargas en móvil (<= 600 px):** `position: fixed` con `left/right: 8px`,
+  `top` bajo la barra, `width: auto`, `max-width: calc(100vw - 16px)`,
+  `max-height: calc(100dvh - 80px)` y `overflow-y: auto`; nunca se sale del viewport. En
+  escritorio queda como estaba.
+- **Pestañas de Ajustes consistentes:** todas las pestañas tienen **la misma caja
+  siempre** (borde `1px` transparente en las inactivas, mismo padding, mismo `line-height`
+  y una altura mínima fija); la activa solo cambia color/fondo/borde-color. La navegación
+  **no** se estira con la altura del panel (`align-content: start`, `flex: none`). En
+  **<= 720 px** (móvil o ventana de escritorio angosta) pasa a **una sola fila con scroll
+  horizontal** (`flex-wrap: nowrap`, `overflow-x: auto`, scrollbar discreta). El **modal de
+  Ajustes tiene altura estable** entre pestañas (`--modal-height: min(80dvh, 640px)`), con
+  el contenido de cada panel scrolleando adentro.
+
+## 18. Botón Guía del login y página de guía
+
+**Botón Guía (login).** En la tarjeta de acceso, la fila de acciones tiene **Entrar** a la
+izquierda y **Guía** en el extremo opuesto (`.auth-actions`: `display: flex`,
+`justify-content: space-between`, `align-items: center`, `gap`), y también aparece en el
+modo de **primer uso** (cuando se crea la contraseña). Es un `<a href="/guia">` con
+apariencia de **botón secundario**: `border: 1px solid var(--color-accent)`, texto en
+`var(--color-accent)`, `background: transparent` (para que coincida con la tarjeta en
+cualquier tema), mismo radio/padding/tipografía/altura que **Entrar**, **sin** relleno.
+Hover y activo usan las variantes suaves del acento (`--color-accent-soft`,
+`--color-accent-soft-border`) y el foco es el anillo estándar. Abre en la **misma**
+pestaña, con `aria-label="Guía para conectar Kick"`. En anchos menores a 360 px los dos
+botones pasan a una columna, sin partirse.
+
+**Logo del login.** Centrado (`display: block`, `margin-inline: auto`) y más grande, con
+su propia variable `--logo-height-login` (72 px; el resto de la app usa
+`--logo-height`). Ancho automático y `max-width: 100%` para que no desborde a 360 px;
+margen inferior `var(--space-4)`. Conserva los modos del logo (Automático, Dinámico,
+Estático), el respaldo de texto, la precarga y el comportamiento por tema. El título y el
+subtítulo siguen alineados a la izquierda.
+
+**Página `/guia` (pública).** `GET /guia` sirve `web/guia.html` **sin sesión**, sin clave
+del overlay y sin cookies nuevas (como `/web` y `/login.html`, con `Cache-Control:
+no-cache`). Carga `theme.js` en el `<head>` (temas y acento sin destello), `style.css`,
+`logo.js` y `guia.js`. No llama a ninguna API protegida ni lee datos de la cuenta.
+
+Esquema:
+
+```
+.guide-wrap (columna centrada, --guide-width: 760px)
+├── .guide-bar      → enlace "← Volver" a "/" + logo (--logo-height-guide, 40 px)
+└── main.guide
+    ├── h1  "Guía: conectar VIUrewards con Kick" + introducción
+    ├── nav.guide-index   → índice con anclas a cada paso
+    ├── .guide-step × N   → tarjetas: número + título + texto + capturas + avisos
+    │     (ids guia-paso-1 … guia-paso-6)
+    ├── details.guide-faq → Problemas comunes (pregunta/respuesta desplegable)
+    └── .guide-warn.danger → Seguridad (aviso final)
+```
+
+- **Avisos** con tres estilos (`.guide-warn.info`, `.attention` = `--color-warn`,
+  `.danger` = `--color-danger`), con **ícono SVG inline + texto** (nunca solo color).
+- **Cuadro de código** (`.code-row`/`.code-value`) para valores que se copian (la
+  **redirect URI**) con botón **Copiar** y aviso accesible (`role="status"`,
+  `aria-live="polite"`); maneja el fallo del portapapeles.
+- **Capturas opcionales** (`figure.guide-shot`): viven en `web/assets/guide/` con nombres
+  exactos `guia-NN-…` (ver `docs/guia-capturas.md`). Hoy **no existen** y su lugar **no se
+  muestra** (ni hueco). La página pide la **lista pública** de archivos existentes
+  (`GET /api/guide-shots`) y muestra solo esos: **sin 404 ni errores en consola**. Al hacer
+  clic se amplían con un **lightbox** simple, cerrable con **Esc**.
+- **Responsive:** legible desde **360 px** sin scroll horizontal; imágenes con
+  `max-width: 100%`.
+- **Accesibilidad:** un solo `<h1>`, encabezados ordenados, landmarks (`main`, `nav`), `alt`
+  en las imágenes y contraste suficiente en los tres temas. Los pasos tienen id estable, así
+  se agregan secciones nuevas (por ejemplo OBS) sin reescribir la página.
+- **Sin scripts externos ni CDN.** El único dominio externo es `kick.com` y los enlaces
+  salientes llevan `rel="noopener noreferrer"`.

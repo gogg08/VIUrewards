@@ -1,4 +1,4 @@
-/* VIUrewards — logo con modos configurables (Parte C).
+/* VIUrewards — logo con modos configurables (Parte C) y logo por tema (Parte 2).
    Compartido por el dashboard (index.html) y el login (login.html).
    Sin dependencias y sin paso de build. */
 
@@ -15,16 +15,33 @@ var VIU_LOGO_AUTO_SWITCH_MS = Math.ceil(60000 / VIU_LOGO_CYCLE_MS) * VIU_LOGO_CY
 
 var VIU_LOGO_KEY = "viurewards.logoMode";
 var VIU_LOGO_MODES = ["auto", "dynamic", "static"];
-var VIU_LOGO_PNG = "/web/assets/VIUrewards.png";
-var VIU_LOGO_WEBP = "/web/assets/VIUrewards.webp";
+
+// Juegos de archivos por tema. "dark" (Noche y OLED) y "light" (Día) son los
+// archivos canónicos del logo. Si el archivo del tema no carga, se cae UNA sola
+// vez al juego oscuro, sin repetir el 404.
+var VIU_LOGO_FALLBACK = {
+  png: "/web/assets/VIUrewards-dark.png",
+  webp: "/web/assets/VIUrewards-dark.webp",
+};
+var VIU_LOGO_SETS = {
+  night: { png: "/web/assets/VIUrewards-dark.png", webp: "/web/assets/VIUrewards-dark.webp" },
+  oled: { png: "/web/assets/VIUrewards-dark.png", webp: "/web/assets/VIUrewards-dark.webp" },
+  day: { png: "/web/assets/VIUrewards-light.png", webp: "/web/assets/VIUrewards-light.webp" },
+};
+
+// Temas cuyo logo se comprobó ausente (respaldo recordado por carga de página).
+var VIU_LOGO_MISSING = {};
 
 var VIULogo = {
   CYCLE_MS: VIU_LOGO_CYCLE_MS,
   AUTO_SWITCH_MS: VIU_LOGO_AUTO_SWITCH_MS,
   KEY: VIU_LOGO_KEY,
   MODES: VIU_LOGO_MODES,
-  PNG: VIU_LOGO_PNG,
-  WEBP: VIU_LOGO_WEBP,
+  FALLBACK: VIU_LOGO_FALLBACK,
+  SETS: VIU_LOGO_SETS,
+  // Compatibilidad con tests/HTML existentes: rutas del logo actual.
+  PNG: VIU_LOGO_FALLBACK.png,
+  WEBP: VIU_LOGO_FALLBACK.webp,
 
   // Preferencia guardada en este navegador; "Automático" si falta o es inválida.
   readMode: function () {
@@ -56,21 +73,56 @@ var VIULogo = {
     }
   },
 
+  // Tema efectivo ahora mismo (lo puso theme.js como `data-theme` en <html>).
+  currentTheme: function () {
+    try {
+      var value = document.documentElement.getAttribute("data-theme");
+      return VIU_LOGO_SETS[value] ? value : "night";
+    } catch (error) {
+      return "night";
+    }
+  },
+
+  // Ruta del archivo para un tema y una variante ("png" | "webp"). Si el archivo
+  // del tema se supo ausente, devuelve el del logo actual (respaldo recordado).
+  pathFor: function (theme, kind) {
+    if (VIU_LOGO_MISSING[theme]) return VIU_LOGO_FALLBACK[kind];
+    var set = VIU_LOGO_SETS[theme] || VIU_LOGO_FALLBACK;
+    return set[kind] || VIU_LOGO_FALLBACK[kind];
+  },
+
+  // Marca que el logo de un tema no existe: desde ahora se usa el respaldo sin
+  // volver a pedirlo (así no se repite el 404).
+  markMissing: function (theme) {
+    if (theme && VIU_LOGO_SETS[theme]) VIU_LOGO_MISSING[theme] = true;
+  },
+
   // Qué archivo corresponde: `elapsedMs` es el tiempo desde que cargó la página.
-  resolve: function (mode, elapsedMs) {
-    if (mode === "static") return VIU_LOGO_PNG;
-    if (mode === "dynamic") return VIU_LOGO_WEBP;
-    // Automático: animado al principio, estático después. Con menos movimiento
-    // pedido por el sistema, directo el estático.
-    if (this.prefersReducedMotion()) return VIU_LOGO_PNG;
-    return elapsedMs >= VIU_LOGO_AUTO_SWITCH_MS ? VIU_LOGO_PNG : VIU_LOGO_WEBP;
+  // `theme` (opcional) elige el juego de archivos del tema activo.
+  resolve: function (mode, elapsedMs, theme) {
+    var kind = "png";
+    if (mode === "dynamic") {
+      kind = "webp";
+    } else if (mode !== "static" && !this.prefersReducedMotion()) {
+      // Automático: animado al principio, estático después.
+      kind = elapsedMs >= VIU_LOGO_AUTO_SWITCH_MS ? "png" : "webp";
+    }
+    return this.pathFor(theme || this.currentTheme(), kind);
   },
 };
 
-// Precarga el PNG para que el cambio de WebP a PNG no parpadee.
+// Precarga los PNG (juegos por tema y respaldo) para que el cambio al pasar de
+// WebP a PNG —y el cambio de tema— no parpadee.
 try {
-  var viuLogoPreload = new Image();
-  viuLogoPreload.src = VIU_LOGO_PNG;
+  var viuLogoPreloadSources = [
+    VIU_LOGO_FALLBACK.png,
+    VIU_LOGO_SETS.night.png,
+    VIU_LOGO_SETS.day.png,
+  ];
+  for (var viuLogoIndex = 0; viuLogoIndex < viuLogoPreloadSources.length; viuLogoIndex++) {
+    var viuLogoPreload = new Image();
+    viuLogoPreload.src = viuLogoPreloadSources[viuLogoIndex];
+  }
 } catch (error) {
   // Sin `Image` (entorno raro): se sigue igual.
 }
@@ -78,20 +130,36 @@ try {
 // Componente Alpine del logo. Va en el encabezado del dashboard y en el login.
 function logoBadge() {
   return {
-    logoSrc: VIU_LOGO_PNG,
+    logoSrc: VIU_LOGO_FALLBACK.png,
     logoFailed: false,
     _mode: "auto",
+    _theme: "night",
     _startedAt: 0,
     _timer: null,
+    _pendingKind: "png",
 
     init: function () {
       this._startedAt = Date.now();
+      this._theme = VIULogo.currentTheme();
       this._apply(VIULogo.readMode());
       window.addEventListener("viu-logo-mode", function (event) {
         // Al cambiar de modo, el reloj de "Automático" vuelve a empezar.
         this._startedAt = Date.now();
         this._apply(event.detail);
       }.bind(this));
+      // Cambio de tema: se actualiza el logo al instante sin reiniciar el reloj
+      // (no se ve un parpadeo de la animación).
+      window.addEventListener("viu-theme-change", function (event) {
+        this._theme = (event.detail && event.detail.theme) || VIULogo.currentTheme();
+        this._apply(this._mode);
+      }.bind(this));
+    },
+
+    // Si el archivo del tema no existe, se recuerda y se cae al logo actual sin
+    // repetir el 404. `_pendingKind` dice qué variante se estaba pidiendo.
+    onLogoError: function () {
+      VIULogo.markMissing(this._theme);
+      this.logoSrc = VIULogo.pathFor(this._theme, this._pendingKind);
     },
 
     _apply: function (mode) {
@@ -102,13 +170,15 @@ function logoBadge() {
         this._timer = null;
       }
       var elapsed = Date.now() - this._startedAt;
-      this.logoSrc = VIULogo.resolve(mode, elapsed);
-      if (mode === "auto" && !VIULogo.prefersReducedMotion() && this.logoSrc === VIU_LOGO_WEBP) {
+      this.logoSrc = VIULogo.resolve(mode, elapsed, this._theme);
+      this._pendingKind = this.logoSrc.indexOf(".webp") !== -1 ? "webp" : "png";
+      if (mode === "auto" && !VIULogo.prefersReducedMotion() && this._pendingKind === "webp") {
         var remaining = VIU_LOGO_AUTO_SWITCH_MS - elapsed;
         this._timer = setTimeout(
           function () {
             this._timer = null;
-            this.logoSrc = VIU_LOGO_PNG;
+            this.logoSrc = VIULogo.resolve("auto", VIU_LOGO_AUTO_SWITCH_MS, this._theme);
+            this._pendingKind = "png";
           }.bind(this),
           remaining
         );
