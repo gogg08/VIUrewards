@@ -2774,7 +2774,8 @@ table.grid td.actions button {
 
 @media (prefers-reduced-motion: reduce) {
   .guide-back,
-  .guide-index-link {
+  .guide-index-link,
+  .guide-shot-open {
     transition: none;
   }
 }
@@ -2878,18 +2879,47 @@ table.grid td.actions button {
   background: transparent;
 }
 
-/* Capturas opcionales: solo se muestran si el archivo existe. */
+/* Capturas opcionales: solo se muestran si el archivo existe (el bloque entero
+   queda oculto cuando el paso no tiene ninguna). */
+.guide-shots {
+  display: grid;
+  gap: var(--space-4);
+}
+
 .guide-shot {
   margin: var(--space-4) 0 0;
 }
 
-.guide-shot img {
+.guide-shot:first-child {
+  margin-top: var(--space-3);
+}
+
+/* La captura es un botón (se amplía con clic, Enter o Espacio). */
+.guide-shot-open {
   display: block;
+  width: 100%;
   max-width: 100%;
-  height: auto;
+  padding: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
+  background: var(--color-bg-2);
+  overflow: hidden;
   cursor: zoom-in;
+  transition: border-color 0.12s ease;
+}
+
+.guide-shot-open:hover,
+.guide-shot-open:focus-visible {
+  border-color: var(--color-accent);
+}
+
+.guide-shot-open img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+  border: 0;
+  border-radius: 0;
 }
 
 .guide-shot figcaption {
@@ -2922,7 +2952,8 @@ table.grid td.actions button {
   margin: var(--space-2) 0 0;
 }
 
-/* Visor de capturas (lightbox). Se cierra con Esc o un clic afuera. */
+/* Visor de capturas (lightbox). Se cierra con Esc, el botón X o un clic afuera;
+   el foco queda dentro mientras está abierto. */
 .lightbox {
   position: fixed;
   inset: 0;
@@ -2932,15 +2963,37 @@ table.grid td.actions button {
   justify-content: center;
   padding: var(--space-4);
   background: var(--color-scrim);
-  cursor: zoom-out;
 }
 
 .lightbox-img {
-  max-width: 100%;
-  max-height: 100%;
+  display: block;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100dvh - 4rem);
+  object-fit: contain;
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius);
+  background: var(--color-player);
+}
+
+/* Botón X: arriba a la derecha del visor (siempre dentro del viewport). */
+.lightbox-close {
+  position: absolute;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-2);
+  line-height: 0;
   border: 1px solid var(--color-border-strong);
   border-radius: var(--radius);
   background: var(--color-panel);
+  color: var(--color-text);
+}
+
+.lightbox-close:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--color-panel-2);
 }
 
 /* Alpine oculta los bloques hasta que su componente arranca. */

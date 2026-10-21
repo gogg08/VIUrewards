@@ -22,7 +22,22 @@ recompensas y los canjes: la detección de canjes es por **polling REST**.
 1. Entrá a **`https://kick.com/settings/developer`**.
 2. Creá una app. Kick pide, como mínimo:
    - **Nombre**.
+   - **Descripción**.
    - **Redirect URL**.
+   - **Scopes solicitadas**: si el formulario las muestra (es un campo obligatorio en
+     el panel real, con casillas), tildá solo estas tres:
+     - **Leer información de usuario (incluyendo la dirección de correo electrónico)**
+       (`user:read`).
+     - **Lee más información sobre los Puntos del Canal en un canal**
+       (`channel:rewards:read`).
+     - **Lee, agrega, edita y borra las recompensas de los Puntos del Canal de un canal**
+       (`channel:rewards:write`).
+
+     No hace falta ningún otro. `TODO(verificar)`: la documentación de Kick
+     (`docs.kick.com/getting-started/kick-apps-setup` y `.../scopes`) no dice si el
+     formulario exige elegir scopes ni si al autorizar se pueden pedir scopes que no
+     estén tildados ahí. El código pide siempre los tres en la URL de autorización
+     (`KICK_SCOPES` en `src/platforms/kick/config.ts`).
 3. En **Redirect URL** registrá exactamente:
 
    ```
@@ -54,7 +69,7 @@ user:read channel:rewards:read channel:rewards:write
   rechazar canjes.
 
 Los scopes se envían en la URL de autorización (`scope=...`). Si el panel de la
-app de Kick pide habilitarlos por separado, seleccioná esos tres.
+app de Kick pide habilitarlos por separado (**Scopes solicitadas**), tildá esos tres.
 
 ## 3. Cargar las credenciales en el dashboard
 

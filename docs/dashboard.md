@@ -202,8 +202,17 @@ si está vacío) — con `localhost`, no `127.0.0.1`, porque Kick lo rechaza.
 
 Las **capturas** son opcionales: la página pide la lista al servidor
 (`GET /api/guide-shots`) y muestra **solo** los archivos que existen, así que si todavía no
-hay ninguna no aparece un hueco y **no hay 404 ni errores en consola**. Los nombres y el
-tamaño recomendado están en `docs/guia-capturas.md`.
+hay ninguna no aparece un hueco y **no hay 404 ni errores en consola**. El **NN del nombre
+es el número de paso** (`guia-01-…` … `guia-06-…`) y puede haber varias por paso, en orden
+alfabético; la página las agrupa con `stepShots('guia-paso-N')` y oculta el bloque si el
+paso no tiene ninguna. Cada captura va en un `<figure>` con pie de foto y se amplía desde
+un **botón** accesible (`.guide-shot-open`) con un **visor** (`role="dialog"`) que se
+cierra con Esc, el botón X o un clic afuera, atrapa el Tab y devuelve el foco al botón.
+Nombres y tamaño recomendado en `docs/guia-capturas.md`.
+
+Si la URL trae un ancla (`/guia#guia-paso-3`), al terminar de montarse la página se vuelve
+a ubicar ese bloque (`scrollToHash`), porque las capturas pueden cambiar la altura después
+del salto inicial del navegador.
 
 ## Qué permite hoy (Fase 3 completa)
 
@@ -552,3 +561,7 @@ los tests solo comprueban que la constante y las rutas existen.
 - Sesiones persistentes, si se decide.
 - Migrar la cola en vivo a SSE si el polling molesta.
 - Medir los rate limits reales de Kick y completar §11.4 de `docs/kick-research.md`.
+- **Humo con Playwright de `/guia`**: la suite `test:e2e` corre sin navegador. Falta
+  verificar consola sin errores en los tres temas, 360 px sin scroll horizontal, que
+  "Volver" y las entradas del índice sean alcanzables con Tab, el visor de capturas
+  (Esc, foco de vuelta al botón) y que `/guia#guia-paso-3` quede con el paso 3 a la vista.

@@ -576,6 +576,7 @@ Esquema:
     │     (ids guia-paso-1 … guia-paso-6)
     ├── details.guide-faq → Problemas comunes (pregunta/respuesta desplegable)
     └── .guide-warn.danger → Seguridad (aviso final)
+.lightbox (hermano del <main>, dentro del mismo componente) → visor de capturas
 ```
 
 - **"Volver" como botón.** Sigue siendo `<a href="/">` con `aria-label="Volver al
@@ -602,14 +603,56 @@ Esquema:
   `overflow-wrap: anywhere` evita desbordes con títulos largos.
 - **Avisos** con tres estilos (`.guide-warn.info`, `.attention` = `--color-warn`,
   `.danger` = `--color-danger`), con **ícono SVG inline + texto** (nunca solo color).
+  Hoy la página usa: `info` en el paso 2 (puerto), en el paso 5 ("De otra app") y en el
+  paso 3 (**"Dejá «Habilitar webhooks» apagado"**: VIUrewards detecta los canjes por
+  REST, no usa webhooks); `attention` en el paso 3 (**"Revisá los permisos"**: en
+  "Scopes solicitadas" tienen que estar tildados los mismos que en la captura); y
+  `danger` en el paso 3 (el secreto es privado) y en Seguridad.
 - **Cuadro de código** (`.code-row`/`.code-value`) para valores que se copian (la
   **redirect URI**) con botón **Copiar** y aviso accesible (`role="status"`,
   `aria-live="polite"`); maneja el fallo del portapapeles.
-- **Capturas opcionales** (`figure.guide-shot`): viven en `web/assets/guide/` con nombres
-  exactos `guia-NN-…` (ver `docs/guia-capturas.md`). Hoy **no existen** y su lugar **no se
-  muestra** (ni hueco). La página pide la **lista pública** de archivos existentes
-  (`GET /api/guide-shots`) y muestra solo esos: **sin 404 ni errores en consola**. Al hacer
-  clic se amplían con un **lightbox** simple, cerrable con **Esc**.
+- **Capturas opcionales** por paso: viven en `web/assets/guide/` y el **NN del nombre es
+  el número de paso** (`guia-01-…` … `guia-06-…`; `guia-07-…` serían las preguntas
+  frecuentes). Puede haber **varias por paso**, en orden alfabético del resto del nombre
+  (ver `docs/guia-capturas.md`). La página pide la **lista pública** de archivos
+  existentes (`GET /api/guide-shots`), agrupa por prefijo de paso (`stepShots`,
+  `hasShots`) y muestra solo esos: **sin 404 ni errores en consola**. Si el paso no tiene
+  ninguna, el bloque (`.guide-shots`) no se renderiza: ni hueco ni marcador. Hoy existe
+  `guia-03-credenciales.png` en el paso 3.
+- **Esquema de una captura** (`figure.guide-shot`):
+
+  ```
+  .guide-shots                 → grid con gap --space-4 (se oculta sin capturas)
+  └── figure.guide-shot
+      ├── button.guide-shot-open  → aria-expanded + aria-label "Ampliar captura: <alt>"
+      │   └── img                 → width/height reales (reserva el alto),
+      │                             loading="lazy", decoding="async"
+      └── figcaption              → pie de foto (--color-muted)
+  ```
+
+  La captura es un **botón** (se amplía con clic, Enter o Espacio): `display: block`,
+  `width: 100%`, `max-width: 100%`, `padding: 0`, `border: 1px solid
+  var(--color-border)`, **`border-radius: var(--radius)`** (el radio de las capturas; las
+  tarjetas usan `--radius-lg`), `overflow: hidden` y fondo `var(--color-bg-2)`. La imagen
+  usa `display: block`, `width: 100%`, `height: auto`. En Día, la captura oscura queda
+  enmarcada por el borde, sin recortarse.
+- **Visor** (`.lightbox`, dentro del mismo componente `guideApp()`): `role="dialog"`,
+  `aria-modal="true"`, imagen con `max-width: calc(100vw - 2rem)`, `max-height:
+  calc(100dvh - 4rem)`, `object-fit: contain` y **el mismo radio y borde**. Se cierra con
+  **Esc**, un **clic afuera** o el botón **X** (`.lightbox-close`, arriba a la derecha, con
+  `aria-label`); al abrir el foco va al X, **Tab queda atrapado** dentro y al cerrar el
+  foco **vuelve al botón de la captura** (`aria-expanded` en `false`). Sin animación con
+  `prefers-reduced-motion`.
+- **Ancla de la URL** (`/guia#guia-paso-3`): el navegador salta antes de que Alpine
+  muestre las capturas y cambie la altura, así que al terminar `init` la página vuelve a
+  ubicar el bloque del hash (`scrollToHash`, con `scrollIntoView`). `scroll-margin-top:
+  var(--space-4)` deja aire arriba y el scroll suave solo se activa si el sistema lo
+  permite.
+- **Paso 2 y scopes:** el formulario de Kick tiene **"Scopes solicitadas"**; el paso 2
+  pide tildar los tres con el nombre exacto en español de Kick (`user:read`,
+  `channel:rewards:read`, `channel:rewards:write`) y aclara que no hace falta ningún otro.
+  Lo que la documentación de Kick no confirma está como `<!-- TODO(verificar): … -->` no
+  visible.
 - **Responsive:** legible desde **360 px** sin scroll horizontal; imágenes con
   `max-width: 100%`.
 - **Accesibilidad:** un solo `<h1>`, encabezados ordenados, landmarks (`main`, `nav`), `alt`

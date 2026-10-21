@@ -24,6 +24,7 @@
     <script defer src="/web/alpine.min.js"></script>
   </head>
   <body>
+    <!-- Un solo componente para toda la página (el visor toma su estado de acá). -->
     <div class="guide-wrap" x-data="guideApp()">
       <div class="guide-bar">
         <a class="guide-back" href="/" aria-label="Volver al inicio">
@@ -109,15 +110,24 @@
             <a href="https://kick.com/settings/developer" rel="noopener noreferrer">kick.com/settings/developer</a>
             e iniciá sesión con tu cuenta.
           </p>
-          <figure class="guide-shot" x-show="shot('guia-01-kick-developer')" x-cloak>
-            <img
-              :src="shotUrl('guia-01-kick-developer')"
-              alt="Configuración de desarrollador de Kick abierta en el navegador"
-              loading="lazy"
-              @click="openLightbox($event.target.src)"
-            />
-            <figcaption>La configuración de desarrollador, dentro de los ajustes de tu cuenta.</figcaption>
-          </figure>
+          <!-- Capturas del paso 1: cualquier `guia-01-*` que exista, en orden alfabético. -->
+          <div class="guide-shots" x-show="hasShots('guia-paso-1')" x-cloak>
+            <template x-for="name in stepShots('guia-paso-1')" :key="name">
+              <figure class="guide-shot">
+                <button type="button" class="guide-shot-open" :aria-expanded="lightboxSrc === shotUrl(name) ? 'true' : 'false'" @click="openLightbox(shotUrl(name), 'Configuración de desarrollador de Kick abierta en el navegador')">
+                  <img
+                    :src="shotUrl(name)"
+                    alt="Configuración de desarrollador de Kick abierta en el navegador"
+                    width="1200"
+                    height="675"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </button>
+                <figcaption>La configuración de desarrollador, dentro de los ajustes de tu cuenta.</figcaption>
+              </figure>
+            </template>
+          </div>
         </section>
 
         <!-- Paso 2 -->
@@ -150,24 +160,47 @@
               coincidir <strong>exactamente</strong>.
             </span>
           </p>
-          <figure class="guide-shot" x-show="shot('guia-02-crear-app')" x-cloak>
-            <img
-              :src="shotUrl('guia-02-crear-app')"
-              alt="Formulario de Kick para crear una nueva app"
-              loading="lazy"
-              @click="openLightbox($event.target.src)"
-            />
-            <figcaption>El formulario de “crear app” de Kick.</figcaption>
-          </figure>
-          <figure class="guide-shot" x-show="shot('guia-03-redirect-url')" x-cloak>
-            <img
-              :src="shotUrl('guia-03-redirect-url')"
-              alt="Campo Redirigir URL con la URL de callback pegada"
-              loading="lazy"
-              @click="openLightbox($event.target.src)"
-            />
-            <figcaption>El campo “Redirigir URL” con el valor pegado.</figcaption>
-          </figure>
+          <!-- TODO(verificar): si el formulario de Kick exige elegir “Scopes solicitadas”
+               al crear o editar la app, y si al autorizar se pueden pedir scopes que no
+               estén tildados ahí. No figura en docs.kick.com (App Setup ni Scopes);
+               el código pide los tres en la URL de autorización (ver
+               src/platforms/kick/config.ts). -->
+          <p>
+            Si el formulario te muestra <strong>“Scopes solicitadas”</strong>, tildá estos tres y no hace falta
+            ningún otro:
+          </p>
+          <ul class="guide-list">
+            <li>
+              <strong>Leer información de usuario (incluyendo la dirección de correo electrónico)</strong>
+              (<code>user:read</code>): para mostrar con qué cuenta estás conectado.
+            </li>
+            <li>
+              <strong>Lee más información sobre los Puntos del Canal en un canal</strong>
+              (<code>channel:rewards:read</code>): para ver tus recompensas y detectar los canjes.
+            </li>
+            <li>
+              <strong>Lee, agrega, edita y borra las recompensas de los Puntos del Canal de un canal</strong>
+              (<code>channel:rewards:write</code>): para crear, editar, activar, desactivar y borrar recompensas desde
+              VIUrewards.
+            </li>
+          </ul>
+          <div class="guide-shots" x-show="hasShots('guia-paso-2')" x-cloak>
+            <template x-for="name in stepShots('guia-paso-2')" :key="name">
+              <figure class="guide-shot">
+                <button type="button" class="guide-shot-open" :aria-expanded="lightboxSrc === shotUrl(name) ? 'true' : 'false'" @click="openLightbox(shotUrl(name), 'Formulario de Kick para crear una nueva app')">
+                  <img
+                    :src="shotUrl(name)"
+                    alt="Formulario de Kick para crear una nueva app"
+                    width="1200"
+                    height="675"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </button>
+                <figcaption>El formulario de “crear app” de Kick.</figcaption>
+              </figure>
+            </template>
+          </div>
           <p class="guide-foot">
             Los nombres exactos de los botones de la página de Kick pueden cambiar con el tiempo.
           </p>
@@ -191,15 +224,58 @@
               filtra, regeneralo en esa misma pantalla de Kick (“Regenerar”) y volvé a cargarlo en VIUrewards.
             </span>
           </p>
-          <figure class="guide-shot" x-show="shot('guia-04-credenciales')" x-cloak>
-            <img
-              :src="shotUrl('guia-04-credenciales')"
-              alt="Client ID y Client Secret generados por Kick"
-              loading="lazy"
-              @click="openLightbox($event.target.src)"
-            />
-            <figcaption>Las credenciales que genera Kick para tu app.</figcaption>
-          </figure>
+          <!-- Capturas del paso 3: cualquier `guia-03-*` (hoy, guia-03-credenciales.png). -->
+          <div class="guide-shots" x-show="hasShots('guia-paso-3')" x-cloak>
+            <template x-for="name in stepShots('guia-paso-3')" :key="name">
+              <figure class="guide-shot">
+                <button
+                  type="button"
+                  class="guide-shot-open"
+                  :aria-expanded="lightboxSrc === shotUrl(name) ? 'true' : 'false'"
+                  aria-label="Ampliar captura: Pantalla “Tu aplicación” de Kick, con el ID del cliente, el Secreto del Cliente, la URL de redirección y los permisos."
+                  @click="openLightbox(shotUrl(name), 'Pantalla “Tu aplicación” de Kick, con el ID del cliente, el Secreto del Cliente, la URL de redirección y los permisos.')"
+                >
+                  <img
+                    :src="shotUrl(name)"
+                    alt="Pantalla “Tu aplicación” de Kick, con el ID del cliente, el Secreto del Cliente, la URL de redirección y los permisos."
+                    width="1055"
+                    height="1017"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </button>
+                <figcaption>
+                  Así se ve tu app en kick.com/settings/developer. El ID del cliente y el Secreto son privados: no los
+                  muestres en pantalla.
+                </figcaption>
+              </figure>
+            </template>
+          </div>
+          <!-- Aviso de permisos: el paso 2 pide los 3 scopes de la app y el paso 5
+               explica los que muestra Kick al autorizar; este cierra el círculo
+               sobre la captura. NO se dice nada sobre scopes de MÁS (no verificado). -->
+          <p class="guide-warn attention">
+            <svg class="guide-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 3 2.5 20h19z" />
+              <path d="M12 10v4" />
+              <path d="M12 17h.01" />
+            </svg>
+            <span>
+              <strong>Revisá los permisos:</strong> en «Scopes solicitadas» de tu app tienen que estar tildados los
+              mismos que ves tildados en la captura. Si falta alguno, VIUrewards no va a poder funcionar completo.
+            </span>
+          </p>
+          <p class="guide-warn info">
+            <svg class="guide-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M12 11v5" />
+              <path d="M12 8h.01" />
+            </svg>
+            <span>
+              Dejá <strong>«Habilitar webhooks» apagado</strong>: VIUrewards no los usa (detecta los canjes
+              consultando la API de Kick).
+            </span>
+          </p>
           <p class="guide-foot">
             Los nombres exactos de los botones de la página de Kick pueden cambiar con el tiempo.
           </p>
@@ -213,15 +289,23 @@
             Client ID y el Client Secret, y tocá <strong>“Guardar credenciales”</strong>. Después, tocá
             <strong>“Vincular cuenta”</strong>: se abre Kick.
           </p>
-          <figure class="guide-shot" x-show="shot('guia-05-ajustes-kick')" x-cloak>
-            <img
-              :src="shotUrl('guia-05-ajustes-kick')"
-              alt="Pestaña Kick de Ajustes en VIUrewards con las credenciales cargadas"
-              loading="lazy"
-              @click="openLightbox($event.target.src)"
-            />
-            <figcaption>La pestaña Kick de Ajustes, con las credenciales cargadas.</figcaption>
-          </figure>
+          <div class="guide-shots" x-show="hasShots('guia-paso-4')" x-cloak>
+            <template x-for="name in stepShots('guia-paso-4')" :key="name">
+              <figure class="guide-shot">
+                <button type="button" class="guide-shot-open" :aria-expanded="lightboxSrc === shotUrl(name) ? 'true' : 'false'" @click="openLightbox(shotUrl(name), 'Pestaña Kick de Ajustes en VIUrewards con las credenciales cargadas')">
+                  <img
+                    :src="shotUrl(name)"
+                    alt="Pestaña Kick de Ajustes en VIUrewards con las credenciales cargadas"
+                    width="1200"
+                    height="675"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </button>
+                <figcaption>La pestaña Kick de Ajustes, con las credenciales cargadas.</figcaption>
+              </figure>
+            </template>
+          </div>
         </section>
 
         <!-- Paso 5 -->
@@ -258,15 +342,23 @@
               aparecen como <strong>“De otra app”</strong> y no se pueden modificar desde VIUrewards.
             </span>
           </p>
-          <figure class="guide-shot" x-show="shot('guia-06-permisos')" x-cloak>
-            <img
-              :src="shotUrl('guia-06-permisos')"
-              alt="Pantalla de Kick con los permisos que pide la app"
-              loading="lazy"
-              @click="openLightbox($event.target.src)"
-            />
-            <figcaption>La pantalla de permisos de Kick.</figcaption>
-          </figure>
+          <div class="guide-shots" x-show="hasShots('guia-paso-5')" x-cloak>
+            <template x-for="name in stepShots('guia-paso-5')" :key="name">
+              <figure class="guide-shot">
+                <button type="button" class="guide-shot-open" :aria-expanded="lightboxSrc === shotUrl(name) ? 'true' : 'false'" @click="openLightbox(shotUrl(name), 'Pantalla de Kick con los permisos que pide la app')">
+                  <img
+                    :src="shotUrl(name)"
+                    alt="Pantalla de Kick con los permisos que pide la app"
+                    width="1200"
+                    height="675"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </button>
+                <figcaption>La pantalla de permisos de Kick.</figcaption>
+              </figure>
+            </template>
+          </div>
         </section>
 
         <!-- Paso 6 -->
@@ -276,15 +368,23 @@
             En el encabezado del dashboard debería decir <strong>“Kick: conectado”</strong>. Además, en
             <strong>Ajustes → Kick</strong>, <strong>“Probar conexión”</strong> tiene que dar OK.
           </p>
-          <figure class="guide-shot" x-show="shot('guia-07-conectado')" x-cloak>
-            <img
-              :src="shotUrl('guia-07-conectado')"
-              alt="Dashboard de VIUrewards con Kick conectado"
-              loading="lazy"
-              @click="openLightbox($event.target.src)"
-            />
-            <figcaption>Kick conectado, listo para crear recompensas.</figcaption>
-          </figure>
+          <div class="guide-shots" x-show="hasShots('guia-paso-6')" x-cloak>
+            <template x-for="name in stepShots('guia-paso-6')" :key="name">
+              <figure class="guide-shot">
+                <button type="button" class="guide-shot-open" :aria-expanded="lightboxSrc === shotUrl(name) ? 'true' : 'false'" @click="openLightbox(shotUrl(name), 'Dashboard de VIUrewards con Kick conectado')">
+                  <img
+                    :src="shotUrl(name)"
+                    alt="Dashboard de VIUrewards con Kick conectado"
+                    width="1200"
+                    height="675"
+                    loading="lazy"
+                    decoding="async"
+                  />
+                </button>
+                <figcaption>Kick conectado, listo para crear recompensas.</figcaption>
+              </figure>
+            </template>
+          </div>
         </section>
 
         <!-- Problemas comunes -->
@@ -329,18 +429,28 @@
           </p>
         </section>
       </main>
-    </div>
 
-    <!-- Visor de capturas (lightbox simple, se cierra con Esc o un clic). -->
-    <div
-      class="lightbox"
-      x-data="guideApp()"
-      x-show="lightboxSrc"
-      x-cloak
-      @keydown.escape.window="closeLightbox()"
-      @click="closeLightbox()"
-    >
-      <img class="lightbox-img" :src="lightboxSrc" alt="" @click.stop />
+      <!-- Visor de capturas: se cierra con Esc, clic afuera o el botón X; el foco
+           queda dentro mientras está abierto y vuelve a la captura al cerrar. -->
+      <div
+        class="lightbox"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Captura ampliada"
+        x-show="lightboxSrc"
+        x-cloak
+        x-effect="if (lightboxSrc) focusLightbox()"
+        @keydown.escape.stop="closeLightbox()"
+        @keydown.tab="trapLightboxFocus($event)"
+        @click="closeLightboxBackdrop($event)"
+      >
+        <img class="lightbox-img" :src="lightboxSrc" :alt="lightboxAlt" />
+        <button type="button" class="lightbox-close" aria-label="Cerrar captura ampliada" @click="closeLightbox()">
+          <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true" focusable="false">
+            <path d="M4 4l8 8M12 4l-8 8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+        </button>
+      </div>
     </div>
   </body>
 </html>

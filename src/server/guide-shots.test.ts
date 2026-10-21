@@ -57,9 +57,34 @@ describe("capturas de la guía (listGuideShots)", () => {
     expect(listGuideShots(webDir)).toEqual([]);
   });
 
-  it("el patrón rechaza rutas y traversal", () => {
+  it("lista la captura del paso 3 y rechaza el nombre viejo y el traversal", () => {
+    const webDir = makeWebDir();
+    const guideDir = join(webDir, "assets", "guide");
+    mkdirSync(guideDir, { recursive: true });
+    // Convención: NN = número de paso.
+    writeFileSync(join(guideDir, "guia-03-credenciales.png"), "x");
+    writeFileSync(join(guideDir, "guia-03-otra-vista.webp"), "x");
+    // El nombre viejo no matchea el patrón: no se lista (y la página no lo pide).
+    writeFileSync(join(guideDir, "kick-app-preview.png"), "x");
+    // Intentos de salir de la carpeta: no se listan (son nombres, no rutas).
+    writeFileSync(join(guideDir, "..guia-01-x.png"), "x");
+    writeFileSync(join(guideDir, "guia-01-x..png"), "x");
+
+    const listed = listGuideShots(webDir);
+    expect(listed).toEqual(["guia-03-credenciales.png", "guia-03-otra-vista.webp"]);
+    expect(listed).not.toContain("kick-app-preview.png");
+    for (const name of listed) {
+      expect(name).not.toContain("/");
+      expect(name).not.toContain("..");
+    }
+  });
+
+  it("el patrón rechaza rutas y traversal (y el nombre viejo)", () => {
     expect(GUIDE_SHOT_PATTERN.test("../secreto.png")).toBe(false);
     expect(GUIDE_SHOT_PATTERN.test("sub/guia-01-x.png")).toBe(false);
     expect(GUIDE_SHOT_PATTERN.test("guia-01-x.png")).toBe(true);
+    // Fuera de la convención (NN = número de paso, resto en minúsculas).
+    expect(GUIDE_SHOT_PATTERN.test("kick-app-preview.png")).toBe(false);
+    expect(GUIDE_SHOT_PATTERN.test("guia-01-x..png")).toBe(false);
   });
 });

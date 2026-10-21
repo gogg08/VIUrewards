@@ -128,16 +128,25 @@ describe("página de la guía (/guia) (Parte 2)", () => {
     }
   });
 
-  it("los pasos tienen ids estables guia-paso-N y las capturas su nombre acordado", () => {
+  it("los pasos tienen ids estables guia-paso-N y cada uno busca SUS capturas por número", () => {
     for (let n = 1; n <= 6; n += 1) {
       expect(html, `falta guia-paso-${n}`).toContain(`id="guia-paso-${n}"`);
     }
-    // Los nombres de captura usados en la página siguen el patrón acordado.
-    const shots = [...html.matchAll(/shot\('(guia-[^']+)'\)/g)].map((m) => m[1]);
-    expect(shots.length).toBeGreaterThan(0);
-    for (const shot of shots) {
-      expect(/^guia-\d\d-[a-z0-9-]+$/.test(shot), `nombre de captura raro: ${shot}`).toBe(true);
-    }
+    // Convención: el NN del nombre es el NÚMERO DE PASO. Cada paso pide sus
+    // capturas con `stepShots('guia-paso-N')` (varias por paso, orden del server).
+    const steps = [...html.matchAll(/stepShots\('(guia-paso-\d+)'\)/g)].map((m) => m[1]);
+    expect(new Set(steps)).toEqual(new Set([1, 2, 3, 4, 5, 6].map((n) => `guia-paso-${n}`)));
+    // El bloque de capturas solo se muestra si el paso tiene al menos una.
+    expect([...html.matchAll(/x-show="hasShots\('guia-paso-\d+'\)"/g)].length).toBe(6);
+    // Ya no hay nombres de captura hardcodeados en el HTML: salen de la lista
+    // pública del servidor, así un nombre nuevo no exige tocar la página (solo
+    // puede aparecer en un ejemplo dentro de un comentario).
+    expect(html).not.toMatch(/shot\('guia-\d/);
+    const withoutComments = html.replace(/<!--[\s\S]*?-->/g, "");
+    expect(withoutComments).not.toMatch(/guia-\d\d-[a-z0-9-]+\.(?:png|webp|jpg)/);
+    // El componente resuelve el número de paso y filtra por prefijo.
+    expect(js).toMatch(/function guideStepNumber\(/);
+    expect(js).toMatch(/stepShots\(stepId\)/);
   });
 
   it("no hay estilos inline ni colores literales en el HTML", () => {
@@ -148,12 +157,15 @@ describe("página de la guía (/guia) (Parte 2)", () => {
   });
 
   it("cada handler de la página está definido en guia.js y las expresiones Alpine invocan métodos", () => {
-    for (const match of html.matchAll(/@(?:click|change|input|submit)(?:\.\w+)*="([A-Za-z_$][\w$]*)\s*\(/g)) {
+    for (const match of html.matchAll(/@(?:click|change|input|submit|keydown|keyup)(?:\.\w+)*="([A-Za-z_$][\w$]*)\s*\(/g)) {
       expect(defines(js, match[1]), `guia.js no define ${match[1]}()`).toBe(true);
     }
-    // `x-show="shot('...')"` se invoca (con paréntesis), no se pasa la función.
-    expect(html).toMatch(/x-show="shot\('guia-/);
-    expect(js).toMatch(/\bshot\s*\(/);
+    // Las expresiones se INVOCAN (con paréntesis), no se pasa la función.
+    expect(html).toMatch(/x-show="hasShots\('guia-/);
+    expect(html).toMatch(/x-show="lightboxSrc"/);
+    for (const name of ["hasShots", "stepShots", "shotUrl", "trapLightboxFocus"]) {
+      expect(js, `guia.js no define ${name}()`).toMatch(new RegExp(`\\b${name}\\s*\\(`));
+    }
   });
 
   it("la página no contiene tokens, claves ni secretos de ejemplo reales", () => {
@@ -193,17 +205,132 @@ describe("página de la guía (/guia) (Parte 2)", () => {
     expect(html).not.toMatch(/(?:src|href)="[^"]*assets\/guide\//);
   });
 
-  it("las capturas se manejan por la lista pública del servidor y el lightbox es accesible", () => {
+  it("las capturas se manejan por la lista pública del servidor y el visor es accesible", () => {
     // El JS pide la lista pública (no una API protegida).
     expect(js).toMatch(/fetch\("\/api\/guide-shots"\)/);
     expect(js).not.toMatch(/\/api\/(?:clips|state|settings|logs|platforms)/);
-    // Lightbox: se cierra con Esc y con un clic.
-    expect(html).toMatch(/@keydown\.escape\.window="closeLightbox\(\)"/);
-    expect(html).toMatch(/@click="closeLightbox\(\)"/);
+    // La captura se amplía con un BOTÓN accesible (no con `@click` en la <img>,
+    // que no se puede enfocar con el teclado).
+    expect(html).toMatch(/<button\s+type="button"\s+class="guide-shot-open"/);
+    expect(html).not.toMatch(/<img[^>]*@click=/);
+    expect(html).toMatch(/:aria-expanded="lightboxSrc === shotUrl\(name\)/);
+    expect(html).toMatch(/aria-label="Ampliar captura: /);
+    // Visor: diálogo, se cierra con Esc, clic afuera y botón X; el foco queda adentro.
+    expect(html).toMatch(/class="lightbox"[^>]*role="dialog"/);
+    expect(html).toMatch(/aria-modal="true"/);
+    expect(html).toMatch(/@keydown\.escape\.stop="closeLightbox\(\)"/);
+    expect(html).toMatch(/@keydown\.tab="trapLightboxFocus\(\$event\)"/);
+    expect(html).toMatch(/@click="closeLightboxBackdrop\(\$event\)"/);
+    expect(html).toMatch(/class="lightbox-close" aria-label="Cerrar captura ampliada"/);
+    expect(html).toMatch(/x-effect="if \(lightboxSrc\) focusLightbox\(\)"/);
     expect(js).toMatch(/closeLightbox\s*\(\s*\)/);
+    // El visor y la página comparten UN componente: el estado se comparte.
+    expect([...html.matchAll(/x-data="guideApp\(\)"/g)].length).toBe(1);
+    // Se usa la URL que arma el botón (no `$event.target.src`).
+    expect(html).toMatch(/@click="openLightbox\(shotUrl\(name\), '/);
     // Aviso "Copiado" accesible (aria-live).
     expect(html).toMatch(/aria-live="polite"/);
     expect(js).toContain("Copiado");
+  });
+
+  it("el paso 3 avisa que se revisen los permisos, con el estilo de atención", () => {
+    const step3 = html.slice(html.indexOf('id="guia-paso-3"'), html.indexOf('id="guia-paso-4"'));
+    // Agrega el aviso: va DESPUÉS del bloque de capturas y ANTES del pie de paso.
+    const shotsAt = step3.indexOf('class="guide-shots"');
+    const warnAt = step3.indexOf('<p class="guide-warn attention">');
+    const footAt = step3.indexOf('<p class="guide-foot">');
+    expect(shotsAt).toBeGreaterThan(-1);
+    expect(warnAt).toBeGreaterThan(shotsAt);
+    expect(warnAt).toBeLessThan(footAt);
+    // Aviso de tipo atención (--color-warn), con ícono SVG y texto (nunca solo color).
+    const warnBody = step3.slice(warnAt, step3.indexOf("</p>", warnAt));
+    expect(warnBody).toMatch(/<svg class="guide-icon"/);
+    expect(warnBody).toMatch(/aria-hidden="true"/);
+    expect(css).toMatch(/\.guide-warn\.attention \{[^}]*color: var\(--color-warn\)/);
+    expect(css).toMatch(/\.guide-warn\.attention \{[^}]*border-color: var\(--color-warn\)/);
+    expect(css).toMatch(/\.guide-warn\.attention \{[^}]*background: var\(--color-warn-bg\)/);
+    // Texto pedido (redacción final). No se afirma nada sobre scopes de MÁS.
+    const text = warnBody.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+    expect(text).toContain("Revisá los permisos:");
+    expect(text).toContain("«Scopes solicitadas»");
+    expect(text).toContain("los mismos que ves tildados en la captura");
+    expect(text).toContain("Si falta alguno, VIUrewards no va a poder funcionar completo.");
+    expect(text).not.toMatch(/de más|sobrante|extra/i);
+    // Sin colores literales ni estilos inline.
+    expect(warnBody).not.toMatch(/\sstyle="|#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/);
+  });
+
+  it("el paso 3 aclara que los webhooks de Kick no se usan (nota info aparte)", () => {
+    const step3 = html.slice(html.indexOf('id="guia-paso-3"'), html.indexOf('id="guia-paso-4"'));
+    // Es una nota info aparte; cita el texto literal del panel de Kick.
+    const infoAt = step3.indexOf('<p class="guide-warn info">');
+    expect(infoAt).toBeGreaterThan(step3.indexOf('<p class="guide-warn attention">'));
+    const infoBody = step3.slice(infoAt, step3.indexOf("</p>", infoAt));
+    expect(infoBody).toContain("«Habilitar webhooks» apagado");
+    expect(infoBody).toContain("VIUrewards no los usa");
+    // Y el paso sigue cerrando con el pie de foto de siempre.
+    expect(step3).toMatch(/<p class="guide-foot">\s*Los nombres exactos de los botones/);
+  });
+
+  it("la captura del paso 3 va en un <figure> con alt, pie de foto, radio y borde", () => {
+    const step3 = html.slice(html.indexOf('id="guia-paso-3"'), html.indexOf('id="guia-paso-4"'));
+    expect(step3).toMatch(/<figure class="guide-shot">/);
+    expect(step3).toMatch(/<figcaption>/);
+    // Texto exacto pedido para el paso 3.
+    expect(step3).toContain(
+      'alt="Pantalla “Tu aplicación” de Kick, con el ID del cliente, el Secreto del Cliente, la URL de redirección y los permisos."',
+    );
+    expect(step3).toContain(
+      "Así se ve tu app en kick.com/settings/developer. El ID del cliente y el Secreto son privados: no los",
+    );
+    expect(step3).toContain("muestres en pantalla.");
+    // Se reserva el alto real (1055×1017) para que el layout no salte al cargar.
+    expect(step3).toMatch(/width="1055"\s+height="1017"/);
+    expect(step3).toMatch(/loading="lazy"/);
+    expect(step3).toMatch(/decoding="async"/);
+    // El botón de ampliar es accesible y usa el mismo alt.
+    expect(step3).toMatch(/aria-label="Ampliar captura: Pantalla “Tu aplicación” de Kick/);
+    // Radio y borde por variables (el radio de las capturas es --radius).
+    expect(css).toMatch(/\.guide-shot-open \{[^}]*border: 1px solid var\(--color-border\)/);
+    expect(css).toMatch(/\.guide-shot-open \{[^}]*border-radius: var\(--radius\)/);
+    expect(css).toMatch(/\.guide-shot-open \{[^}]*overflow: hidden/);
+    expect(css).toMatch(/\.guide-shot-open \{[^}]*display: block/);
+    expect(css).toMatch(/\.guide-shot-open img \{[^}]*max-width: 100%/);
+    expect(css).toMatch(/\.guide-shot-open img \{[^}]*height: auto/);
+    // El visor limita la imagen al viewport y usa object-fit: contain.
+    expect(css).toMatch(/\.lightbox-img \{[^}]*max-width: calc\(100vw - 2rem\)/);
+    expect(css).toMatch(/\.lightbox-img \{[^}]*max-height: calc\(100dvh - 4rem\)/);
+    expect(css).toMatch(/\.lightbox-img \{[^}]*object-fit: contain/);
+  });
+
+  it("el paso 2 pide tildar los tres scopes con el nombre exacto de Kick (Parte 2)", () => {
+    const step2 = html.slice(html.indexOf('id="guia-paso-2"'), html.indexOf('id="guia-paso-3"'));
+    expect(step2).toContain("Scopes solicitadas");
+    expect(step2).toContain("Leer información de usuario (incluyendo la dirección de correo electrónico)");
+    expect(step2).toContain("Lee más información sobre los Puntos del Canal en un canal");
+    expect(step2).toContain("Lee, agrega, edita y borra las recompensas de los Puntos del Canal de un canal");
+    expect(step2).toMatch(/no hace falta\s+ningún otro/);
+    // Lo que no está en la documentación de Kick queda como TODO no visible.
+    expect(step2).toMatch(/<!-- TODO\(verificar\): /);
+    // El paso 5 (pantalla de consentimiento) no cambia sus tres permisos.
+    const step5 = html.slice(html.indexOf('id="guia-paso-5"'), html.indexOf('id="guia-paso-6"'));
+    expect(step5).toContain("<code>user:read</code>");
+    expect(step5).toContain("<code>channel:rewards:read</code>");
+    expect(step5).toContain("<code>channel:rewards:write</code>");
+  });
+
+  it("el ancla de la URL se respeta después de montar (Parte 3)", () => {
+    // El paso se ubica a la vista aunque las capturas cambien la altura al cargar.
+    expect(js).toMatch(/scrollToHash\(\)/);
+    expect(js).toMatch(/getElementById\(id\)/);
+    expect(js).toMatch(/scrollIntoView/);
+    // Se llama al final de `init`, tras esperar el render de las capturas.
+    const init = js.slice(js.indexOf("async init()"), js.indexOf("scrollToHash() {"));
+    expect(init).toMatch(/afterRenderAsync\(/);
+    expect(init.indexOf("afterRenderAsync(")).toBeLessThan(init.lastIndexOf("this.scrollToHash();"));
+    // Los pasos dejan aire arriba al saltar (`scroll-margin-top`) y la página
+    // nunca tiene scroll horizontal.
+    expect(css).toMatch(/\.guide-card \{[^}]*scroll-margin-top: var\(--space-4\)/);
   });
 
   it("el CSS de la guía no usa colores literales y es legible desde 360px", () => {
@@ -212,7 +339,7 @@ describe("página de la guía (/guia) (Parte 2)", () => {
     const block = css.slice(start, css.indexOf("[x-cloak]", start));
     expect(block).not.toMatch(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/);
     // Imágenes que no desbordan.
-    expect(block).toMatch(/\.guide-shot img\s*\{[^}]*max-width:\s*100%/);
+    expect(block).toMatch(/\.guide-shot-open img \{[^}]*max-width: 100%/);
     // La columna de lectura tiene un ancho máximo cómodo.
     expect(css).toMatch(/--guide-width:\s*760px/);
     // Scroll suave solo si el sistema lo permite.
@@ -274,7 +401,9 @@ describe("página de la guía (/guia) (Parte 2)", () => {
     expect(css).toMatch(/\.guide-index-list \{[^}]*display: grid/);
     // Transición corta, anulada con prefers-reduced-motion.
     expect(css).toMatch(/\.guide-index-link \{[^}]*transition: border-color/);
-    expect(css).toMatch(/@media \(prefers-reduced-motion: reduce\) \{\s*\.guide-back,\s*\n  \.guide-index-link \{\s*\n    transition: none/);
+    expect(css).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\.guide-back,\s*\n  \.guide-index-link,\s*\n  \.guide-shot-open \{\s*\n    transition: none/,
+    );
   });
 
   it("el índice y \"Volver\" no usan estilos inline y el orden de scripts no cambia", () => {
