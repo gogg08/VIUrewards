@@ -25,6 +25,17 @@ export interface AudioPlayback {
   maxVoices: number;
 }
 
+/**
+ * Estado global de reproducción que el overlay aplica al inicio de cada alerta.
+ * - `audioOnly`: fuerza a todas las alertas a reproducirse sin imagen.
+ * - `volume`: factor global de volumen (0-1); 1 = sin atenuación. Con el Modo
+ *   Chill activo vale `chillVolume / 100`; apagado, 1.
+ */
+export interface GlobalPlayback {
+  audioOnly: boolean;
+  volume: number;
+}
+
 export type ServerMessage =
   | { type: "state"; state: QueueState; url: string | null; version?: string }
   | { type: "play"; item: QueueItem; url: string }
@@ -34,6 +45,10 @@ export type ServerMessage =
   | { type: "playAudio"; audio: AudioPlayback }
   | { type: "stopAudio" }
   | { type: "version"; version: string }
+  // Estado global de reproducción (controles "Solo audio" y "Modo Chill" del
+  // panel de Cola). El overlay lo aplica al inicio de cada alerta; no reinicia la
+  // que ya está sonando.
+  | { type: "global"; global: GlobalPlayback }
   // Alerta de prueba: el overlay muestra un cartel breve para comprobar que la
   // fuente está conectada. No usa ningún clip.
   | { type: "test"; text: string };
@@ -61,6 +76,8 @@ export interface OverlayDiag {
 export type OverlayMessage =
   | { type: "ready" }
   | { type: "ended"; itemId: string; reason?: string }
+  /** Un audio superpuesto llegó a su fin (natural, recorte o duración máxima). */
+  | { type: "audioEnded"; itemId: string }
   | { type: "error"; itemId?: string; message: string }
   | { type: "diag"; diag: OverlayDiag };
 
@@ -96,6 +113,8 @@ export function parseOverlayMessage(raw: string): OverlayMessage | null {
             reason: typeof message.reason === "string" ? message.reason : undefined,
           }
         : null;
+    case "audioEnded":
+      return typeof message.itemId === "string" ? { type: "audioEnded", itemId: message.itemId } : null;
     case "error":
       return {
         type: "error",

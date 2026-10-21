@@ -209,3 +209,77 @@ describe("isPrivateIpv4", () => {
     }
   });
 });
+describe("controles globales de reproducción (Solo audio / Modo Chill)", () => {
+  it("los valores iniciales de una instalación nueva son los pedidos", () => {
+    const settings = readSettings(openMemoryDatabase());
+    expect(settings.globalAudioOnly).toBe(false);
+    expect(settings.chillMode).toBe(false);
+    expect(settings.chillVolume).toBe(25);
+    expect(settings.chillCooldownSec).toBe(5);
+  });
+
+  it("hace round-trip de los cuatro valores", () => {
+    const db = openMemoryDatabase();
+    const result = validateSettingsPatch({
+      globalAudioOnly: true,
+      chillMode: true,
+      chillVolume: 40,
+      chillCooldownSec: 12,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    writeSettings(db, result.value);
+
+    const settings = readSettings(db);
+    expect(settings.globalAudioOnly).toBe(true);
+    expect(settings.chillMode).toBe(true);
+    expect(settings.chillVolume).toBe(40);
+    expect(settings.chillCooldownSec).toBe(12);
+
+    // Se pueden apagar y el 0 del cooldown se conserva.
+    writeSettings(db, { globalAudioOnly: false, chillMode: false, chillCooldownSec: 0 });
+    const after = readSettings(db);
+    expect(after.globalAudioOnly).toBe(false);
+    expect(after.chillMode).toBe(false);
+    expect(after.chillCooldownSec).toBe(0);
+    expect(after.chillVolume).toBe(40);
+  });
+
+  it("rechaza booleanos que no son booleanos", () => {
+    for (const patch of [{ globalAudioOnly: "true" }, { globalAudioOnly: 1 }, { chillMode: "no" }]) {
+      const result = validateSettingsPatch(patch);
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reason).toBe("INVALID_SETTINGS");
+    }
+  });
+
+  it("rechaza valores numéricos fuera de rango o no numéricos", () => {
+    for (const patch of [
+      { chillVolume: -1 },
+      { chillVolume: 101 },
+      { chillVolume: "50" },
+      { chillCooldownSec: -1 },
+      { chillCooldownSec: 601 },
+      { chillCooldownSec: null },
+    ]) {
+      const result = validateSettingsPatch(patch);
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("acepta los extremos de cada rango", () => {
+    const ok = validateSettingsPatch({ chillVolume: 0, chillCooldownSec: 600 });
+    expect(ok.ok).toBe(true);
+    const okMax = validateSettingsPatch({ chillVolume: 100, chillCooldownSec: 0 });
+    expect(okMax.ok).toBe(true);
+  });
+
+  it("un valor guardado inválido cae al defecto", () => {
+    const db = openMemoryDatabase();
+    writeSettings(db, { chillVolume: 70 });
+    // Simula una base vieja/editada a mano con basura.
+    db.prepare("UPDATE settings SET value = ? WHERE key = ?").run("basura", "playback.chillVolume");
+    expect(readSettings(db).chillVolume).toBe(DEFAULT_SETTINGS.chillVolume);
+  });
+});

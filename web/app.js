@@ -25,6 +25,13 @@ function numberOrNull(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+// Entero acotado (para los controles globales del panel de la cola).
+function clampInt(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(number)));
+}
+
 // Lista de roles de un input de texto (separados por espacios o comas).
 function parseRoles(text) {
   return String(text || "")
@@ -172,6 +179,15 @@ function dashboardApp() {
     // "Ajustar contraste" (por defecto ENCENDIDO): con el toggle apagado el acento
     // se aplica EXACTO y solo se avisa si contrasta poco; encendido se corrige.
     accentContrastFix: true,
+
+    // Controles globales del panel de Cola (Solo audio / Modo Chill). Viven en los
+    // settings del servidor; acá se reflejan y se editan al instante.
+    globalAudioOnly: false,
+    chillMode: false,
+    chillVolume: 25,
+    chillCooldownSec: 5,
+    chillSettingsOpen: false,
+    globalMessage: "",
 
     queue: { status: "idle", current: null, pending: [], size: 0, cooldownWait: [], overlay: { connected: false, clients: 0 } },
 
@@ -1408,6 +1424,76 @@ function dashboardApp() {
       await api("/api/audio/stop", { method: "POST" });
     },
 
+    // --- Controles globales de reproducción ------------------------------------
+
+    // Copia los valores globales que llegan del servidor (al cargar o guardar
+    // Ajustes). El panel de la cola NUNCA toca `this.settings`: pisaría los
+    // cambios sin guardar del formulario de Ajustes.
+    syncGlobalControls(settings) {
+      if (!settings) return;
+      this.globalAudioOnly = settings.globalAudioOnly === true;
+      this.chillMode = settings.chillMode === true;
+      this.chillVolume = clampInt(settings.chillVolume, 25, 0, 100);
+      this.chillCooldownSec = clampInt(settings.chillCooldownSec, 5, 0, 600);
+    },
+
+    get chillVolumeLabel() {
+      return this.chillVolume + " %";
+    },
+
+    get chillCooldownLabel() {
+      return this.chillCooldownSec + " s";
+    },
+
+    async toggleGlobalAudioOnly() {
+      const next = !this.globalAudioOnly;
+      this.globalAudioOnly = next;
+      const ok = await this.saveGlobalSettings({ globalAudioOnly: next });
+      if (!ok) this.globalAudioOnly = !next;
+    },
+
+    async toggleChill() {
+      const next = !this.chillMode;
+      this.chillMode = next;
+      const ok = await this.saveGlobalSettings({ chillMode: next });
+      if (!ok) this.chillMode = !next;
+    },
+
+    async saveChillVolume() {
+      const value = clampInt(this.chillVolume, 25, 0, 100);
+      this.chillVolume = value;
+      await this.saveGlobalSettings({ chillVolume: value });
+    },
+
+    async saveChillCooldown() {
+      const value = clampInt(this.chillCooldownSec, 5, 0, 600);
+      this.chillCooldownSec = value;
+      await this.saveGlobalSettings({ chillCooldownSec: value });
+    },
+
+    // Envía solo los campos globales. Devuelve false si el servidor rechaza el
+    // cambio, para que el toggle pueda revertirse.
+    async saveGlobalSettings(patch) {
+      this.globalMessage = "";
+      try {
+        const response = await api("/api/settings", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data || !data.ok) {
+          this.globalMessage = "No se pudo aplicar el cambio.";
+          return false;
+        }
+        this.syncGlobalControls(data.settings);
+        return true;
+      } catch {
+        this.globalMessage = "No se pudo conectar con el servidor.";
+        return false;
+      }
+    },
+
     // --- Overlay ---------------------------------------------------------------
 
     toggleOverlay() {
@@ -1604,6 +1690,7 @@ function dashboardApp() {
       this.settings = data.settings;
       this.settingsForm.maxVideoMb = Math.round(data.settings.maxVideoBytes / BYTES_PER_MB);
       this.settingsForm.domainsText = (data.settings.allowedDomains || []).join("\n");
+      this.syncGlobalControls(data.settings);
     },
 
     async saveSettings() {
@@ -1758,6 +1845,7 @@ function dashboardApp() {
       this.settingsForm.domainsText = (data.settings.allowedDomains || []).join("\n");
       this.settingsRestart = Boolean(data.restartRequired);
       this.settingsSavedTabs[tab] = true;
+      this.syncGlobalControls(data.settings);
       // Solo se limpia el aviso de la pestaña que se guardó.
       this.dirtyTabs[tab] = false;
       setTimeout(() => (this.settingsSavedTabs[tab] = false), 2000);

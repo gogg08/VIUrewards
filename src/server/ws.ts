@@ -20,7 +20,7 @@ import { WebSocket, WebSocketServer } from "ws";
 
 import { effectiveDurationSec, type AlertQueue, type QueueItem, type QueueState } from "../queue/index.ts";
 import { safeEqual } from "./auth.ts";
-import { parseOverlayMessage, type AudioPlayback, type OverlayDiag, type ServerMessage } from "./protocol.ts";
+import { parseOverlayMessage, type AudioPlayback, type GlobalPlayback, type OverlayDiag, type ServerMessage } from "./protocol.ts";
 import { urlWithoutKey } from "./protocol-diag.ts";
 
 export interface WebSocketHub {
@@ -31,6 +31,8 @@ export interface WebSocketHub {
   stopAudio(): void;
   /** Alerta de prueba: devuelve a cuántos overlays llegó (0 = ninguno). */
   testAlert(text: string): number;
+  /** Difunde el estado global de reproducción (Solo audio / Modo Chill). */
+  broadcastGlobal(global: GlobalPlayback): void;
   /** Cantidad de overlays conectados ahora mismo. */
   clientCount(): number;
   close(): Promise<void>;
@@ -55,12 +57,28 @@ export interface WebSocketOptions {
   /** Versión del overlay; viaja en el mensaje `state` para que el overlay se recargue si quedó viejo. */
   overlayVersion?: string;
   /**
+   * Estado global de reproducción (Solo audio / Modo Chill). Se manda apenas
+   * conecta un overlay (después del `state`), para que se ponga al día.
+   */
+  resolveGlobalPlayback?: () => GlobalPlayback;
+  /**
    * Se llama cuando un clip **terminó de reproducirse** (el overlay avisó `ended`
    * o venció el watchdog). El servidor lo usa para sellar el fin de la recompensa
    * (el cooldown cuenta desde acá, no desde que arrancó) y para disparar el
    * siguiente canje en espera. NO se llama al saltar un clip a mano.
    */
   onItemFinished?: (item: QueueItem) => void;
+  /**
+   * Se llama cuando un clip **empezó a sonar** de verdad (el mensaje `play` llegó a
+   * al menos un overlay). El servidor lo usa para el intervalo mínimo del Modo Chill
+   * en el modo «Superponer». NO se llama si no hay overlay conectado.
+   */
+  onItemStarted?: (item: QueueItem) => void;
+  /**
+   * Un audio superpuesto del modo `overlap` llegó a su fin. El servidor lo usa para
+   * contar la espera global del Modo Chill desde el FIN de la alerta.
+   */
+  onAudioFinished?: (itemId: string) => void;
 }
 
 const WS_PATH = "/ws";
@@ -155,8 +173,9 @@ export function attachWebSocket(
       if (state.current?.id !== watchdogItemId) return;
       debug(`watchdog: "${watchdogItemId}" superó ${durationSec}s + ${marginMs}ms sin fin; avanzo la cola`);
       const finished = state.current;
-      queue.complete(watchdogItemId ?? undefined);
+      // Primero el fin (la espera global cuenta desde acá), después completar.
       if (finished) options.onItemFinished?.(finished);
+      queue.complete(watchdogItemId ?? undefined);
     }, durationSec * 1000 + Math.max(0, marginMs));
     watchdogTimer.unref?.();
   }
@@ -197,6 +216,7 @@ export function attachWebSocket(
           url: options.resolveClipUrl(state.current.clipId),
         });
         debug(`play "${state.current.clipId}" (${state.current.id}) a ${sent} overlay(s)`);
+        if (sent > 0) options.onItemStarted?.(state.current);
         armWatchdog(state.current);
       } else {
         disarmWatchdog();
@@ -254,6 +274,9 @@ export function attachWebSocket(
     // que cambió la cantidad de overlays: si eso arranca un pendiente, el nuevo
     // overlay ya recibió su `state` y recibe luego el `play`.
     ws.send(JSON.stringify(stateMessage()));
+    if (options.resolveGlobalPlayback) {
+      ws.send(JSON.stringify({ type: "global", global: options.resolveGlobalPlayback() }));
+    }
     notifyClients();
 
     ws.on("pong", () => {
@@ -272,8 +295,12 @@ export function attachWebSocket(
       } else if (message.type === "ended") {
         debug(`overlay avisó fin de "${message.itemId}"${message.reason ? ` (${message.reason})` : ""}`);
         const finished = queue.getState().current;
-        queue.complete(message.itemId);
+        // El fin se sella ANTES de completar la cola: `complete` promueve al
+        // siguiente, y la espera global (Modo Chill) cuenta desde este fin.
         if (finished && finished.id === message.itemId) options.onItemFinished?.(finished);
+        queue.complete(message.itemId);
+      } else if (message.type === "audioEnded") {
+        options.onAudioFinished?.(message.itemId);
       } else if (message.type === "diag") {
         logDiag(message.diag);
       } else if (message.type === "error") {
@@ -320,6 +347,9 @@ export function attachWebSocket(
       broadcast({ type: "stopAudio" });
     },
     testAlert: (text) => sendToAll({ type: "test", text }),
+    broadcastGlobal: (global) => {
+      sendToAll({ type: "global", global });
+    },
     clientCount: () => clients.size,
     close: () =>
       new Promise<void>((resolve) => {

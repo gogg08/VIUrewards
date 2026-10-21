@@ -1237,6 +1237,63 @@ a.btn-secondary:active {
   white-space: nowrap;
 }
 
+/* --- Controles globales del panel de Cola (Solo audio / Modo Chill) ------- */
+/* Es hermano de `.box-body`, no parte de su contenido: queda fijo al fondo de la
+   caja aunque la lista de la cola tenga scroll. */
+.queue-global {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  border-top: 1px solid var(--color-border);
+}
+
+.queue-global-label {
+  margin: 0;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted);
+  opacity: 0.7;
+}
+
+.queue-global-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.queue-global-name {
+  color: var(--color-text);
+  font-size: var(--text-sm);
+}
+
+/* Toggle y, a su derecha, el engranaje de sus ajustes. */
+.queue-global-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+/* El panel de ajustes de Chill abre HACIA ARRIBA (la sección está al fondo de la
+   columna derecha) y anclado a su DERECHA: así crece hacia la izquierda y nunca
+   se sale del borde de la pantalla. */
+.chill-settings {
+  top: auto;
+  bottom: calc(100% + var(--space-2));
+  right: 0;
+  left: auto;
+  min-width: 220px;
+  max-width: min(320px, calc(100vw - 2rem));
+}
+
+.chill-settings .queue-global-help {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+}
+
 /* --- Recompensas (tarjetas compactas, provisional hasta la Etapa 4) ------ */
 
 .reward-list {

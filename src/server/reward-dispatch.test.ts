@@ -94,7 +94,9 @@ interface Harness {
   setBusy: (busy: boolean) => void;
 }
 
-function makeHarness(options: { waitPolicy?: WaitPolicy } = {}): Harness {
+function makeHarness(
+  options: { waitPolicy?: WaitPolicy; startGate?: { remainingMs(): number; markStart(): void; markEnd(): void } } = {},
+): Harness {
   const db = openMemoryDatabase();
   const queue = new AlertQueue();
   const audios: AudioPlayback[] = [];
@@ -139,6 +141,7 @@ function makeHarness(options: { waitPolicy?: WaitPolicy } = {}): Harness {
     defaultMaxDuration: () => 30,
     maxVoices: () => 8,
     waitPolicy: () => waitPolicy,
+    startGate: options.startGate,
     isRewardBusy: () => rewardBusy,
     markPlay: () => {
       // No hace falta el id acá: el harness dispara el siguiente a mano.
@@ -512,5 +515,95 @@ describe("espera por cooldown (poner en cola)", () => {
     const result = await h.dispatcher.process(rewardEvent("c1"));
     expect(result.outcome).toBe("skipped");
     expect(result.reason).toBe("cooldown, faltan 30 s");
+  });
+});
+// --- Compuerta de inicio global en el modo superpuesto (Modo Chill) -----------
+
+function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = (): void => {
+      if (predicate()) return resolve();
+      if (Date.now() - started > timeoutMs) return reject(new Error("waitFor: tiempo agotado"));
+      setTimeout(tick, 5);
+    };
+    tick();
+  });
+}
+
+describe("modo superpuesto: compuerta de inicio global", () => {
+  it("sin compuerta envía enseguida (comportamiento de siempre)", async () => {
+    const h = makeHarness();
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "overlap" }));
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+    expect(result.outcome).toBe("fired");
+    expect(h.audios).toHaveLength(1);
+  });
+
+  it("con la compuerta cerrada programa el envío, acepta el canje y no duplica la espera", async () => {
+    let lastStart = 0;
+    // En "Superponer" la compuerta limita el INICIO de las alertas; el fin de una
+    // superpuesta (markEnd) no la cierra: eso resuelve la cola en "Esperar turno".
+    const intervalMs = 150;
+    const h = makeHarness({
+      startGate: {
+        remainingMs: () => (lastStart ? Math.max(0, intervalMs - (Date.now() - lastStart)) : 0),
+        markStart: () => {
+          lastStart = Date.now();
+        },
+        markEnd: () => {},
+      },
+    });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "overlap" }));
+
+    const first = await h.dispatcher.process(rewardEvent("c1"));
+    expect(first.outcome).toBe("fired");
+    expect(h.audios).toHaveLength(1);
+
+    // El segundo llega dentro del intervalo: se acepta y el envío queda programado.
+    const requestedAt = Date.now();
+    const second = await h.dispatcher.process(rewardEvent("c2"));
+    expect(second.outcome).toBe("fired");
+    expect(h.audios).toHaveLength(1);
+    expect(h.resolutions).toEqual([
+      { id: "c1", outcome: "accept" },
+      { id: "c2", outcome: "accept" },
+    ]);
+
+    await waitFor(() => h.audios.length === 2);
+    // Una sola espera: no se sumó el intervalo dos veces.
+    expect(Date.now() - requestedAt).toBeGreaterThanOrEqual(intervalMs - 20);
+  });
+
+  it("si no hay overlay conectado no marca el inicio en la compuerta", async () => {
+    let starts = 0;
+    const h = makeHarness({
+      startGate: { remainingMs: () => 0, markStart: () => (starts += 1), markEnd: () => {} },
+    });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "overlap" }));
+    h.setAudioRecipients(0);
+
+    const result = await h.dispatcher.process(rewardEvent("c1"));
+
+    expect(result).toMatchObject({ outcome: "skipped", reason: "sin overlay conectado" });
+    expect(starts).toBe(0);
+  });
+
+  it("con la compuerta abierta (intervalo cumplido) envía sin espera", async () => {
+    let starts = 0;
+    const h = makeHarness({
+      startGate: { remainingMs: () => 0, markStart: () => (starts += 1), markEnd: () => {} },
+    });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "overlap" }));
+
+    await h.dispatcher.process(rewardEvent("c1"));
+    await h.dispatcher.process(rewardEvent("c2"));
+
+    expect(h.audios).toHaveLength(2);
+    expect(starts).toBe(2);
   });
 });

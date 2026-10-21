@@ -75,7 +75,7 @@ import { RedemptionCoordinator, type ProcessOutcome } from "../redemptions/index
 import { ANIMATION_NAMES, RewardService, suggestedTitle } from "../rewards/index.ts";
 import { httpStatusForPlatformReason, registerOAuthCallback, registerPlatformApiRoutes } from "./platforms-routes.ts";
 import { registerRewardApiRoutes } from "./rewards-routes.ts";
-import { clipUrl } from "./protocol.ts";
+import { clipUrl, type GlobalPlayback } from "./protocol.ts";
 import { computeOverlayVersion } from "./build-version.ts";
 import { removeThumb, thumbExists, thumbsDir } from "../media/thumbs.ts";
 import { createClipRebuilder } from "../media/rebuild.ts";
@@ -92,6 +92,7 @@ import {
 } from "./logs.ts";
 import { hasMediaExtension, mediaExtensionOf } from "../media/formats.ts";
 import { RewardDispatcher } from "./reward-dispatch.ts";
+import { StartGate } from "./start-gate.ts";
 import { attachWebSocket } from "./ws.ts";
 
 export type { MediaPassthroughOptions } from "./jobs.ts";
@@ -288,6 +289,10 @@ const settingsSchema = {
     redemptionsOnCooldown: { type: "string", enum: ["queue", "skip"] },
     redemptionsWaitMax: { type: "integer", minimum: 1, maximum: 200 },
     redemptionsWaitTimeoutMin: { type: "integer", minimum: 1, maximum: 120 },
+    globalAudioOnly: { type: "boolean" },
+    chillMode: { type: "boolean" },
+    chillVolume: { type: "integer", minimum: 0, maximum: 100 },
+    chillCooldownSec: { type: "integer", minimum: 0, maximum: 600 },
   },
 } as const;
 
@@ -513,6 +518,26 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   let pendingRewardId: string | null = null;
   const nowMs = (): number => options.now?.() ?? Date.now();
 
+  // --- Controles globales (Solo audio / Modo Chill) ---------------------------
+  // Un ÚNICO `startGate` compartido por la cola y el despachador: así hay una sola
+  // espera global (desde el FIN de una alerta hasta el INICIO de la siguiente) y
+  // no se duplican cooldowns.
+  const startGate = new StartGate({
+    now: nowMs,
+    active: () => readSettings(db).chillMode,
+    intervalMs: () => readSettings(db).chillCooldownSec * 1000,
+  });
+  queue.setStartGate(startGate);
+
+  // Estado global de reproducción que recibe el overlay: "solo audio" y el factor
+  // de volumen efectivo (0-1). Con el Modo Chill apagado el factor es 1 (sin
+  // atenuación). La cadena individual (recompensa/clip) se respeta: esto multiplica.
+  const globalPlayback = (): GlobalPlayback => {
+    const settings = readSettings(db);
+    const rawVolume = settings.chillMode ? settings.chillVolume / 100 : 1;
+    return { audioOnly: settings.globalAudioOnly, volume: Math.min(1, Math.max(0, rawVolume)) };
+  };
+
   // ¿La recompensa tiene una reproducción pendiente (encolada o sonando)? Se
   // deriva del **estado vivo de la cola**, no de la sola presencia en
   // `itemReward`: `onItemFinished` NO se llama al saltar un clip a mano ni al
@@ -605,11 +630,21 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     resolveWatchdogMarginMs: () => readSettings(db).watchdogMarginSec * 1000,
     resolveClipUrl: (clipId) => mediaUrlWithKey(clipId),
     overlayVersion,
+    resolveGlobalPlayback: () => globalPlayback(),
     onClientsChanged: (count) => {
       if (requireOverlay) queue.setPlayerReady(count > 0);
     },
+    // El clip empezó a sonar de verdad (llegó el `play` a un overlay): sella el
+    // inicio, que es lo que además limita el intervalo en el modo «Superponer».
+    onItemStarted: () => {
+      startGate.markStart();
+      // La compuerta pudo cambiar: si hay un pendiente esperando, se reprograma.
+      queue.notifyStarted();
+    },
     onItemFinished: (item) => {
-      // El clip terminó de reproducirse: recién ahora cuenta el cooldown.
+      // El clip terminó de reproducirse: recién ahora cuenta el cooldown de la
+      // recompensa y, con el Modo Chill, la espera global (que cuenta desde el FIN).
+      startGate.markEnd();
       const rewardId = itemReward.get(item.id);
       if (!rewardId) return;
       itemReward.delete(item.id);
@@ -617,6 +652,11 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       // Si hay más canjes esperando esa recompensa, el planificador se reprograma
       // para el nuevo cooldown (dispara el siguiente al cumplirse).
       waiter.kick(rewardId);
+    },
+    // Audio superpuesto que llegó a su fin: si es el último que estaba sonando, la
+    // espera global del Modo Chill empieza a contar desde acá.
+    onAudioFinished: () => {
+      startGate.markEnd();
     },
   });
   if (requireOverlay) queue.setPlayerReady(hub.clientCount() > 0);
@@ -722,6 +762,8 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     defaultMaxDuration: () => readSettings(db).defaultMaxDurationSec,
     maxVoices: () => readSettings(db).maxAudioVoices,
     waitPolicy: () => readSettings(db).redemptionsOnCooldown,
+    // Compuerta global para el modo superpuesto (Modo Chill).
+    startGate,
     // Hay un ítem encolado o sonando para esta recompensa: no puede disparar otro
     // hasta que termine (el cooldown recién se sella al terminar).
     isRewardBusy,
@@ -1185,6 +1227,9 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     );
 
     api.post("/api/skip", async () => {
+      // La alerta cortada también "termina": con el Modo Chill, la espera global
+      // empieza a contar desde ese corte, no desde el inicio.
+      if (queue.getState().current) startGate.markEnd();
       const next = queue.skip();
       // Saltar a mano NO dispara `onItemFinished`: la recompensa del ítem saltado
       // deja de estar ocupada y hay que reprogramar su espera.
@@ -1213,7 +1258,12 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           });
         }
       }
+      // ¿Había algo sonando? Se mira ANTES de vaciar (vaciar corta la reproducción).
+      const clearedPlaying = queue.getState().current !== null;
       const removed = queue.clear();
+      // Vaciar corta lo que estuviera sonando: ese corte cuenta como fin para la
+      // espera global del Modo Chill.
+      if (clearedPlaying) startGate.markEnd();
       // Los ítems vaciados dejan de ocupar a su recompensa (sus esperas, si las
       // había, ya se descartaron arriba).
       pruneItemReward();
@@ -1715,6 +1765,16 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         const before = readSettings(db);
         writeSettings(db, validation.value);
         const settings = readSettings(db);
+        // Controles globales (Solo audio / Modo Chill): si cambiaron, avisar al
+        // overlay y reevaluar la compuerta de inicio (apagar Chill libera la cola).
+        const globalChanged =
+          before.globalAudioOnly !== settings.globalAudioOnly ||
+          before.chillMode !== settings.chillMode ||
+          before.chillVolume !== settings.chillVolume;
+        const gateChanged =
+          before.chillMode !== settings.chillMode || before.chillCooldownSec !== settings.chillCooldownSec;
+        if (globalChanged) hub.broadcastGlobal(globalPlayback());
+        if (gateChanged) queue.setStartGate(startGate);
         return { ok: true, settings, restartRequired: settings.port !== before.port };
       },
     );

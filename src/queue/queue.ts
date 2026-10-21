@@ -68,6 +68,18 @@ export interface EnqueueInput {
 
 export type QueueStatus = "idle" | "playing" | "paused";
 
+/**
+ * Compuerta de inicio global (Modo Chill). La cola solo necesita saber cuánto
+ * falta para poder arrancar otra alerta. Es un contrato estructural: `StartGate`
+ * (en `src/server/start-gate.ts`) lo cumple sin que la cola dependa del servidor.
+ * La espera cuenta desde el FIN de la alerta anterior; el fin y los inicios reales
+ * (los que llegan a un overlay) los sella el servidor, no la cola.
+ */
+export interface StartGate {
+  /** Milisegundos que faltan para poder arrancar otra alerta (0 = ya se puede). */
+  remainingMs(): number;
+}
+
 export interface QueueState {
   status: QueueStatus;
   current: QueueItem | null;
@@ -140,6 +152,21 @@ export class AlertQueue {
   private playerReady = true;
   private seq = 0;
   private readonly listeners = new Set<(state: QueueState) => void>();
+  /** Compuerta de inicio global (Modo Chill); null = sin restricción global. */
+  private gate: StartGate | null = null;
+  private gateTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * Define (o quita) la compuerta de inicio global. Al cambiarla se reevalúa la
+   * promoción: si la compuerta se apaga, un pendiente puede arrancar enseguida;
+   * si se enciende, se reprograma el arranque para respetar el intervalo.
+   */
+  setStartGate(gate: StartGate | null): void {
+    this.gate = gate;
+    this.clearGateTimer();
+    this.stabilize();
+    this.emit();
+  }
 
   /** Agrega un clip. Si no hay nada reproduciéndose, no está pausada y hay un
    * reproductor listo, arranca ya; si no, queda en espera. */
@@ -158,11 +185,10 @@ export class AlertQueue {
       label: input.label,
     };
 
-    if (this.paused || !this.playerReady || this.current) {
-      this.pending.push(item);
-    } else {
-      this.current = item;
-    }
+    this.pending.push(item);
+    // `stabilize` promueve el ítem si no hay nada reproduciéndose y la compuerta
+    // global lo permite (equivalente al arranque directo de antes sin compuerta).
+    this.stabilize();
     this.emit();
     return item;
   }
@@ -173,7 +199,9 @@ export class AlertQueue {
    */
   skip(): QueueItem | null {
     if (!this.current) return null;
-    this.current = this.paused ? null : this.takeNext();
+    this.current = null;
+    // `stabilize` promueve el siguiente respetando la compuerta global (en pausa
+    // no arranca nada).
     this.stabilize();
     this.emit();
     return this.current;
@@ -186,10 +214,20 @@ export class AlertQueue {
   complete(itemId?: string): QueueItem | null {
     if (!this.current) return null;
     if (itemId !== undefined && itemId !== this.current.id) return this.current;
-    this.current = this.paused ? null : this.takeNext();
+    this.current = null;
     this.stabilize();
     this.emit();
     return this.current;
+  }
+
+  /**
+   * Avisa que el clip actual empezó a sonar de verdad (llegó a un overlay). Con el
+   * Modo Chill, la compuerta puede necesitar reprogramar la promoción del próximo
+   * (en «Superponer» el intervalo también cuenta desde este inicio).
+   */
+  notifyStarted(): void {
+    this.stabilize();
+    this.emit();
   }
 
   pause(): void {
@@ -246,13 +284,42 @@ export class AlertQueue {
 
   /**
    * Restaura la invariante: si hay pendientes, no está pausada, hay reproductor
-   * y no hay ítem actual, arranca el siguiente. Se llama tras cada mutación para
-   * que la cola nunca quede con ítems en espera sin nada reproduciéndose.
+   * y no hay ítem actual, arranca el siguiente **si la compuerta global lo
+   * permite**. Si todavía falta el intervalo mínimo (Modo Chill), programa el
+   * arranque para cuando se cumpla. Se llama tras cada mutación para que la cola
+   * nunca quede con ítems en espera sin nada reproduciéndose.
    */
   private stabilize(): void {
-    if (!this.paused && this.playerReady && !this.current && this.pending.length > 0) {
-      this.current = this.takeNext();
+    if (this.paused || !this.playerReady || this.current || this.pending.length === 0) {
+      this.clearGateTimer();
+      return;
     }
+    const remaining = this.gate ? this.gate.remainingMs() : 0;
+    if (remaining > 0) {
+      this.scheduleGate(remaining);
+      return;
+    }
+    this.clearGateTimer();
+    this.current = this.takeNext();
+    // La cola NO marca el inicio: el servidor lo sella cuando el mensaje `play`
+    // llega a un overlay. Si lo marcara acá, una alerta sin overlay visible
+    // contaría como «sonando» y dejaría la compuerta abierta para la siguiente.
+  }
+
+  /** Programa el próximo intento de arranque para cuando se cumpla el intervalo. */
+  private scheduleGate(ms: number): void {
+    this.clearGateTimer();
+    this.gateTimer = setTimeout(() => {
+      this.gateTimer = null;
+      this.stabilize();
+      this.emit();
+    }, ms);
+    this.gateTimer.unref?.();
+  }
+
+  private clearGateTimer(): void {
+    if (this.gateTimer !== null) clearTimeout(this.gateTimer);
+    this.gateTimer = null;
   }
 
   private takeNext(): QueueItem | null {

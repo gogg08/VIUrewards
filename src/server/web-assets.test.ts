@@ -281,3 +281,105 @@ describe("archivos locales y descargas (Etapa 3B)", () => {
     expect(block).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
   });
 });
+describe("controles globales de la cola (Solo audio / Modo Chill)", () => {
+  const html = read("index.html");
+  const app = read("app.js");
+  const css = read("style.css");
+
+  it("la sección Global vive al fondo del panel de Cola, fuera del área con scroll", () => {
+    // Hermano de `.box-body` dentro de la misma caja: no scrollea con la lista.
+    expect(html).toMatch(/<div class="queue-global"[^>]*x-show="rightTab === 'queue'"/);
+    const boxBodyIndex = html.indexOf('<div class="box-body');
+    const globalIndex = html.indexOf('<div class="queue-global"');
+    expect(globalIndex).toBeGreaterThan(boxBodyIndex);
+    expect(html).toMatch(/Ese|controles globales|Controles globales/i);
+  });
+
+  it("tiene la etiqueta Global discreta y las dos filas con switches accesibles", () => {
+    expect(html).toMatch(/<p class="queue-global-label">Global<\/p>/);
+    expect(html).toMatch(/id="global-audio-only-name">Solo audio</);
+    expect(html).toMatch(/id="chill-mode-name">Modo Chill</);
+    expect(html).toMatch(/@click="toggleGlobalAudioOnly\(\)"/);
+    expect(html).toMatch(/@click="toggleChill\(\)"/);
+    expect(html).toMatch(/role="switch"/);
+    expect(html).toMatch(/aria-labelledby="global-audio-only-name"/);
+    expect(html).toMatch(/aria-labelledby="chill-mode-name"/);
+  });
+
+  it("el engranaje va a la IZQUIERDA del toggle de Chill y abre sus ajustes", () => {
+    expect(html).toMatch(/aria-label="Ajustes del Modo Chill"/);
+    expect(html).toMatch(/x-model\.number="chillVolume"/);
+    expect(html).toMatch(/type="range"/);
+    expect(html).toMatch(/min="0"[\s\S]{0,80}max="100"/);
+    expect(html).toMatch(/x-model\.number="chillCooldownSec"/);
+    expect(html).toMatch(/type="number"/);
+    expect(html).toMatch(/min="0"[\s\S]{0,80}max="600"/);
+    // El engranaje va ANTES del switch dentro de `.queue-global-actions`, así queda
+    // a la IZQUIERDA del toggle de Chill.
+    const actions = html.slice(
+      html.indexOf('class="queue-global-actions"'),
+      html.indexOf('class="queue-global-row"', html.indexOf('class="queue-global-actions"')),
+    );
+    expect(actions.indexOf("Ajustes del Modo Chill")).toBeGreaterThan(-1);
+    expect(actions.indexOf("Ajustes del Modo Chill")).toBeLessThan(actions.indexOf("toggleChill()"));
+    // Se cierra al hacer clic afuera (patrón de la app) y se persiste en @change.
+    expect(html).toMatch(/@click\.outside="chillSettingsOpen = false"/);
+    expect(html).toMatch(/@change="saveChillVolume\(\)"/);
+    expect(html).toMatch(/@change="saveChillCooldown\(\)"/);
+  });
+
+  it("cada handler y expresión usado existe en app.js (Alpine no rompe)", () => {
+    for (const method of ["toggleGlobalAudioOnly", "toggleChill", "saveChillVolume", "saveChillCooldown"]) {
+      expect(app).toMatch(new RegExp(`async ${method}\(\)`));
+      expect(html).toMatch(new RegExp(`${method}\(\)`));
+    }
+    expect(app).toMatch(/get chillVolumeLabel\(\)/);
+    expect(app).toMatch(/get chillCooldownLabel\(\)/);
+    expect(app).toMatch(/syncGlobalControls\(settings\)/);
+    // Los toggles arrancan apagados y los valores iniciales son 25 % y 5 s.
+    expect(app).toMatch(/globalAudioOnly: false/);
+    expect(app).toMatch(/chillMode: false/);
+    expect(app).toMatch(/chillVolume: 25/);
+    expect(app).toMatch(/chillCooldownSec: 5/);
+  });
+
+  it("el panel de la cola no pisa el formulario de Ajustes", () => {
+    const start = app.indexOf("async saveGlobalSettings(");
+    expect(start).toBeGreaterThan(-1);
+    const end = app.indexOf("\n    },", start);
+    const body = app.slice(start, end);
+    expect(body).not.toMatch(/this\.settings\s*=/);
+    expect(body).toMatch(/this\.syncGlobalControls\(data\.settings\)/);
+  });
+
+  it("los estilos de la sección usan variables y una divisora de bajo contraste", () => {
+    expect(css).toMatch(/\.queue-global\s*\{/);
+    expect(css).toMatch(/\.queue-global-label\s*\{/);
+    expect(css).toMatch(/\.queue-global-row\s*\{/);
+    expect(css).toMatch(/\.chill-settings\s*\{/);
+    const block = css.slice(css.indexOf(".queue-global {"), css.indexOf(".chill-settings .queue-global-help"));
+    expect(block).toMatch(/border-top:\s*1px solid var\(--color-border\)/);
+    expect(block).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
+    expect(block).not.toMatch(/!important/);
+    // El engranaje a la IZQUIERDA del toggle (orden del markup, sin invertir la
+    // fila) y el panel anclado a la derecha: abre hacia la izquierda y nunca se
+    // sale por el borde derecho de la pantalla.
+    const actions = css.slice(css.indexOf(".queue-global-actions {"), css.indexOf("}", css.indexOf(".queue-global-actions {")));
+    expect(actions).not.toMatch(/flex-direction:\s*row-reverse/);
+    const menu = css.slice(css.indexOf(".chill-settings {"), css.indexOf("}", css.indexOf(".chill-settings {")));
+    expect(menu).toMatch(/top:\s*auto/);
+    expect(menu).toMatch(/right:\s*0/);
+    expect(menu).toMatch(/left:\s*auto/);
+    expect(menu).toMatch(/max-width:\s*min\([^)]*100vw/);
+  });
+
+  it("el overlay aplica Solo audio y el factor de volumen al inicio de cada alerta", () => {
+    const overlayHtml = readFileSync(join(overlayDir, "index.html"), "utf8");
+    expect(overlayHtml).toMatch(/case "global":\s*\n\s*applyGlobalPlayback\(message\.global\)/);
+    expect(overlayHtml).toMatch(/if \(globalPlayback\.audioOnly\) item\.params\.audioOnly = true/);
+    expect(overlayHtml).toMatch(/video\.volume = [^\n]*globalVolumeFactor\(\)/);
+    expect(overlayHtml).toMatch(/el\.volume = [^\n]*globalVolumeFactor\(\)/);
+    // El dashboard no reproduce audio: no debe manejar el estado global del overlay.
+    expect(html).not.toMatch(/globalVolumeFactor/);
+  });
+});

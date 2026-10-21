@@ -10,6 +10,7 @@ export {
   type QueueItem,
   type QueueState,
   type QueueStatus,
+  type StartGate,
 } from "./queue.ts";
 
 export { effectiveDurationSec, validateTrim, type TrimValidation } from "./trim.ts";

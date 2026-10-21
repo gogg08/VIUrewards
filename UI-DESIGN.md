@@ -172,6 +172,30 @@ Dos cajas apiladas: **Agregar un clip** (fija, alto según su contenido) y **Bib
 - **En espera de cooldown (seccion):** debajo de los ítems pendientes, si alguna recompensa tiene canjes esperando su turno (política "Poner en cola"), una lista con el **nombre de la recompensa**, el **usuario** y los **segundos restantes** (o "ya toca"). Son canjes que todavía **no** están en la cola de reproducción (esperan el fin del cooldown), así que **no** llevan botones por ítem; los datos llegan en `cooldownWait` de `GET /api/state` y se refrescan con el polling.
 - **Historial:** **filas de dos líneas**, sin truncar. Línea 1: el título de la recompensa (guardado como texto en el evento, para leerse aunque la recompensa ya no exista; si el evento no lo trae, el tipo en español) y el resultado como etiqueta (`Disparó`, `Disparó · superpuesto`, `En espera por cooldown`, `Omitido`, etc.). Línea 2: usuario · hora · motivo si lo hay (`cooldown, faltan N s`, `cola de espera llena`, `sin overlay conectado`, `sin clip`), en texto secundario. Hora en formato 24 h corto (por ejemplo 18:59).
 
+### 6.1 Controles globales de reproducción (seccion)
+
+Debajo del contenido de la pestaña Cola y **siempre al fondo de la caja**, una sección compacta que no se ve como tarjeta aparte. Es **hermana** del área con scroll (`.box-body`), no parte de su contenido: si la lista scrollea, los controles quedan fijos abajo.
+
+```
+┌─────────────────────────────────┐
+│  ── scroll de la cola ──        │  .box-body (flex: 1 1 auto)
+│                                 │
+├─────────────────────────────────┤  divisora 1px, var(--color-border)
+│  GLOBAL                         │  etiqueta discreta (opacidad 0.7)
+│  Solo audio                ( )  │  fila nombre + switch
+│  Modo Chill            ⚙  ( )  │  engranaje + switch
+└─────────────────────────────────┘
+```
+
+- Solo aparece en la pestaña **Cola** (`x-show="rightTab === 'queue'"`), nunca en Historial ni fuera del panel derecho.
+- La etiqueta es el texto **«Global»** en mayúsculas, color atenuado y opacidad baja (discreta).
+- Dos filas: **Solo audio** y **Modo Chill**, cada una con un `.switch` de la app (`role="switch"`, `aria-checked`, `aria-labelledby` al nombre de la fila).
+- A la **izquierda** del toggle de Chill, un **engranaje** que abre un panel flotante **hacia arriba** (`.chill-settings`), anclado a la derecha (crece hacia la izquierda, así nunca se sale por el borde de la pantalla) y con `max-width: min(320px, calc(100vw - 2rem))`: slider de **Volumen** (0-100 %, default 25 %) con su valor junto al nombre, input numérico de **Espera tras terminar** en segundos (0-600, default 5; 0 = sin espera) y una línea de ayuda. Se cierra al hacer clic afuera. Cerrado **no ocupa espacio** ni cambia la altura de la sección. La fila usa el orden natural del markup (engranaje primero, después el switch), sin `order` ni `row-reverse`.
+- Los ajustes de Chill se pueden editar con el modo **apagado**; solo no tienen efecto hasta encenderlo.
+- **Solo audio** fuerza que todas las alertas suenen sin imagen (lo aplica el overlay al inicio de cada reproducción); una alerta ya en curso no se reinicia.
+- **Espera tras terminar** es el tiempo mínimo **desde el FIN de una alerta hasta el INICIO de la siguiente**, no entre inicios: si un clip dura más que la espera, la siguiente igual aguanta la espera completa desde ese fin.
+- Sin Guardar: cada cambio se aplica al instante y se persiste en la configuración del servidor.
+
 ## 7. Ventanas flotantes
 
 Todas se muestran sobre el panel principal, que se oscurece con negro de opacidad baja. Se cierran con Esc, con la X o con clic afuera; si hay cambios sin guardar, avisan.

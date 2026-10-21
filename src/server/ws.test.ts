@@ -790,3 +790,228 @@ describe("espera por cooldown (integración con el servidor real)", () => {
     ws.close();
   });
 });
+describe("estado global de reproducción (Solo audio / Modo Chill)", () => {
+  async function withGlobalServer(): Promise<{ server: AppServer; port: number }> {
+    const parent = mkdtempSync(join(tmpdir(), "ws-global-test-"));
+    dirs.push(parent);
+    const mediaDir = join(parent, "media");
+    mkdirSync(mediaDir, { recursive: true });
+    const server = await createAppServer({ mediaDir, db: openMemoryDatabase(), port: 0, requireOverlay: true });
+    servers.push(server);
+    const info = await server.start();
+    return { server, port: info.port };
+  }
+
+  async function postSettings(
+    server: AppServer,
+    port: number,
+    body: Record<string, unknown>,
+  ): Promise<{ status: number; ok: boolean; settings?: Record<string, unknown> }> {
+    const response = await fetch(`http://127.0.0.1:${port}/api/settings`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: `czero_session=${server.auth.createSession()}`,
+        origin: `http://127.0.0.1:${port}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const data = (await response.json()) as { ok?: boolean; settings?: Record<string, unknown> };
+    return { status: response.status, ok: data.ok === true, settings: data.settings };
+  }
+
+  it("una instalación nueva parte con Solo audio y Modo Chill apagados, 25 % y 5 s", async () => {
+    const { server } = await withGlobalServer();
+    const info = await server.app.inject({
+      method: "GET",
+      url: "/api/settings",
+      headers: { cookie: `czero_session=${server.auth.createSession()}` },
+    });
+    const body = info.json() as { ok: boolean; settings: Record<string, unknown> };
+    expect(body.ok).toBe(true);
+    expect(body.settings.globalAudioOnly).toBe(false);
+    expect(body.settings.chillMode).toBe(false);
+    expect(body.settings.chillVolume).toBe(25);
+    expect(body.settings.chillCooldownSec).toBe(5);
+  });
+
+  it("al conectar, el overlay recibe el estado global por defecto", async () => {
+    const { server, port } = await withGlobalServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+
+    await waitFor(() => messages.some((m) => m.type === "global"));
+    const global = messages.find((m) => m.type === "global")?.global;
+    expect(global).toEqual({ audioOnly: false, volume: 1 });
+
+    ws.close();
+  });
+
+  it("activar Modo Chill difunde el factor de volumen y Solo audio llega al overlay", async () => {
+    const { server, port } = await withGlobalServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "global"));
+
+    const saved = await postSettings(server, port, { chillMode: true, chillVolume: 25 });
+    expect(saved.ok).toBe(true);
+
+    await waitFor(() =>
+      messages.some((m) => {
+        const global = m.global as { volume?: number; audioOnly?: boolean } | undefined;
+        return m.type === "global" && global?.volume === 0.25 && global.audioOnly === false;
+      }),
+    );
+
+    await postSettings(server, port, { globalAudioOnly: true });
+    await waitFor(() =>
+      messages.some((m) => {
+        const global = m.global as { audioOnly?: boolean } | undefined;
+        return m.type === "global" && global?.audioOnly === true;
+      }),
+    );
+
+    ws.close();
+  });
+
+  it("apagar Modo Chill vuelve el factor a 1 (sin atenuación)", async () => {
+    const { server, port } = await withGlobalServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "global"));
+
+    await postSettings(server, port, { chillMode: true, chillVolume: 10 });
+    await waitFor(() =>
+      messages.some((m) => (m.global as { volume?: number } | undefined)?.volume === 0.1),
+    );
+    await postSettings(server, port, { chillMode: false });
+    await waitFor(() => {
+      const globals = messages.filter((m) => m.type === "global").map((m) => (m.global as { volume: number }).volume);
+      return globals[globals.length - 1] === 1;
+    });
+
+    ws.close();
+  });
+
+  it("rechaza valores globales inválidos sin difundir nada", async () => {
+    const { server, port } = await withGlobalServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "global"));
+    const before = messages.filter((m) => m.type === "global").length;
+
+    const bad = await postSettings(server, port, { chillVolume: 500 });
+    expect(bad.status).toBe(400);
+    expect(bad.ok).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(messages.filter((m) => m.type === "global")).toHaveLength(before);
+
+    ws.close();
+  });
+});
+
+describe("Modo Chill: intervalo mínimo global entre alertas (integración real)", () => {
+  async function withChillServer(): Promise<{ server: AppServer; port: number }> {
+    const parent = mkdtempSync(join(tmpdir(), "ws-chill-test-"));
+    dirs.push(parent);
+    const mediaDir = join(parent, "media");
+    mkdirSync(mediaDir, { recursive: true });
+    const server = await createAppServer({ mediaDir, db: openMemoryDatabase(), port: 0, requireOverlay: true });
+    servers.push(server);
+    const info = await server.start();
+    const cookie = `czero_session=${server.auth.createSession()}`;
+    const response = await fetch(`http://127.0.0.1:${info.port}/api/settings`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie, origin: `http://127.0.0.1:${info.port}` },
+      body: JSON.stringify({ chillMode: true, chillCooldownSec: 1 }),
+    });
+    expect(response.ok).toBe(true);
+    return { server, port: info.port };
+  }
+
+  it("dos alertas encoladas no arrancan con menos de 1 s desde el FIN de la primera", async () => {
+    const { server, port } = await withChillServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "global"));
+
+    // El primer arranque es síncrono con `enqueue`, así que se cuenta contando los
+    // mensajes `play` del test (registrados en `messages` antes de encolar).
+    const plays = (): number => messages.filter((m) => m.type === "play").length;
+
+    server.queue.enqueue({ clipId: "a" });
+    await waitFor(() => plays() >= 1);
+    await waitFor(() => server.queue.getState().current !== null);
+    server.queue.enqueue({ clipId: "b" });
+    // La espera cuenta desde el FIN: se despacha `ended` como lo haría el overlay
+    // (el servidor sella el fin en `onItemFinished` antes de promover al siguiente).
+    const endedAt = Date.now();
+    ws.send(JSON.stringify({ type: "ended", itemId: server.queue.getState().current?.id }));
+
+    await waitFor(() => server.queue.getState().current?.clipId === "b", 4000);
+    expect(Date.now() - endedAt).toBeGreaterThanOrEqual(900);
+
+    // Y el segundo `play` también llegó al overlay.
+    await waitFor(() => plays() >= 2);
+
+    ws.close();
+  });
+
+  it("la espera cuenta desde el FIN aunque la alerta haya durado más que el intervalo", async () => {
+    const { server, port } = await withChillServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "global"));
+
+    const plays = (): number => messages.filter((m) => m.type === "play").length;
+
+    server.queue.enqueue({ clipId: "a" });
+    await waitFor(() => plays() >= 1);
+    await waitFor(() => server.queue.getState().current !== null);
+    server.queue.enqueue({ clipId: "b" });
+    // La alerta "suena" 1,2 s (más que el intervalo de 1 s) antes de terminar.
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    const endedAt = Date.now();
+    ws.send(JSON.stringify({ type: "ended", itemId: server.queue.getState().current?.id }));
+
+    await waitFor(() => server.queue.getState().current?.clipId === "b", 4000);
+    // La espera cuenta desde el fin, no desde el inicio del anterior: aun habiendo
+    // durado más que el intervalo, la siguiente espera el intervalo completo.
+    expect(Date.now() - endedAt).toBeGreaterThanOrEqual(900);
+
+    ws.close();
+  });
+
+  it("el fin de un audio superpuesto también abre la espera global (mensaje audioEnded)", async () => {
+    const { server, port } = await withChillServer();
+    const { ws, messages } = await connectAndCollect(port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "global"));
+
+    // Un audio superpuesto termina: desde ahí cuenta la espera global.
+    ws.send(JSON.stringify({ type: "audioEnded", itemId: "audio-1" }));
+    const endedAt = Date.now();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    server.queue.enqueue({ clipId: "a" });
+
+    await waitFor(() => messages.some((m) => m.type === "play"), 4000);
+    expect(Date.now() - endedAt).toBeGreaterThanOrEqual(800);
+
+    ws.close();
+  });
+
+  it("con el Modo Chill apagado no hay espera global", async () => {
+    const parent = mkdtempSync(join(tmpdir(), "ws-chill-off-test-"));
+    dirs.push(parent);
+    const mediaDir = join(parent, "media");
+    mkdirSync(mediaDir, { recursive: true });
+    const server = await createAppServer({ mediaDir, db: openMemoryDatabase(), port: 0, requireOverlay: true });
+    servers.push(server);
+    const info = await server.start();
+    const { ws, messages } = await connectAndCollect(info.port, server.getOverlayKey());
+    await waitFor(() => messages.some((m) => m.type === "global"));
+
+    server.queue.enqueue({ clipId: "a" });
+    server.queue.enqueue({ clipId: "b" });
+    await waitFor(() => messages.some((m) => m.type === "play"));
+    const first = Date.now();
+    server.queue.complete(server.queue.getState().current?.id);
+    await waitFor(() => messages.filter((m) => m.type === "play").length >= 2);
+    expect(Date.now() - first).toBeLessThan(500);
+
+    ws.close();
+  });
+});

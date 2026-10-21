@@ -161,6 +161,45 @@ validación del hex, el respaldo de `localStorage` y que cada tema defina las mi
 variables. Un **humo con Playwright** para el cambio de tema todavía está pendiente
 (la suite `test:e2e` aún no cubre temas).
 
+## Controles globales de reproducción (panel de Cola)
+
+Al fondo del panel vertical **Cola** hay una sección **Global** (siempre visible, aunque la
+lista scrollee: es hermana del área con scroll) con dos toggles y un **engranaje a la
+**izquierda** del toggle de Chill** (orden del markup: engranaje y después switch)
+para abrir sus ajustes. Todo se aplica **al instante** y se guarda en la tabla `settings`
+(claves `playback.globalAudioOnly`, `playback.chillMode`, `playback.chillVolume`,
+`playback.chillCooldownSec`), así que sobrevive a la recarga del dashboard y al reinicio
+del servidor. No toca la configuración individual de recompensas ni de clips.
+
+- **Solo audio** (`globalAudioOnly`, default apagado): fuerza que **todas** las alertas
+  suenen sin imagen. El servidor manda el estado al overlay por WebSocket (mensaje
+  `global`, al conectar y cuando cambia) y el overlay lo aplica al **inicio de cada
+  reproducción**: marca `params.audioOnly` en su copia del ítem, así que el recorte, la
+  duración máxima, los eventos de fin y el avance de la cola siguen igual. Una alerta que
+  ya está sonando **no** se reinicia ni se corta; el cambio afecta a las que arrancan
+  después (pendientes y nuevas). Un clip que ya es solo audio no cambia.
+- **Modo Chill** (`chillMode`, default apagado) tiene dos efectos mientras está activo:
+  - **Volumen** (`chillVolume`, 0-100, default **25**): se manda al overlay como factor
+    (`volume = chillVolume / 100`) y el overlay **multiplica** el volumen del ítem y el de
+    cada voz superpuesta. Con Chill apagado el factor es `1` (sin atenuación). No se aplica
+    dos veces con el volumen global, que se resuelve en el servidor en su propio camino.
+    Ejemplo: alerta al 50 % con Chill al 25 % → 12,5 %.
+  - **Espera tras terminar** (`chillCooldownSec`, 0-600, default **5**; 0 = sin espera):
+    es el tiempo mínimo **desde el FIN de una alerta hasta el INICIO de la siguiente**. Lo
+    implementa un único `StartGate` (`src/server/start-gate.ts`) compartido por la cola y
+    el despachador, así que no hay cooldowns duplicados. El fin lo sella el servidor
+    cuando el overlay avisa `ended` (o `audioEnded` para un audio superpuesto), el
+    watchdog da por terminado un clip, o se salta/vacía lo que estaba sonando. En
+    «Esperar turno» la cola reprograma la promoción del siguiente ítem cuando falta
+    tiempo; en «Superponer» el despachador programa el envío del audio y **acepta** el
+    canje igual (no bloquea el ciclo de canjes); ahí además se respeta el intervalo
+    entre **inicios**, así que dos audios superpuestos tampoco arrancan pegados. Es
+    independiente del cooldown por recompensa y no lo modifica.
+
+**Limitación conocida:** «Probar alerta» desde la biblioteca y la alerta de prueba del
+overlay son acciones manuales y **no** pasan por el intervalo de Chill. Los cambios de
+volumen o de intervalo tampoco alteran la alerta que ya está sonando.
+
 ## Responsive y alineaciones
 
 Reglas de acomodo en `web/style.css` (solo estilos/markup, sin cambios de lógica):

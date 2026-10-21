@@ -29,6 +29,11 @@ export const SETTING_REDEMPTIONS_OLD_ACTION = "redemptions.oldAction";
 export const SETTING_REDEMPTIONS_ON_COOLDOWN = "redemptions.onCooldown";
 export const SETTING_REDEMPTIONS_WAIT_MAX = "redemptions.waitMax";
 export const SETTING_REDEMPTIONS_WAIT_TIMEOUT_MIN = "redemptions.waitTimeoutMin";
+// Controles globales del panel de Cola (Solo audio y Modo Chill).
+export const SETTING_GLOBAL_AUDIO_ONLY = "playback.globalAudioOnly";
+export const SETTING_CHILL_MODE = "playback.chillMode";
+export const SETTING_CHILL_VOLUME = "playback.chillVolume";
+export const SETTING_CHILL_COOLDOWN = "playback.chillCooldownSec";
 
 export const DEFAULT_PORT = 8787;
 
@@ -78,6 +83,14 @@ export interface AppSettings {
   redemptionsWaitMax: number;
   /** Espera máxima por canje en espera, en minutos. */
   redemptionsWaitTimeoutMin: number;
+  /** Fuerza que TODAS las alertas se reproduzcan sin imagen (global). */
+  globalAudioOnly: boolean;
+  /** Modo Chill: baja el volumen y pone un intervalo mínimo global entre alertas. */
+  chillMode: boolean;
+  /** Volumen del Modo Chill en porcentaje (0-100); multiplica el de cada alerta. */
+  chillVolume: number;
+  /** Intervalo mínimo del Modo Chill entre inicios de alerta, en segundos (0 = sin espera). */
+  chillCooldownSec: number;
 }
 
 /** Campos editables desde el dashboard. */
@@ -98,6 +111,10 @@ export interface SettingsPatch {
   redemptionsOnCooldown?: OnCooldownPolicy;
   redemptionsWaitMax?: number;
   redemptionsWaitTimeoutMin?: number;
+  globalAudioOnly?: boolean;
+  chillMode?: boolean;
+  chillVolume?: number;
+  chillCooldownSec?: number;
 }
 
 /** Rangos aceptados para cada valor numérico. */
@@ -114,6 +131,8 @@ export const SETTINGS_LIMITS = {
   redemptionsOldMinutes: { min: 0, max: 1440 },
   redemptionsWaitMax: { min: 1, max: 200 },
   redemptionsWaitTimeoutMin: { min: 1, max: 120 },
+  chillVolume: { min: 0, max: 100 },
+  chillCooldownSec: { min: 0, max: 600 },
 } as const;
 
 const MAX_DOMAINS = 50;
@@ -166,6 +185,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   redemptionsOnCooldown: "queue",
   redemptionsWaitMax: 20,
   redemptionsWaitTimeoutMin: 10,
+  globalAudioOnly: false,
+  chillMode: false,
+  chillVolume: 25,
+  chillCooldownSec: 5,
 };
 
 export type SettingsValidation =
@@ -185,11 +208,15 @@ const NUMERIC_KEYS = [
   "redemptionsOldMinutes",
   "redemptionsWaitMax",
   "redemptionsWaitTimeoutMin",
+  "chillVolume",
+  "chillCooldownSec",
 ] as const;
 
 const ENUM_KEYS = ["redemptionsOnSkip", "redemptionsOldAction", "redemptionsOnCooldown"] as const;
 
-const KNOWN_KEYS = new Set<string>([...NUMERIC_KEYS, ...ENUM_KEYS, "allowedDomains"]);
+const BOOLEAN_KEYS = ["globalAudioOnly", "chillMode"] as const;
+
+const KNOWN_KEYS = new Set<string>([...NUMERIC_KEYS, ...ENUM_KEYS, ...BOOLEAN_KEYS, "allowedDomains"]);
 
 function isIpv4(host: string): boolean {
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return false;
@@ -287,6 +314,15 @@ export function validateSettingsPatch(patch: unknown): SettingsValidation {
     value[key] = raw;
   }
 
+  for (const key of BOOLEAN_KEYS) {
+    if (!(key in record)) continue;
+    const raw = record[key];
+    if (typeof raw !== "boolean") {
+      return { ok: false, reason: "INVALID_SETTINGS", message: `${key} debe ser verdadero o falso.` };
+    }
+    value[key] = raw;
+  }
+
   if ("redemptionsOnSkip" in record) {
     const raw = record.redemptionsOnSkip;
     if (typeof raw !== "string" || !ON_SKIP_POLICIES.includes(raw as OnSkipPolicy)) {
@@ -354,6 +390,16 @@ function readNumber(
   const value = Number(raw);
   if (!Number.isInteger(value) || value < limits.min || value > limits.max) return fallback;
   return value;
+}
+
+/** Lee un booleano guardado como `"1"`/`"0"` (o `true`/`false`); cae al defecto. */
+function readBoolean(db: SqliteDatabase, key: string, fallback: boolean): boolean {
+  const raw = getSetting(db, key);
+  if (raw === null) return fallback;
+  const value = raw.trim().toLowerCase();
+  if (value === "1" || value === "true") return true;
+  if (value === "0" || value === "false") return false;
+  return fallback;
 }
 
 function readEnum<T extends string>(
@@ -452,6 +498,15 @@ export function readSettings(db: SqliteDatabase): AppSettings {
       DEFAULT_SETTINGS.redemptionsWaitTimeoutMin,
       SETTINGS_LIMITS.redemptionsWaitTimeoutMin,
     ),
+    globalAudioOnly: readBoolean(db, SETTING_GLOBAL_AUDIO_ONLY, DEFAULT_SETTINGS.globalAudioOnly),
+    chillMode: readBoolean(db, SETTING_CHILL_MODE, DEFAULT_SETTINGS.chillMode),
+    chillVolume: readNumber(db, SETTING_CHILL_VOLUME, DEFAULT_SETTINGS.chillVolume, SETTINGS_LIMITS.chillVolume),
+    chillCooldownSec: readNumber(
+      db,
+      SETTING_CHILL_COOLDOWN,
+      DEFAULT_SETTINGS.chillCooldownSec,
+      SETTINGS_LIMITS.chillCooldownSec,
+    ),
   };
 }
 
@@ -498,5 +553,13 @@ export function writeSettings(db: SqliteDatabase, patch: SettingsPatch): void {
   }
   if (patch.redemptionsWaitTimeoutMin !== undefined) {
     setSetting(db, SETTING_REDEMPTIONS_WAIT_TIMEOUT_MIN, String(patch.redemptionsWaitTimeoutMin));
+  }
+  if (patch.globalAudioOnly !== undefined) {
+    setSetting(db, SETTING_GLOBAL_AUDIO_ONLY, patch.globalAudioOnly ? "1" : "0");
+  }
+  if (patch.chillMode !== undefined) setSetting(db, SETTING_CHILL_MODE, patch.chillMode ? "1" : "0");
+  if (patch.chillVolume !== undefined) setSetting(db, SETTING_CHILL_VOLUME, String(patch.chillVolume));
+  if (patch.chillCooldownSec !== undefined) {
+    setSetting(db, SETTING_CHILL_COOLDOWN, String(patch.chillCooldownSec));
   }
 }

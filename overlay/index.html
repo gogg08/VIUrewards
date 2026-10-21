@@ -156,6 +156,11 @@
       let reconnectDelay = MIN_RECONNECT_MS;
       let ws = null;
 
+      // Estado global de reproducción (controles "Solo audio" y "Modo Chill" del
+      // panel de Cola). El servidor lo manda al conectar y cuando cambia. Se aplica
+      // al INICIO de cada alerta: no reinicia ni corta la que ya está sonando.
+      let globalPlayback = { audioOnly: false, volume: 1 };
+
       // --- Versión del overlay y recarga automática ---------------------------
       // El servidor embebe la versión en la página y la manda en el primer
       // mensaje del WebSocket. Si difieren, esta página quedó vieja (caché de OBS
@@ -273,8 +278,13 @@
       }
 
       function place(item) {
+        // Modo global "Solo audio": fuerza a que la alerta suene sin mostrar la
+        // imagen. Se muta la copia local del ítem por reproducción, así el resto
+        // del código (animaciones, visibilidad, fin) usa el valor efectivo y el
+        // toggle no afecta a la alerta que ya está sonando.
+        if (globalPlayback.audioOnly) item.params.audioOnly = true;
         // La posición X/Y ya no se aplica: el video llena el área de la fuente.
-        video.volume = Math.min(1, Math.max(0, item.params.volume));
+        video.volume = Math.min(1, Math.max(0, item.params.volume * globalVolumeFactor()));
         video.style.display = "block";
         video.muted = false;
         // Cada reproducción decide si se ve la imagen (no queda pegado de la
@@ -282,6 +292,24 @@
         // `display: none`): el elemento sigue en el flujo, el audio suena, el
         // recorte y la duración máxima aplican y `ended`/`error` siguen llegando.
         video.style.visibility = item.params.audioOnly ? "hidden" : "visible";
+      }
+
+      // Factor de volumen global (Modo Chill): multiplica el volumen individual
+      // de cada alerta. 1 = sin atenuación; si no llegó un valor válido, no atenúa.
+      function globalVolumeFactor() {
+        const value = Number(globalPlayback.volume);
+        return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 1;
+      }
+
+      // Aplica el estado global que manda el servidor (solo audio y factor de
+      // volumen). Ignora cualquier forma inesperada para no romper la reproducción.
+      function applyGlobalPlayback(next) {
+        if (!next || typeof next !== "object") return;
+        const volume = Number(next.volume);
+        globalPlayback = {
+          audioOnly: next.audioOnly === true,
+          volume: Number.isFinite(volume) ? volume : 1,
+        };
       }
 
       function animateIn(name) {
@@ -495,8 +523,12 @@
        */
       const voices = []; // { id, el, timer, loadTimer, released }
 
-      function releaseVoice(voice) {
+      function releaseVoice(voice, notify) {
         if (!voice || voice.released) return;
+        // `notify`: el audio llegó a su fin natural (terminó, recorte o duración
+        // máxima). No se avisa si se cortó por tope de voces o por un stop. El
+        // servidor lo usa para contar la espera global del Modo Chill.
+        if (notify) send({ type: "audioEnded", itemId: voice.id });
         voice.released = true;
         if (voice.timer !== null) clearTimeout(voice.timer);
         if (voice.loadTimer !== null) clearTimeout(voice.loadTimer);
@@ -530,7 +562,7 @@
         el.setAttribute("playsinline", "");
         el.preload = "auto";
         el.style.display = "none";
-        el.volume = Math.min(1, Math.max(0, Number(audio.volume) || 0));
+        el.volume = Math.min(1, Math.max(0, Number(audio.volume) || 0) * globalVolumeFactor());
         el.src = audio.url;
 
         const voice = { id: audio.id, el: el, timer: null, loadTimer: null, released: false };
@@ -557,7 +589,7 @@
             });
           }
           // Corta al llegar al recorte o a la duración máxima.
-          voice.timer = setTimeout(() => releaseVoice(voice), Math.max(100, (capSec - start) * 1000));
+          voice.timer = setTimeout(() => releaseVoice(voice, true), Math.max(100, (capSec - start) * 1000));
         };
 
         function clearLoadTimerFor(target) {
@@ -565,7 +597,7 @@
           target.loadTimer = null;
         }
 
-        el.addEventListener("ended", () => releaseVoice(voice));
+        el.addEventListener("ended", () => releaseVoice(voice, true));
         el.addEventListener("error", () => {
           send({ type: "error", itemId: audio.id, message: "audio: no se pudo cargar" });
           releaseVoice(voice);
@@ -646,6 +678,9 @@
             break;
           case "stopAudio":
             releaseAllVoices();
+            break;
+          case "global":
+            applyGlobalPlayback(message.global);
             break;
           case "test":
             showToast(typeof message.text === "string" ? message.text : "Alerta de prueba");

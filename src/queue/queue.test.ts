@@ -367,3 +367,138 @@ describe("AlertQueue - reproductor conectado", () => {
     expect(queue.getState().current?.clipId).toBe("a");
   });
 });
+
+// --- Compuerta de inicio global (Modo Chill) ----------------------------------
+
+function waitFor(predicate: () => boolean, timeoutMs = 3_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const tick = (): void => {
+      if (predicate()) return resolve();
+      if (Date.now() - started > timeoutMs) return reject(new Error("waitFor: tiempo agotado"));
+      setTimeout(tick, 5);
+    };
+    tick();
+  });
+}
+
+describe("AlertQueue - compuerta de inicio global", () => {
+  it("sin compuerta el siguiente arranca enseguida (comportamiento de siempre)", () => {
+    const queue = new AlertQueue();
+    queue.enqueue({ clipId: "a" });
+    queue.enqueue({ clipId: "b" });
+    queue.complete(queue.getState().current?.id);
+    expect(queue.getState().current?.clipId).toBe("b");
+  });
+
+  it("espera el intervalo desde el FIN de la alerta anterior hasta el inicio de la siguiente", async () => {
+    const queue = new AlertQueue();
+    let lastEnd = 0;
+    const intervalMs = 150;
+    // La espera cuenta desde el fin, tal como lo sella el servidor con `markEnd`.
+    queue.setStartGate({ remainingMs: () => (lastEnd ? Math.max(0, intervalMs - (Date.now() - lastEnd)) : 0) });
+
+    queue.enqueue({ clipId: "a" });
+    queue.enqueue({ clipId: "b" });
+    // La alerta "a" sigue sonando: no hay espera ni bloqueo, solo espera a que termine.
+    expect(queue.getState().current?.clipId).toBe("a");
+    lastEnd = Date.now();
+    const endedAt = lastEnd;
+    queue.complete(queue.getState().current?.id);
+
+    // Con la compuerta cerrada, el siguiente todavía no arrancó.
+    expect(queue.getState().current).toBeNull();
+    expect(queue.getState().size).toBe(1);
+
+    await waitFor(() => queue.getState().current !== null);
+    expect(queue.getState().current?.clipId).toBe("b");
+    expect(Date.now() - endedAt).toBeGreaterThanOrEqual(intervalMs - 20);
+  });
+
+  it("la cola solo consulta la compuerta: no registra inicios (los sella el servidor)", () => {
+    const queue = new AlertQueue();
+    let calls = 0;
+    // El contrato de la cola es solo `remainingMs`; nada se marca al promover.
+    queue.setStartGate({
+      remainingMs: () => {
+        calls += 1;
+        return 0;
+      },
+    });
+    queue.enqueue({ clipId: "a" });
+    queue.enqueue({ clipId: "b" });
+    queue.complete(queue.getState().current?.id);
+    expect(queue.getState().current?.clipId).toBe("b");
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it("sin un fin registrado no agrega espera y la primera alerta arranca", () => {
+    const queue = new AlertQueue();
+    // La compuerta real devuelve 0 hasta que una alerta termina: la primera suena.
+    let ended = false;
+    queue.setStartGate({ remainingMs: () => (ended ? 60_000 : 0) });
+    queue.enqueue({ clipId: "a" });
+    expect(queue.getState().current?.clipId).toBe("a");
+    // La alerta "a" suena: que la compuerta esté cerrada no la interrumpe.
+    ended = true;
+    expect(queue.getState().current?.clipId).toBe("a");
+    // Al terminar, el siguiente (si hay) espera el intervalo.
+    queue.enqueue({ clipId: "b" });
+    queue.complete(queue.getState().current?.id);
+    expect(queue.getState().current).toBeNull();
+    expect(queue.getState().size).toBe(1);
+  });
+
+  it("con intervalo 0 no agrega espera", () => {
+    const queue = new AlertQueue();
+    queue.setStartGate({ remainingMs: () => 0 });
+    queue.enqueue({ clipId: "a" });
+    queue.enqueue({ clipId: "b" });
+    queue.complete(queue.getState().current?.id);
+    expect(queue.getState().current?.clipId).toBe("b");
+  });
+
+  it("apagar la compuerta con un pendiente programado lo libera", async () => {
+    const queue = new AlertQueue();
+    let active = true;
+    let lastEnd = 0;
+    queue.setStartGate({ remainingMs: () => (active && lastEnd ? Math.max(0, 60_000 - (Date.now() - lastEnd)) : 0) });
+    queue.enqueue({ clipId: "a" });
+    queue.enqueue({ clipId: "b" });
+    lastEnd = Date.now();
+    queue.complete(queue.getState().current?.id);
+    expect(queue.getState().current).toBeNull();
+
+    active = false;
+    queue.setStartGate({ remainingMs: () => 0 });
+    expect(queue.getState().current?.clipId).toBe("b");
+  });
+
+  it("skip y complete también esperan el intervalo (no lo saltean)", async () => {
+    const queue = new AlertQueue();
+    let lastEnd = 0;
+    const intervalMs = 120;
+    queue.setStartGate({ remainingMs: () => (lastEnd ? Math.max(0, intervalMs - (Date.now() - lastEnd)) : 0) });
+    queue.enqueue({ clipId: "a" });
+    queue.enqueue({ clipId: "b" });
+    lastEnd = Date.now();
+    queue.skip();
+    expect(queue.getState().current).toBeNull();
+    await waitFor(() => queue.getState().current !== null);
+    expect(queue.getState().current?.clipId).toBe("b");
+  });
+
+  it("en pausa no arranca aunque la compuerta esté abierta, y al reanudar sí", () => {
+    const queue = new AlertQueue();
+    queue.setStartGate({ remainingMs: () => 0 });
+    queue.enqueue({ clipId: "a" });
+    queue.pause();
+    queue.complete(queue.getState().current?.id);
+    expect(queue.getState().current).toBeNull();
+    queue.resume();
+    expect(queue.getState().current).toBeNull();
+    expect(queue.getState().size).toBe(0);
+    queue.enqueue({ clipId: "b" });
+    expect(queue.getState().current?.clipId).toBe("b");
+  });
+});

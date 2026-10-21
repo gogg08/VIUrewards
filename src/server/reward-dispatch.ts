@@ -28,6 +28,7 @@ import {
 } from "../db/index.ts";
 import { payloadRewardId, type NormalizedEvent, type ResolveOutcome } from "../events/index.ts";
 import { decide, type CooldownDecision, type RuleEngine, type EngineResult } from "../rules/index.ts";
+import type { StartGateLike } from "./start-gate.ts";
 import type { AudioPlayback } from "./protocol.ts";
 
 /** Qué hacer cuando un canje llega dentro del cooldown (solo modo `queue`). */
@@ -66,6 +67,12 @@ export interface RewardDispatcherOptions {
    * con su recompensa y poder sellar el fin de reproducción.
    */
   markPlay?: (reward: RewardRecord) => void;
+  /**
+   * Compuerta de inicio global (Modo Chill) para el modo `overlap`: limita el
+   * inicio de nuevas alertas superpuestas. Sin compuerta (o con el Modo Chill
+   * apagado) no agrega ninguna espera.
+   */
+  startGate?: StartGateLike;
   logger?: (message: string) => void;
 }
 
@@ -94,6 +101,7 @@ export class RewardDispatcher {
   private readonly isRewardBusy?: (rewardId: string) => boolean;
   private readonly admitWait?: RewardDispatcherOptions["admitWait"];
   private readonly markPlay?: RewardDispatcherOptions["markPlay"];
+  private readonly startGate?: StartGateLike;
   private readonly logger?: (message: string) => void;
 
   constructor(options: RewardDispatcherOptions) {
@@ -110,6 +118,7 @@ export class RewardDispatcher {
     this.isRewardBusy = options.isRewardBusy;
     this.admitWait = options.admitWait;
     this.markPlay = options.markPlay;
+    this.startGate = options.startGate;
     this.logger = options.logger;
   }
 
@@ -243,7 +252,29 @@ export class RewardDispatcher {
       maxDurationSec: reward.maxDurationSec ?? this.defaultMaxDuration(),
       maxVoices: this.maxVoices(),
     };
-    const sent = this.broadcastAudio(audio);
+
+    // Envía el audio y, si llegó a algún overlay, registra el inicio en la
+    // compuerta global (intervalo mínimo entre alertas del Modo Chill).
+    const send = (): number => {
+      const sent = this.broadcastAudio(audio);
+      if (sent > 0) this.startGate?.markStart();
+      return sent;
+    };
+
+    // Modo Chill: no arranca antes del intervalo mínimo global. Si falta espera,
+    // el envío se programa (no bloquea el ciclo de canjes) y el canje ya se acepta.
+    const delayMs = this.startGate ? this.startGate.remainingMs() : 0;
+    if (delayMs > 0) {
+      const timer = setTimeout(send, delayMs);
+      timer.unref?.();
+      await this.resolveEvent(event, "accept");
+      this.logger?.(
+        `rewards: ${reward.id} modo=superpuesto → disparó con retraso global (${Math.round(delayMs / 1000)} s)`,
+      );
+      return { ...base, outcome: "fired", ruleId: reward.ruleId ?? undefined };
+    }
+
+    const sent = send();
     if (sent === 0) {
       this.logger?.(`rewards: ${reward.id} modo=superpuesto → omitido (sin overlay conectado)`);
       return { ...base, outcome: "skipped", ruleId: reward.ruleId ?? undefined, reason: "sin overlay conectado" };

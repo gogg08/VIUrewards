@@ -568,6 +568,88 @@
                 </div>
               </div>
             </div>
+
+            <!-- Controles globales de reproducción, al fondo del panel de Cola.
+                 Queda fijo abajo aunque la lista de la cola tenga scroll (es un
+                 hermano de `.box-body`, no parte de su contenido desplazable). -->
+            <div class="queue-global" x-show="rightTab === 'queue'" x-cloak>
+              <p class="queue-global-label">Global</p>
+              <div class="queue-global-row">
+                <span class="queue-global-name" id="global-audio-only-name">Solo audio</span>
+                <button
+                  type="button"
+                  role="switch"
+                  class="switch"
+                  :class="{ on: globalAudioOnly }"
+                  :aria-checked="globalAudioOnly ? 'true' : 'false'"
+                  aria-labelledby="global-audio-only-name"
+                  @click="toggleGlobalAudioOnly()"
+                >
+                  <span class="switch-knob"></span>
+                </button>
+              </div>
+              <div class="queue-global-row">
+                <span class="queue-global-name" id="chill-mode-name">Modo Chill</span>
+                <div class="queue-global-actions">
+                  <div class="dropdown" @click.outside="chillSettingsOpen = false">
+                    <button
+                      type="button"
+                      class="icon-btn ghost"
+                      aria-label="Ajustes del Modo Chill"
+                      :aria-expanded="chillSettingsOpen ? 'true' : 'false'"
+                      @click="chillSettingsOpen = !chillSettingsOpen"
+                    >
+                      <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true">
+                        <path
+                          d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54c-.59.24-1.13.56-1.62.94l-2.39-.96a.49.49 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"
+                        />
+                      </svg>
+                    </button>
+                    <div class="dropdown-menu chill-settings" x-show="chillSettingsOpen" x-cloak>
+                      <h3>Ajustes del Modo Chill</h3>
+                      <label class="field">
+                        <span>Volumen (<span x-text="chillVolumeLabel"></span>)</span>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="5"
+                          x-model.number="chillVolume"
+                          @change="saveChillVolume()"
+                        />
+                      </label>
+                      <label class="field">
+                        <span>Espera tras terminar (<span x-text="chillCooldownLabel"></span>)</span>
+                        <input
+                          type="number"
+                          min="0"
+                          max="600"
+                          x-model.number="chillCooldownSec"
+                          @change="saveChillCooldown()"
+                        />
+                      </label>
+                      <p class="muted queue-global-help">
+                        Segundos entre el FIN de una alerta y el inicio de la siguiente. 0 = sin espera.
+                      </p>
+                      <p class="muted queue-global-help" x-show="globalMessage">
+                        <span x-text="globalMessage"></span>
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    class="switch"
+                    :class="{ on: chillMode }"
+                    :aria-checked="chillMode ? 'true' : 'false'"
+                    aria-labelledby="chill-mode-name"
+                    @click="toggleChill()"
+                  >
+                    <span class="switch-knob"></span>
+                  </button>
+                </div>
+              </div>
+            </div>
           </div>
         </aside>
       </main>
