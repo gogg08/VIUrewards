@@ -11,7 +11,7 @@
  */
 
 import { randomBytes, randomUUID } from "node:crypto";
-import { createWriteStream, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { createWriteStream, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -57,7 +57,7 @@ import {
   type RateLimitStatus,
 } from "./auth.ts";
 import { parseCookies, serializeCookie } from "./cookies.ts";
-import { DownloadJobManager, type MediaPassthroughOptions } from "./jobs.ts";
+import { DownloadJobManager, JobManagerClosedError, type DownloadStopResult, type MediaPassthroughOptions } from "./jobs.ts";
 import { DEFAULT_PORT, readSettings, validateSettingsPatch, writeSettings } from "./settings.ts";
 import {
   EVENT_TYPES,
@@ -79,6 +79,8 @@ import { clipUrl, type GlobalPlayback } from "./protocol.ts";
 import { computeOverlayVersion } from "./build-version.ts";
 import { removeThumb, thumbExists, thumbsDir } from "../media/thumbs.ts";
 import { createClipRebuilder } from "../media/rebuild.ts";
+import { FileMediaOperationJournal, type MediaOperationJournal } from "../media/pending-media.ts";
+import { isTempFileName } from "../media/temp-patterns.ts";
 import { detectBinaries } from "../media/binaries.ts";
 import { runProcess } from "../media/run-process.ts";
 import { candidatesBytes, cleanupCandidates, libraryUsage, readToolVersions, updateYtdlp } from "./tools.ts";
@@ -88,6 +90,7 @@ import {
   createFileLogger,
   readLogsForViewer,
   LOG_LEVELS,
+  type FileLogger,
   type LogLevel,
 } from "./logs.ts";
 import { hasMediaExtension, mediaExtensionOf } from "../media/formats.ts";
@@ -96,6 +99,13 @@ import { StartGate } from "./start-gate.ts";
 import { attachWebSocket } from "./ws.ts";
 
 export type { MediaPassthroughOptions } from "./jobs.ts";
+
+/** Plazo por defecto del cierre ordenado dentro de `stop()` (el plazo duro final lo pone el arranque). */
+export const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10_000;
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 const DEFAULT_WEB_DIR = fileURLToPath(new URL("../../web", import.meta.url));
 const DEFAULT_OVERLAY_HTML = fileURLToPath(new URL("../../overlay/index.html", import.meta.url));
@@ -145,6 +155,18 @@ export interface ServerOptions {
   overlayKey?: string;
   /** Ejecutor de procesos, inyectable en tests. */
   run?: MediaOptions["run"];
+  /**
+   * Libro de operaciones de media (conversiones/subidas en curso). Por defecto se
+   * crea uno en `logDir`. Inyectable en tests.
+   */
+  journal?: MediaOperationJournal;
+  /**
+   * Cancelador de los procesos externos vivos (supervisor). Se inyecta desde el
+   * arranque para que la salida forzada pueda matarlos sin esperar; en tests no
+   * hace falta. Todas las rutas que ejecutan binarios usan `run`, que ya viene
+   * registrando sus procesos en ese supervisor.
+   */
+  processes?: { killAllNow(): void };
   /**
    * Si es `true` (por defecto), la cola no arranca un ítem hasta que haya un
    * overlay conectado. En tests headless (sin socket) se pasa `false`.
@@ -200,8 +222,24 @@ export interface AppServer {
   getOverlayKey(): string;
   /** Ruta del archivo de log del servidor (visor en Ajustes → Avanzado). */
   logPath: string;
+  /**
+   * Carpetas que la limpieza de arranque necesita conocer para coincidir con las
+   * que usa este servidor (temporales de subidas y libro de operaciones).
+   */
+  uploadsDir: string;
+  journalPath: string | null;
+  /** Logger de archivo. El dueño del proceso lo cierra al final del apagado. */
+  logger: FileLogger;
+  /** `true` desde que empezó el cierre: no se acepta trabajo nuevo. */
+  isShuttingDown(): boolean;
+  /** Cierre de emergencia de los procesos externos (no espera). */
+  killProcessesNow(): void;
   start(): Promise<{ port: number; host: string; url: string; overlayUrl: string; dashboardUrl: string }>;
-  stop(): Promise<void>;
+  /**
+   * Cierre ordenado e idempotente. NO cierra la base ni el logger: esos son del
+   * dueño del proceso (ver `docs/dashboard.md`, «Ciclo de vida»).
+   */
+  stop(options?: { timeoutMs?: number }): Promise<void>;
 }
 
 interface EnqueueBody {
@@ -436,6 +474,13 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   mkdirSync(uploadsDir, { recursive: true });
 
   const auth = new AuthManager(db, options.auth);
+
+  // Libro de operaciones de media (conversiones/subidas en curso). Se persiste en
+  // `logs/pending-media.txt` para sobrevivir a un cierre abrupto: la limpieza de
+  // arranque lo usa como evidencia. Ver `src/media/pending-media.ts`.
+  const journal =
+    options.journal ?? new FileMediaOperationJournal(join(logDir));
+  const journalPath = journal.path;
   let overlayKey =
     options.overlayKey ??
     getOrCreateSecret(db, SETTING_OVERLAY_KEY, () => randomBytes(24).toString("base64url"));
@@ -453,6 +498,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       };
     },
     run,
+    journal,
     localResolve: () => {
       const settings = readSettings(db);
       return {
@@ -585,6 +631,52 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
   const finishReward = (rewardId: string): void => {
     setRewardLastFired(db, rewardId, nowMs());
     logDebug("debug", "dispatch", `rewards: ${rewardId} terminó; cooldown sellado`);
+  };
+
+  /** `true` mientras se está cerrando: no se acepta trabajo nuevo. */
+  let shuttingDown = false;
+  /** Cierre en curso (idempotente: dos llamadas comparten la misma promesa). */
+  let stopping: Promise<void> | null = null;
+
+  /**
+   * Borra los temporales de ESTA sesión (cierre ordenado).
+   *
+   * Se ejecuta recién después de `jobs.stop()`: los procesos externos ya
+   * terminaron y ningún trabajo sigue vivo, así que lo que quede con nombre de
+   * temporal es huérfano. No llama a ninguna operación de red ni de media.
+   *
+   * Solo toca nombres de `temp-patterns.ts` (nunca un archivo de clip). Si algo
+   * falla, se ignora: el cierre no puede depender de esta limpieza.
+   */
+  const removeSessionTemporaries = (): string[] => {
+    const removed: string[] = [];
+    if (jobs.hasActiveFileWork()) {
+      // Un trabajo que recibe/convierte un archivo todavía puede estar escribiendo:
+      // no se barre debajo. Lo que quede lo maneja la limpieza del próximo
+      // arranque (con su antigüedad mínima).
+      return removed;
+    }
+    // Los `.upload` los borra cada trabajo (en `cancel()` y en su `finally`);
+    // `.uploads/` queda fuera de este barrido a propósito.
+    let names: string[];
+    try {
+      names = readdirSync(mediaDir);
+    } catch {
+      return removed;
+    }
+    for (const name of names) {
+      if (!isTempFileName(name)) continue;
+      const path = join(mediaDir, name);
+      try {
+        const stats = lstatSync(path);
+        if (!stats.isFile() || stats.isSymbolicLink()) continue;
+        rmSync(path, { force: true });
+        removed.push(name);
+      } catch {
+        // Se deja para la limpieza de arranque.
+      }
+    }
+    return removed;
   };
 
   const waiter = new CooldownWaiter({
@@ -1128,6 +1220,15 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       }
     };
     api.addHook("preHandler", requireSession);
+    // Cierre en curso: no se acepta trabajo nuevo (descargas, canjes, cambios).
+    api.addHook("onRequest", async (_request, reply) => {
+      if (!shuttingDown) return;
+      reply.code(503).send({
+        ok: false,
+        reason: "SHUTTING_DOWN",
+        message: "VIUrewards se está cerrando. Esperá a que termine y volvé a abrirlo.",
+      });
+    });
 
     // Borra las recompensas que usan un clip, una por una, reutilizando el flujo de
     // `RewardService.remove` (rechazo de canjes pendientes). Si alguna pide
@@ -1284,7 +1385,16 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     api.post<{ Body: { url: string } }>(
       "/api/download",
       { schema: { body: { type: "object", additionalProperties: false, required: ["url"], properties: { url: { type: "string", minLength: 1, maxLength: 2048 } } } } },
-      async (request) => ({ ok: true, job: jobs.create(request.body.url) }),
+      async (request, reply) => {
+        try {
+          return { ok: true, job: jobs.create(request.body.url) };
+        } catch (error) {
+          if (error instanceof JobManagerClosedError) {
+            return reply.code(503).send({ ok: false, reason: "SHUTTING_DOWN", message: error.message });
+          }
+          throw error;
+        }
+      },
     );
 
     // Subida de un archivo local (Etapa 3B). Se escribe con streaming a un
@@ -1332,7 +1442,16 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
           .code(413)
           .send({ ok: false, reason: "TOO_BIG", message: "El archivo supera el tamaño máximo configurado." });
       }
-      return { ok: true, job: jobs.createLocal(tempPath, filename) };
+      try {
+        return { ok: true, job: jobs.createLocal(tempPath, filename) };
+      } catch (error) {
+        // El servidor se está cerrando: el temporal recién recibido no se procesa.
+        rmSync(tempPath, { force: true });
+        if (error instanceof JobManagerClosedError) {
+          return reply.code(503).send({ ok: false, reason: "SHUTTING_DOWN", message: error.message });
+        }
+        throw error;
+      }
     });
 
     api.get("/api/jobs", async () => ({ jobs: jobs.list() }));
@@ -1453,8 +1572,8 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       return { ok: true, removed };
     });
 
-    // Revisión de la biblioteca a demanda (misma reconciliación del arranque).
-    // Devuelve el mismo aviso que el dashboard muestra al iniciar.
+    // Revisión de la biblioteca a demanda (misma reconciliación del arranque,
+    // sin la evidencia de temporales: esa es solo del arranque).
     api.post("/api/clips/reconcile", async () => {
       const result = await reconcileClips(db, mediaDir, {
         rebuild: createClipRebuilder({ mediaDir, run, binarySearch: mediaOptions.binarySearch, logsDir: mediaOptions.logsDir }),
@@ -1996,6 +2115,12 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     coordinator,
     getOverlayKey: () => overlayKey,
     logPath,
+    uploadsDir,
+    journalPath: journalPath ?? null,
+    logger,
+    isShuttingDown: () => shuttingDown,
+    /** Salida forzada: mata los procesos externos sin esperar (segunda señal o timeout). */
+    killProcessesNow: () => options.processes?.killAllNow(),
     async start() {
       try {
         await app.listen({ port, host });
@@ -2030,10 +2155,81 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         dashboardUrl: `${url}/`,
       };
     },
-    async stop() {
-      for (const integration of integrations) await integration.stop();
-      await hub.close();
-      await app.close();
+    /**
+     * Cierre ordenado. Es idempotente: la segunda llamada (y las siguientes)
+     * reciben la MISMA promesa, así nunca corren dos secuencias destructivas en
+     * paralelo.
+     *
+     * Orden (de dependencias reales, no arbitrario):
+     * 1. `shuttingDown`: `/api/*` responde 503 y no se crean trabajos nuevos.
+     * 2. Integraciones (polling de Kick): dejar de producir trabajo.
+     * 3. Trabajos en curso: cancelar de verdad (yt-dlp/ffmpeg) y esperar.
+     * 4. Esperas de cooldown y audios superpuestos diferidos: cancelarlos.
+     * 5. Timers de la cola (`unref` ya no alcanza: se limpian).
+     * 6. WebSocket (overlays) y HTTP. `app.close()` deja terminar las requests
+     *    en vuelo; el plazo duro lo pone `scripts/start.ts`.
+     * 7. Solo acá la base y el logger ya no se necesitan (los cierra el dueño).
+     */
+    stop(options: { timeoutMs?: number } = {}): Promise<void> {
+      if (stopping) return stopping;
+      shuttingDown = true;
+      const timeoutMs = options.timeoutMs ?? DEFAULT_SHUTDOWN_TIMEOUT_MS;
+      stopping = (async () => {
+        const startedAt = Date.now();
+        logger.info("cierre: cerrando el servidor\u2026");
+
+        for (const integration of integrations) {
+          try {
+            await integration.stop();
+          } catch (error) {
+            logger.warn(`cierre: no se pudo detener ${integration.id}: ${describeError(error)}`);
+          }
+        }
+
+        let jobsResult: DownloadStopResult = { cancelled: 0, timedOut: false };
+        try {
+          logger.info("cierre: deteniendo descargas y conversiones en curso\u2026");
+          jobsResult = await jobs.stop({ timeoutMs: Math.max(1_000, timeoutMs - (Date.now() - startedAt)) });
+        } catch (error) {
+          logger.error(`cierre: falló el cierre de las descargas: ${describeError(error)}`);
+        }
+        if (jobsResult.timedOut) logger.warn("cierre: hubo descargas que no terminaron en el plazo");
+
+        // Los procesos ya terminaron: todo temporal vivo de esta sesión es
+        // huérfano. Se borran AHORA (no hace falta esperar 24 h: el proceso que
+        // los escribía ya no existe y no hay otra instancia con la base).
+        try {
+          const removed = removeSessionTemporaries();
+          if (removed.length > 0) logger.info(`cierre: ${removed.length} temporal(es) de esta sesión eliminados`);
+        } catch (error) {
+          logger.warn(`cierre: no se pudieron limpiar los temporales: ${describeError(error)}`);
+        }
+
+        // Esperas de cooldown (canjes en espera) y audios superpuestos diferidos.
+        for (const { entries } of waiter.discardAll()) {
+          if (entries.length > 0) logger.info(`cierre: ${entries.length} canje(s) en espera descartados`);
+        }
+        waiter.stop();
+        dispatcher.cancelDeferred();
+        queue.dispose();
+
+        try {
+          await hub.close();
+        } catch (error) {
+          logger.warn(`cierre: no se pudo cerrar el WebSocket: ${describeError(error)}`);
+        }
+        try {
+          await app.close();
+        } catch (error) {
+          logger.warn(`cierre: no se pudo cerrar el servidor HTTP: ${describeError(error)}`);
+        }
+
+        logger.info(
+          `cierre: servidor detenido en ${Date.now() - startedAt} ms` +
+            (jobsResult.cancelled > 0 ? ` (${jobsResult.cancelled} trabajo(s) cancelados).` : "."),
+        );
+      })();
+      return stopping;
     },
   };
 }

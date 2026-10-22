@@ -135,6 +135,10 @@ export class KickEventSource implements EventSource {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private failures = 0;
+  /** Generación del ciclo: cada `stop()` la sube y corta el ciclo en vuelo. */
+  private generation = 0;
+  /** Cancela el ciclo de polling en vuelo (para no escribir en la base al cerrar). */
+  private inFlight: AbortController | null = null;
 
   constructor(options: KickEventSourceOptions) {
     this.api = options.api;
@@ -165,6 +169,12 @@ export class KickEventSource implements EventSource {
     this.running = false;
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
+    // Un ciclo en vuelo tiene que dejar de escribir en la base: el servidor cierra
+    // SQLite después de esto. Los canjes ya emitidos no se deshacen (la base es
+    // coherente); simplemente no se procesan los restos del ciclo.
+    this.generation += 1;
+    this.inFlight?.abort();
+    this.inFlight = null;
   }
 
   isRunning(): boolean {
@@ -179,9 +189,15 @@ export class KickEventSource implements EventSource {
   /** Un ciclo de polling. Público para tests y para el botón "Probar conexión". */
   async pollOnce(): Promise<void> {
     if (!this.enabled()) return;
+    const generation = this.generation;
+    const controller = new AbortController();
+    this.inFlight = controller;
+    /** ¿Este ciclo sigue vigente? (no se cerró el polling mientras corría). */
+    const live = (): boolean => !controller.signal.aborted && generation === this.generation;
     const checkedAt = this.now();
     try {
       const items = await this.fetchPending();
+      if (!live()) return;
       // Dedupe dentro del mismo ciclo (la paginación puede repetir un ítem) y contra la base.
       const seen = new Set<string>();
       const fresh = items.filter((item) => {
@@ -191,17 +207,25 @@ export class KickEventSource implements EventSource {
         return true;
       });
       const names = await this.resolveNames(fresh.map((item) => item.redemption.redeemer.user_id));
+      if (!live()) return;
       // Los canjes de un mismo ciclo se procesan DE A UNO, ordenados por
       // `redeemed_at`: así la comprobación y el registro del cooldown son
       // deterministas y dos canjes no entran en carrera.
       const ordered = [...fresh].sort(
         (a, b) => this.redeemedAt(a, checkedAt) - this.redeemedAt(b, checkedAt),
       );
-      for (const item of ordered) await this.emitRedemption(item, names, checkedAt);
+      for (const item of ordered) {
+        if (!live()) return;
+        await this.emitRedemption(item, names, checkedAt);
+      }
+      if (!live()) return;
       this.failures = 0;
       this.stats.recordCheck(checkedAt, `OK: ${fresh.length} canje(s) nuevo(s)`, null);
     } catch (error) {
+      if (!live()) return;
       this.handleFailure(error, checkedAt);
+    } finally {
+      if (this.inFlight === controller) this.inFlight = null;
     }
   }
 

@@ -148,6 +148,12 @@ export interface ReconcileResult {
    * metadata y no había sidecar). Se registran, no se borran del disco.
    */
   skipped: string[];
+  /**
+   * Archivos que NO se importaron por tener evidencia de una conversión
+   * interrumpida (solo con `options.evidence`). Se informan; los elimina la
+   * limpieza de arranque, no esta función.
+   */
+  interrupted: string[];
   /** ¿Se abortó sin tocar nada? (carpeta de medios ausente o ilegible). */
   aborted: boolean;
   /** Motivo del abort o resumen, para el log y el aviso del dashboard. */
@@ -161,6 +167,13 @@ export interface RebuiltClip {
   sizeBytes: number;
   sourceUrl: string;
   hasVideo: boolean;
+  /**
+   * Opcional: la operación que reconstruyó el archivo informa que es una
+   * salida de conversión interrumpida (ver `src/media/pending-media.ts`). Si el
+   * llamador pasa `evidence`, los archivos con `interrupted === true` NO se
+   * importan: los borra la limpieza de arranque.
+   */
+  evidence?: { interrupted: boolean; reason?: string };
 }
 
 export interface ReconcileOptions {
@@ -172,6 +185,13 @@ export interface ReconcileOptions {
    * pudo.
    */
   rebuild?: (id: string, file: string, filePath: string) => Promise<RebuiltClip | null>;
+  /**
+   * ¿Se respeta `evidence.interrupted`? Si es `true` (lo usa el arranque), un
+   * archivo que la app sabe que quedó de una conversión interrumpida no se
+   * importa: se registra y lo elimina la limpieza de temporales. Por defecto
+   * `false` (comportamiento histórico: se importa todo archivo con metadata).
+   */
+  evidence?: boolean;
   /** Escribe el resultado en el log (en español, sin secretos). */
   log?: (message: string) => void;
 }
@@ -308,11 +328,12 @@ export async function reconcileClips(
   const missing: string[] = [];
   const restored: string[] = [];
   const skipped: string[] = [];
+  const interrupted: string[] = [];
   const log = options.log ?? (() => {});
 
   const scan = scanMediaDir(mediaDir);
   if (!scan.ok) {
-    return { added, missing, restored, skipped, aborted: true, message: scan.message };
+    return { added, missing, restored, skipped, interrupted, aborted: true, message: scan.message };
   }
   const files = scan.files;
 
@@ -325,13 +346,14 @@ export async function reconcileClips(
   // proteger: es un no-op silencioso, no un aviso alarmante.
   if (files.size === 0 && scan.directories === 0) {
     if (existing.size === 0) {
-      return { added, missing, restored, skipped, aborted: false };
+      return { added, missing, restored, skipped, interrupted, aborted: false };
     }
     return {
       added,
       missing,
       restored,
       skipped,
+      interrupted,
       aborted: true,
       message: "La carpeta de medios está vacía. No se modificó la biblioteca.",
     };
@@ -347,6 +369,11 @@ export async function reconcileClips(
     if (!rebuilt) {
       skipped.push(file);
       log(`Reconciliación: se omitió ${file} (no se pudo leer su metadata).`);
+      continue;
+    }
+    if (options.evidence === true && rebuilt.evidence?.interrupted === true) {
+      interrupted.push(file);
+      log(`Reconciliación: ${file} quedó de una conversión interrumpida; no se importa.`);
       continue;
     }
     upsertClip(db, {
@@ -384,5 +411,5 @@ export async function reconcileClips(
     }
   }
 
-  return { added, missing, restored, skipped, aborted: false };
+  return { added, missing, restored, skipped, interrupted, aborted: false };
 }

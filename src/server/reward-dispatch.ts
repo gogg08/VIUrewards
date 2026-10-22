@@ -103,6 +103,8 @@ export class RewardDispatcher {
   private readonly markPlay?: RewardDispatcherOptions["markPlay"];
   private readonly startGate?: StartGateLike;
   private readonly logger?: (message: string) => void;
+  /** Envíos superpuestos diferidos por el intervalo global (Modo Chill). */
+  private readonly deferred = new Set<ReturnType<typeof setTimeout>>();
 
   constructor(options: RewardDispatcherOptions) {
     this.db = options.db;
@@ -120,6 +122,21 @@ export class RewardDispatcher {
     this.markPlay = options.markPlay;
     this.startGate = options.startGate;
     this.logger = options.logger;
+  }
+
+  /**
+   * Cancela los envíos superpuestos que estaban esperando el intervalo global
+   * (cierre del servidor). Un `unref()` no alcanza: dejado vivo, enviaría audio
+   * después de cerrar el WebSocket.
+   */
+  cancelDeferred(): number {
+    let count = 0;
+    for (const timer of this.deferred) {
+      clearTimeout(timer);
+      count += 1;
+    }
+    this.deferred.clear();
+    return count;
   }
 
   /** Procesa un evento y devuelve el resultado (igual que el motor de reglas). */
@@ -265,8 +282,12 @@ export class RewardDispatcher {
     // el envío se programa (no bloquea el ciclo de canjes) y el canje ya se acepta.
     const delayMs = this.startGate ? this.startGate.remainingMs() : 0;
     if (delayMs > 0) {
-      const timer = setTimeout(send, delayMs);
+      const timer = setTimeout(() => {
+        this.deferred.delete(timer);
+        send();
+      }, delayMs);
       timer.unref?.();
+      this.deferred.add(timer);
       await this.resolveEvent(event, "accept");
       this.logger?.(
         `rewards: ${reward.id} modo=superpuesto → disparó con retraso global (${Math.round(delayMs / 1000)} s)`,

@@ -8,12 +8,14 @@
  * y la lista corta de `format_name`).
  */
 
-import { statSync } from "node:fs";
+import { statSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { detectBinaries, type FindBinaryOptions } from "./binaries.ts";
 import { hasMediaExtension } from "./formats.ts";
 import { probeMedia } from "./ingest.ts";
+import { checkInterruptedConversion, type MediaOperationJournal } from "./pending-media.ts";
+import { isTempFileName, downloadSourceId } from "./temp-patterns.ts";
 import { runProcess, type RunProcess } from "./run-process.ts";
 import type { RebuiltClip } from "../db/clips.ts";
 
@@ -25,6 +27,12 @@ export interface BuildRebuildClipOptions {
   binarySearch?: FindBinaryOptions;
   /** Ejecutor de procesos; inyectable en tests. */
   run?: RunProcess;
+  /**
+   * Libro de operaciones de media (arranque). Si viene, el rebuilder informa la
+   * evidencia de una conversión interrumpida: `reconcileClips` con
+   * `evidence: true` entonces NO la importa (la borra la limpieza).
+   */
+  journal?: MediaOperationJournal;
 }
 
 /**
@@ -35,6 +43,30 @@ export interface BuildRebuildClipOptions {
 function derivedTitle(id: string, hasVideo: boolean): string {
   const short = id.slice(0, 8);
   return hasVideo ? `Clip ${short}` : `Audio ${short}`;
+}
+
+/**
+ * Evidencia de que el archivo quedó de una conversión interrumpida: el libro
+ * declara un `encodes <id>` sin terminar y no quedan temporales de descarga
+ * (`<id>.src.*`) en `/media`. Sin libro (o sin la línea) no hay evidencia.
+ */
+function conversionEvidence(
+  journal: MediaOperationJournal,
+  mediaDir: string,
+  id: string,
+  file: string,
+): { interrupted: boolean; reason?: string } {
+  let pendingDownloads: string[] = [];
+  try {
+    pendingDownloads = readdirSync(mediaDir).filter(
+      (name) => name !== file && isTempFileName(name) && downloadSourceId(name) === id,
+    );
+  } catch {
+    // Si no se puede leer la carpeta, no hay evidencia y se conserva.
+    return { interrupted: false, reason: "No se pudo leer la carpeta de medios." };
+  }
+  const check = checkInterruptedConversion(journal, id, pendingDownloads);
+  return { interrupted: check.interrupted, reason: check.reason };
 }
 
 /**
@@ -76,6 +108,7 @@ export function createClipRebuilder(
       // Un clip reconstruido no tiene URL de origen (es un archivo local).
       sourceUrl: "",
       hasVideo: probe.media.hasVideo,
+      ...(options.journal ? { evidence: conversionEvidence(options.journal, mediaDir, id, file) } : {}),
     };
   };
 }

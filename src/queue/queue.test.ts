@@ -501,4 +501,26 @@ describe("AlertQueue - compuerta de inicio global", () => {
     queue.enqueue({ clipId: "b" });
     expect(queue.getState().current?.clipId).toBe("b");
   });
+
+  it("dispose() cancela el temporizador pendiente: la cola no promociona después del cierre", async () => {
+    const queue = new AlertQueue();
+    queue.setStartGate({ remainingMs: () => 60 });
+    queue.enqueue({ clipId: "a" });
+    queue.enqueue({ clipId: "b" });
+    // El primero suena y termina: la compuerta retiene al segundo con un timer.
+    queue.complete(queue.getState().current?.id);
+    expect(queue.getState().current).toBeNull();
+
+    queue.dispose();
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    // Sin dispose() el segundo habría arrancado al vencer el intervalo.
+    expect(queue.getState().current).toBeNull();
+    expect(queue.getState().pending.map((item) => item.clipId)).toEqual(["a", "b"]);
+  });
+
+  it("dispose() es idempotente y se puede llamar sin timer pendiente", () => {
+    const queue = new AlertQueue();
+    expect(() => queue.dispose()).not.toThrow();
+    queue.dispose();
+  });
 });

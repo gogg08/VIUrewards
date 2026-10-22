@@ -22,4 +22,8 @@ node_modules/
 # Base de datos local (Fase 3)
 /data/
 
+# Cerrojo de recursos compartidos (exclusividad de instancia). Se crea en la
+# raíz mientras la app corre: es estado local, nunca código.
+/.viurewards.lock
+
 # Dashboard: Alpine servido como archivo local (no CDN). No se ignora.

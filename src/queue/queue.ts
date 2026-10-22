@@ -306,6 +306,15 @@ export class AlertQueue {
     // contaría como «sonando» y dejaría la compuerta abierta para la siguiente.
   }
 
+  /**
+   * Cierre: limpia el temporizador de la compuerta y deja de promocionar. No
+   * borra el estado (los ítems pendientes quedan visibles), solo garantiza que no
+   * quede ningún timer vivo después de cerrar.
+   */
+  dispose(): void {
+    this.clearGateTimer();
+  }
+
   /** Programa el próximo intento de arranque para cuando se cumpla el intervalo. */
   private scheduleGate(ms: number): void {
     this.clearGateTimer();

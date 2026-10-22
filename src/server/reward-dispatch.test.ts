@@ -606,4 +606,32 @@ describe("modo superpuesto: compuerta de inicio global", () => {
     expect(h.audios).toHaveLength(2);
     expect(starts).toBe(2);
   });
+
+  it("cancelDeferred() descarta el audio diferido: no suena después del cierre", async () => {
+    let lastStart = 0;
+    const h = makeHarness({
+      startGate: {
+        remainingMs: () => (lastStart ? Math.max(0, 120 - (Date.now() - lastStart)) : 0),
+        markStart: () => {
+          lastStart = Date.now();
+        },
+        markEnd: () => {},
+      },
+    });
+    addClip(h.db, "clip-1", true);
+    upsertReward(h.db, reward({ repetition: "overlap" }));
+
+    await h.dispatcher.process(rewardEvent("c1"));
+    const second = await h.dispatcher.process(rewardEvent("c2"));
+    // El canje se aceptó igual, pero el envío quedó programado.
+    expect(second.outcome).toBe("fired");
+    expect(h.audios).toHaveLength(1);
+
+    expect(h.dispatcher.cancelDeferred()).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Sin cancelDeferred() el segundo audio habría sonado al vencer el intervalo.
+    expect(h.audios).toHaveLength(1);
+    // Idempotente: ya no queda nada que cancelar.
+    expect(h.dispatcher.cancelDeferred()).toBe(0);
+  });
 });

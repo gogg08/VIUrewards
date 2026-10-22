@@ -31,7 +31,9 @@ import { hasMediaExtension } from "./formats.ts";
 import { writeProcessLog } from "./logs.ts";
 import { runProcess, type ProcessResult, type RunProcess } from "./run-process.ts";
 import { generateThumbnail } from "./thumbs.ts";
+import type { MediaOperationJournal } from "./pending-media.ts";
 import type { Clip } from "./index.ts";
+import { CANCELLED_MESSAGE } from "./index.ts";
 import type { MediaErrorCode } from "./validate-url.ts";
 
 /** Opciones de la ingesta de un archivo local. */
@@ -61,6 +63,17 @@ export interface IngestLocalFileOptions {
   run?: RunProcess;
   /** Notifica la etapa en curso. */
   onStage?: (stage: IngestStage) => void;
+  /**
+   * Cancela la ingesta: ffprobe/ffmpeg se terminan y los archivos parciales de
+   * ESTA operación (nunca el archivo original) se borran.
+   */
+  signal?: AbortSignal;
+  /**
+   * Libro de operaciones de media (opcional). Registra `encodes <id>` mientras
+   * ffmpeg escribe el archivo final y hasta que queda el sidecar: así la
+   * limpieza de arranque reconoce una conversión interrumpida.
+   */
+  journal?: MediaOperationJournal;
 }
 
 /** Etapas visibles de la ingesta local. */
@@ -118,7 +131,7 @@ export interface ProbedMedia {
 
 export type ProbeResult =
   | { ok: true; media: ProbedMedia }
-  | { ok: false; message: string };
+  | { ok: false; message: string; cancelled?: boolean };
 
 /**
  * Formatos aceptados (por `format_name` de ffprobe). Es una lista corta y
@@ -161,9 +174,13 @@ export async function probeMedia(
   run: RunProcess,
   timeoutMs: number,
   logsDir: string,
+  signal?: AbortSignal,
 ): Promise<ProbeResult> {
   const args = buildFfprobeArgs(filePath);
-  const result = await run(ffprobeBin, args, { timeoutMs });
+  const result = await run(ffprobeBin, args, { timeoutMs, signal });
+  if (result.cancelled) {
+    return { ok: false, message: CANCELLED_MESSAGE, cancelled: true };
+  }
   if (result.timedOut || result.code !== 0) {
     writeProcessLog(logsDir, "ffprobe", toLog(ffprobeBin, args, result));
     return { ok: false, message: "El archivo no es un audio o video válido." };
@@ -236,6 +253,8 @@ export async function ingestLocalFile(
   const run = options.run ?? runProcess;
   const logsDir = options.logsDir ?? join(options.mediaDir, "..", "logs");
   const mediaDir = options.mediaDir;
+  const signal = options.signal;
+  const cancelled = (): boolean => signal?.aborted === true;
 
   if (!existsSync(sourcePath)) {
     return failure("DOWNLOAD_FAILED", "No se encontró el archivo a agregar.");
@@ -251,7 +270,10 @@ export async function ingestLocalFile(
   const detection = detectBinaries(options.binarySearch);
   if (!detection.ok) return failure("BINARY_MISSING", detection.message);
 
-  const probe = await probeMedia(detection.binaries.ffprobe, sourcePath, run, timeoutMs, logsDir);
+  const probe = await probeMedia(detection.binaries.ffprobe, sourcePath, run, timeoutMs, logsDir, signal);
+  if (cancelled() || ("cancelled" in probe && probe.cancelled)) {
+    return failure("DOWNLOAD_FAILED", CANCELLED_MESSAGE);
+  }
   if (!probe.ok) return failure("NOT_MEDIA", probe.message);
   if (!probe.media.hasAudio && !probe.media.hasVideo) {
     return failure("NOT_MEDIA", "El archivo no tiene audio ni video.");
@@ -297,10 +319,20 @@ export async function ingestLocalFile(
     ? buildFfmpegArgs(sourcePath, outputPath, { maxHeight })
     : buildAudioFfmpegArgs(sourcePath, outputPath);
   options.onStage?.("converting");
-  const convert = await run(ffmpegBin, ffmpegArgs, { timeoutMs });
+  // El archivo final puede quedar sin sidecar si el proceso muere: se declara.
+  options.journal?.begin("encodes", id);
+  const convert = await run(ffmpegBin, ffmpegArgs, { timeoutMs, signal });
+
+  // Cancelada: se borra la salida parcial de esta operación (el original nunca).
+  if (convert.cancelled || cancelled()) {
+    rmSync(outputPath, { force: true });
+    options.journal?.end("encodes", id);
+    return failure("CONVERT_FAILED", CANCELLED_MESSAGE);
+  }
 
   if (convert.timedOut) {
     rmSync(outputPath, { force: true });
+    options.journal?.end("encodes", id);
     writeProcessLog(logsDir, "ffmpeg", toLog(ffmpegBin, ffmpegArgs, convert));
     return failure(
       "TIMEOUT",
@@ -309,6 +341,7 @@ export async function ingestLocalFile(
   }
   if (convert.code !== 0 || !existsSync(outputPath)) {
     rmSync(outputPath, { force: true });
+    options.journal?.end("encodes", id);
     writeProcessLog(logsDir, "ffmpeg", toLog(ffmpegBin, ffmpegArgs, convert));
     return failure("CONVERT_FAILED", "No se pudo preparar el archivo. Revisá el log para más detalles.");
   }
@@ -325,10 +358,13 @@ export async function ingestLocalFile(
     local: true,
   };
   writeFileSync(join(mediaDir, `${id}.json`), JSON.stringify(meta, null, 2), "utf8");
+  // Sidecar escrito: la ingesta terminó (la fila la crea el trabajo).
+  options.journal?.end("encodes", id);
 
   // Miniatura real (sección 2.4): solo para clips CON imagen. Si falla, el clip
-  // se importa igual, sin miniatura (queda el respaldo en la tarjeta).
-  if (hasVideo) {
+  // se importa igual, sin miniatura (queda el respaldo en la tarjeta). Si la
+  // ingesta se cancela, no se genera.
+  if (hasVideo && !cancelled()) {
     await generateThumbnail(outputPath, id, {
       mediaDir,
       durationSec: probe.media.durationSec,
@@ -336,6 +372,7 @@ export async function ingestLocalFile(
       binarySearch: options.binarySearch,
       run: options.run,
       timeoutMs,
+      signal,
     });
   }
 

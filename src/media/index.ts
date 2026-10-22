@@ -25,6 +25,7 @@ import { buildFfmpegArgs, buildFfprobeArgs, buildYtdlpArgs } from "./args.ts";
 import { detectBinaries, type FindBinaryOptions } from "./binaries.ts";
 import { writeProcessLog } from "./logs.ts";
 import { runProcess, type ProcessResult, type RunProcess } from "./run-process.ts";
+import type { MediaOperationJournal } from "./pending-media.ts";
 import { generateThumbnail } from "./thumbs.ts";
 import {
   validateUrl,
@@ -55,6 +56,19 @@ export interface MediaOptions {
   jsRuntime?: boolean;
   /** Notifica la etapa en curso (para mostrar progreso en el dashboard). */
   onStage?: (stage: MediaStage) => void;
+  /**
+   * Cancela la operación completa: los procesos externos (yt-dlp, ffmpeg,
+   * ffprobe) se terminan de verdad y los archivos parciales de ESTA operación se
+   * borran antes de resolver con `CANCELLED`.
+   */
+  signal?: AbortSignal;
+  /**
+   * Libro de operaciones de media opcional (arranque). Si viene, se registra
+   * `downloads <id>` mientras corre yt-dlp y `encodes <id>` desde que existe el
+   * mp4 final hasta que se escribe el sidecar: así la limpieza de arranque sabe
+   * distinguir un mp4 de una conversión interrumpida de un archivo del usuario.
+   */
+  journal?: MediaOperationJournal;
 }
 
 /** Etapas visibles del proceso de media. */
@@ -75,6 +89,9 @@ export interface Clip {
 export type MediaResult =
   | { ok: true; clip: Clip }
   | { ok: false; reason: MediaErrorCode; message: string };
+
+/** Código con el que una operación cancelada informa el resultado. */
+export const CANCELLED_MESSAGE = "La operación se canceló.";
 
 export const DEFAULT_MEDIA_LIMITS = {
   maxDurationSec: 120,
@@ -225,10 +242,11 @@ async function probeOutputDuration(
   filePath: string,
   run: RunProcess,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ProbedClip | null> {
   const args = buildFfprobeArgs(filePath);
-  const result = await run(ffprobeBin, args, { timeoutMs });
-  if (result.timedOut || result.code !== 0) return null;
+  const result = await run(ffprobeBin, args, { timeoutMs, signal });
+  if (result.cancelled || result.timedOut || result.code !== 0) return null;
   let parsed: FfprobeOutput;
   try {
     parsed = JSON.parse(result.stdout) as FfprobeOutput;
@@ -291,6 +309,9 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
   const run = options.run ?? runProcess;
   const logsDir = options.logsDir ?? join(options.mediaDir, "..", "logs");
   const useJsRuntime = options.jsRuntime ?? nodeSupportsEjs();
+  const signal = options.signal;
+  const cancelled = (): boolean => signal?.aborted === true;
+  const journal = options.journal;
 
   const validation = validateUrl(url, {
     allowedDomains: options.allowedDomains ?? DEFAULT_ALLOWED_DOMAINS,
@@ -342,11 +363,23 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     jsRuntime: useJsRuntime ? "node" : undefined,
   });
   options.onStage?.("downloading");
-  const download = await run(ytdlpBin, ytdlpArgs, { timeoutMs, cwd: mediaDir });
+  journal?.begin("downloads", id);
+  const download = await run(ytdlpBin, ytdlpArgs, { timeoutMs, cwd: mediaDir, signal });
   const downloadLog = { command: ytdlpBin, args: ytdlpArgs, result: download };
+
+  // Cancelada: el supervisor ya esperó a que yt-dlp termine. Se borra lo que haya
+  // dejado ESTA operación (mismo `<id>.src.*`), nunca otro archivo.
+  if (download.cancelled || cancelled()) {
+    const partial = findDownloadedSource(mediaDir, id);
+    if (partial) rmSync(partial, { force: true });
+    rmSync(infoPath, { force: true });
+    journal?.end("downloads", id);
+    return failure("DOWNLOAD_FAILED", CANCELLED_MESSAGE);
+  }
 
   if (download.timedOut) {
     rmSync(infoPath, { force: true });
+    journal?.end("downloads", id);
     return logFailure(
       logsDir,
       "yt-dlp",
@@ -363,6 +396,7 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
   if (download.code !== 0 || !source) {
     if (source) rmSync(source, { force: true });
     rmSync(infoPath, { force: true });
+    journal?.end("downloads", id);
     const reason = classifyYtdlpFailure(download);
     return logFailure(
       logsDir,
@@ -381,6 +415,7 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
   if (!isUsableDownload(source, info)) {
     rmSync(source, { force: true });
     rmSync(infoPath, { force: true });
+    journal?.end("downloads", id);
     return logFailure(
       logsDir,
       "yt-dlp",
@@ -394,17 +429,32 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
   if (sourceSize > maxBytes) {
     rmSync(source, { force: true });
     rmSync(infoPath, { force: true });
+    journal?.end("downloads", id);
     return failure("TOO_BIG", downloadFailureMessage("TOO_BIG", { maxDurationSec, maxBytes }));
   }
 
   const ffmpegBin = detection.binaries.ffmpeg;
   const ffmpegArgs = buildFfmpegArgs(source, outputPath, { maxHeight });
   options.onStage?.("converting");
-  const convert = await run(ffmpegBin, ffmpegArgs, { timeoutMs });
+  // Desde acá hasta el sidecar, el mp4 final puede existir sin fila: se declara
+  // en el libro para que la limpieza de arranque sepa qué hacer con él.
+  journal?.begin("encodes", id);
+  const convert = await run(ffmpegBin, ffmpegArgs, { timeoutMs, signal });
   rmSync(source, { force: true });
   rmSync(infoPath, { force: true });
+  journal?.end("downloads", id);
+
+  // Cancelada durante la conversión: el mp4 puede estar incompleto. Se borra
+  // (incluido el `.part`) y NO se registra como clip.
+  if (convert.cancelled || cancelled()) {
+    rmSync(outputPath, { force: true });
+    rmSync(`${outputPath}.part`, { force: true });
+    journal?.end("encodes", id);
+    return failure("CONVERT_FAILED", CANCELLED_MESSAGE);
+  }
 
   if (convert.timedOut) {
+    journal?.end("encodes", id);
     return logFailure(
       logsDir,
       "ffmpeg",
@@ -414,6 +464,7 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     );
   }
   if (convert.code !== 0 || !existsSync(outputPath)) {
+    journal?.end("encodes", id);
     return logFailure(
       logsDir,
       "ffmpeg",
@@ -432,11 +483,19 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     outputPath,
     run,
     timeoutMs,
+    signal,
   );
+  if (cancelled()) {
+    rmSync(outputPath, { force: true });
+    rmSync(`${outputPath}.part`, { force: true });
+    journal?.end("encodes", id);
+    return failure("CONVERT_FAILED", CANCELLED_MESSAGE);
+  }
   if (probed && probed.durationSec !== null && probed.durationSec > maxDurationSec) {
     const measured = Math.round(probed.durationSec);
     rmSync(outputPath, { force: true });
     rmSync(`${outputPath}.part`, { force: true });
+    journal?.end("encodes", id);
     return failure("TOO_LONG", tooLongMessage(maxDurationSec, measured));
   }
 
@@ -455,6 +514,8 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
     createdAt: new Date().toISOString(),
   };
   writeFileSync(metaPath, JSON.stringify(meta, null, 2), "utf8");
+  // Ya hay sidecar: el clip está registrado (la fila la crea el trabajo).
+  journal?.end("encodes", id);
 
   // Miniatura real (sección 2.4). Un video descargado por link siempre tiene
   // imagen. Si falla, el clip queda igual y sin miniatura.

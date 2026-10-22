@@ -9,6 +9,7 @@
 import { describe, expect, it } from "vitest";
 
 import { openMemoryDatabase } from "../../db/index.ts";
+import { hasProcessedEvent } from "../../db/processed-events.ts";
 import type { NormalizedEvent } from "../../events/index.ts";
 import { KickApi } from "./api.ts";
 import { KickEventSource, PollingStats } from "./source.ts";
@@ -246,5 +247,62 @@ describe("KickEventSource: resolve en lotes de 25", () => {
     fake.queue(() => json({ data: [{ id: "x", reason: "NOT_PENDING" }] }));
     const h = makeSource(fake);
     await expect(h.source.resolve("x", "accept")).rejects.toMatchObject({ reason: "NOT_PENDING" });
+  });
+});
+
+describe("KickEventSource: cierre ordenado (apagado del servidor)", () => {
+  it("stop() corta un ciclo en vuelo: no marca ni emite el canje que ya venía en la respuesta", async () => {
+    const db = openMemoryDatabase();
+    let releaseFetch: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let peticiones = 0;
+    // Servidor falso: la primera lista (pendientes) queda en vuelo hasta que el
+    // test la libera; el resto responde normal.
+    const fetchFn = async (input: string): Promise<Response> => {
+      peticiones += 1;
+      await gate;
+      if (input.includes("redemptions")) {
+        return json({
+          data: [{ reward: { id: "rw-1", title: "Alerta" }, redemptions: [redemption("r1")] }],
+          pagination: { next_cursor: "" },
+        });
+      }
+      return json({ data: [{ user_id: 7, name: "viewer" }] });
+    };
+    const stats = new PollingStats();
+    const api = new KickApi({
+      apiBaseUrl: "https://api.test",
+      fetchFn,
+      accessToken: async () => SECRET_TOKEN,
+    });
+    const source = new KickEventSource({ api, db, stats, intervalMs: () => 1000 });
+    const events: NormalizedEvent[] = [];
+    source.onEvent((event) => {
+      events.push(event);
+    });
+
+    const cycle = source.pollOnce();
+    // El cierre llega mientras la petición está en vuelo.
+    await Promise.resolve();
+    source.stop();
+    releaseFetch();
+    await cycle;
+
+    // Ni evento emitido ni canje marcado como procesado: el ciclo viejo ya no escribe.
+    expect(peticiones).toBeGreaterThan(0);
+    expect(events).toHaveLength(0);
+    expect(hasProcessedEvent(db, "kick", "r1")).toBe(false);
+  });
+
+  it("stop() es idempotente y deja la fuente detenida sin lanzar", () => {
+    const fake = fakeKick();
+    const h = makeSource(fake);
+    h.source.start();
+    expect(h.source.isRunning()).toBe(true);
+    h.source.stop();
+    h.source.stop();
+    expect(h.source.isRunning()).toBe(false);
   });
 });

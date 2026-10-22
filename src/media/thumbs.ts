@@ -38,6 +38,8 @@ export interface ThumbnailOptions {
   binarySearch?: FindBinaryOptions;
   /** Ejecutor de procesos; inyectable en tests. */
   run?: RunProcess;
+  /** Cancela la generación: ffmpeg se termina y la miniatura parcial se borra. */
+  signal?: AbortSignal;
 }
 
 export type ThumbnailResult =
@@ -102,7 +104,15 @@ export async function generateThumbnail(
     atSec: thumbTimestamp(options.durationSec),
     maxWidth,
   });
-  const result: ProcessResult = await run(detection.binaries.ffmpeg, args, { timeoutMs });
+  const result: ProcessResult = await run(detection.binaries.ffmpeg, args, {
+    timeoutMs,
+    signal: options.signal,
+  });
+
+  if (result.cancelled) {
+    rmSync(outputPath, { force: true });
+    return { ok: false, message: "La operación se canceló." };
+  }
 
   if (result.timedOut || result.code !== 0 || !existsSync(outputPath)) {
     rmSync(outputPath, { force: true });

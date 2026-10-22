@@ -19,6 +19,138 @@ español: probablemente **ya hay otra copia de VIUrewards corriendo** (quizá en
 otra terminal). Cerrá esa copia o elegí otro puerto. Si el puerto lo ocupa un
 programa ajeno, el mensaje también lo aclara.
 
+### Ciclo de vida: cierre ordenado
+
+El dueño del proceso es `scripts/start.ts`. `AppServer.stop()` **no** cierra la
+base ni el logger: eso lo hace el arranque al final (los tests comparten ese
+método sin ser dueños de la base).
+
+**Primera señal** (`SIGINT` = Ctrl+C, `SIGTERM`; en Windows también `SIGBREAK`)
+→ una única secuencia de cierre, en orden de dependencias:
+
+1. Se deja de aceptar trabajo: las rutas `/api/*` responden **503
+   `SHUTTING_DOWN`** y no se crean trabajos nuevos.
+2. Se detiene el **polling de Kick** (`stop()`): un ciclo en vuelo deja de
+   escribir en la base en cuanto vuelve de la red.
+3. Se **cancelan de verdad** las descargas/conversiones (`jobs.stop()`): se
+   aborta cada trabajo, se termina el proceso externo **y su árbol**, se borran
+   los parciales y se **espera** a que terminen. Un trabajo cancelado queda como
+   `error`, nunca como `listo`. Lo que estaba esperando turno no arranca.
+4. Se descartan las esperas de cooldown, los audios superpuestos diferidos
+   (`cancelDeferred()`) y el temporizador de la cola (`queue.dispose()`).
+5. Se cierran los WebSocket (overlays) y luego Fastify (`app.close()` termina
+   las peticiones en vuelo).
+6. Se loguea el resultado y se cierra la base y después el log, ya sin nada que
+   las use. Código de salida **0**.
+
+**Segunda señal** durante el cierre → salida **forzada** (código **1**): mata
+los procesos externos vivos sin esperar y sale, sin repetir el cierre. Es
+deliberada: no depende de que termine la misma operación que está bloqueada.
+
+**Plazo duro** (`DEFAULT_SHUTDOWN_TIMEOUT_MS`, 10 s) → si vence, se registra y
+se fuerza la salida (código 1). El temporizador **no** lleva `unref()`: tiene
+que estar vivo mientras se espera el cierre; se cancela al terminar.
+
+`stop()` es idempotente: la segunda llamada recibe la **misma** promesa, así que
+nunca corren dos secuencias destructivas en paralelo.
+
+**Cancelación real de procesos** (`src/media/run-process.ts`): todo proceso se
+lanza con `spawn` y argumentos en array (`shell: false`), con `detached: true`,
+y queda registrado en el supervisor mientras vive. Cancelar termina el árbol y
+**espera** al evento `close` antes de resolver (`cancelled: true`, nunca éxito).
+- **Windows**: `taskkill /PID <pid> /T /F` (spawn sin shell). El `/T` baja a los
+  descendientes (p. ej. el ffmpeg que lanza yt-dlp). Si el proceso sigue vivo se
+  reintenta (hasta 12 veces cada 250 ms).
+- **Unix**: `process.kill(-pid, "SIGKILL")` al grupo (el `detached` lo hace
+  líder), con caída al pid si el grupo ya no existe.
+- `cancelAll()` espera a que **todos** mueran antes de resolver.
+
+Limitación: depende del sistema operativo; probado en **Windows** (ver
+`tests/e2e/shutdown.test.ts`). En Unix no se ejecutó.
+
+**Lo que no hace todavía** (tareas aparte): el launcher de distribución.
+
+### Arranque: exclusividad de instancia y limpieza de temporales
+
+Antes de levantar el servidor, `scripts/start.ts` hace estas cosas, en este
+orden:
+
+1. **Toma la exclusividad de los recursos compartidos**
+   (`acquireSharedResourcesLock`, `src/db/instance-lock.ts`): un archivo oculto
+   `.viurewards.lock` en la **raíz de la instalación** (la carpeta que contiene
+   `media/`, `.uploads/` y `logs/`), creado con `openSync(..., "wx")` (atómico
+   en Windows y Unix) y con `{ pid, at }`.
+   - Dos copias con carpetas `data/` **distintas** pero el mismo `media/` sí se
+     ven entre sí (el cerrojo no vive en `data/`, vive en la raíz compartida).
+   - Un cerrojo de un proceso **que ya no existe** se libera solo; uno de un
+     proceso **vivo** se respeta aunque sea viejo. Uno **ilegible** se respeta
+     solo si es reciente.
+   - **Sin exclusividad la app NO arranca**: `main()` lanza
+     `SharedDataInUseError` antes de abrir SQLite, reconciliar o levantar el
+     servidor, y el punto de entrada sale con **código 3** y un mensaje en
+     español. Nunca borra el cerrojo de la otra instancia (solo se libera el que
+     creó esta).
+   - Si después de tomar el cerrojo falla la apertura de la base o el arranque
+     del servidor, el cerrojo propio se libera (no queda tomado a una copia que
+     no está corriendo).
+   - El cerrojo queda **fuera** de `media/`: la carpeta de medios la recorre la
+     reconciliación y es la que apunta OBS.
+   - Está en `.gitignore` (`/.viurewards.lock`): es estado local, no código.
+   - `scripts/play-test.ts` toma el **mismo** cerrojo sobre su cwd (o
+     `--shared-root=`), porque comparte `media/` y `logs/` con la app: si hay una
+     instancia viva, se niega a arrancar y sale sin tocar nada.
+2. **Abre la base** (`data/app.db`) con las migraciones.
+3. **Toma un segundo cerrojo de diagnóstico** en `data/instance.lock` (misma
+   mecánica). Su falta ya no se da en uso normal (el de la raíz lo garantiza);
+   el mensaje explica si hay una copia con otro `data/`.
+   No se usa un `BEGIN EXCLUSIVE` de SQLite (lo que se probó antes): una
+   transacción abierta dejaba al servidor sin poder escribir y una segunda
+   instancia moría con `SQLITE_BUSY`.
+4. **Limpia temporales huérfanos** (`src/media/cleanup.ts`), antes de crear el
+   servidor y antes de reconciliar la biblioteca, para que una conversión
+   interrumpida no se importe como clip:
+
+   | Qué es | Patrón (`src/media/temp-patterns.ts`) | Se borra |
+   | --- | --- | --- |
+   | Subida de archivo interrumpida | `<uuid>.upload` en `.uploads/` | si tiene más de 24 h |
+   | Descarga de yt-dlp | `<id>.src.*` (incluye `.info.json`, `.part`, `.ytdl`) | si tiene más de 24 h y el id no es de un clip registrado |
+   | Parcial de ffmpeg | `<id>.mp4.part` / `<id>.m4a.part` | ídem |
+   | Salida de conversión sin registrar | `<id>.mp4` / `<id>.m4a` **sin fila** | **solo** con evidencia |
+
+   **Evidencia** de una conversión interrumpida: el libro
+   `logs/pending-media.txt` tiene `encodes <id>` (la app misma declaró que estaba
+   escribiendo ese archivo y no llegó a registrarlo) **y** no quedan `.src.*`
+   vivos del mismo id. Sin evidencia, un `.mp4`/`.m4a` sin fila **nunca** se
+   borra: la reconciliación los importa a propósito.
+
+   Se conservan siempre: los clips registrados (y sus `.src`, que pueden ser la
+   única copia si falta el archivo), las miniaturas (`thumbs/`, que no se
+   recorre), los sidecars `<id>.json`, los archivos desconocidos, los temporales
+   de menos de 24 h y los de un clip del que la reconciliación ya vio que falta
+   su archivo. No hay recursión, no se siguen enlaces simbólicos y solo se miran
+   `media/` y `.uploads/`. Los errores (permisos, archivo en uso) se registran y
+   se sigue: un fallo de la limpieza **nunca** impide arrancar.
+
+   Limitación de la prueba: en Windows el caso del **enlace simbólico** se
+   **saltea** si el sistema exige permisos especiales para crearlo, y no hay un
+   caso con el archivo **abierto** por otro proceso; ambos están cubiertos por la
+   lógica (solo `lstat` de archivos regulares y errores registrados), no por una
+   prueba ejecutada.
+
+   Por qué 24 h: un temporal reciente puede pertenecer a una operación que otra
+   copia de la app todavía tiene abierta. La exclusividad de la raíz
+   compartida ya impide esa situación (una segunda copia no arranca), así que las
+   24 h son un margen de seguridad extra, no la única protección.
+
+   El libro vive en `logs/` (`MediaOperationJournal`): se escribe al empezar y al
+   terminar cada descarga, conversión y subida, así sobrevive a un cierre
+   abrupto. El arranque lo lee en **modo de solo lectura** (antes de crear el
+   libro de la sesión, que reescribe el archivo) y lo usa tanto para la limpieza
+   como para que la reconciliación no importe la salida interrumpida.
+   Al cerrarse la sesión, el servidor borra los temporales de `media/` de **esta**
+   sesión (los procesos ya no existen), sin tocar `.uploads/` ni un trabajo que
+   todavía recibe o convierte un archivo.
+
 ### Diagnóstico del overlay
 
 Con `CZERO_DEBUG=1` el servidor registra, además de lo habitual, el diagnóstico
