@@ -19,6 +19,53 @@ español: probablemente **ya hay otra copia de VIUrewards corriendo** (quizá en
 otra terminal). Cerrá esa copia o elegí otro puerto. Si el puerto lo ocupa un
 programa ajeno, el mensaje también lo aclara.
 
+### Dónde viven los datos (`VIUREWARDS_DATA_DIR`)
+
+Todas las rutas **mutables** las resuelve un único módulo,
+`src/server/paths.ts` (`resolveRuntimePaths`): es el **único** lugar que lee la
+variable. El resto de la app recibe las rutas ya resueltas.
+
+**Sin la variable** (desarrollo) se conserva la distribución histórica, todo
+bajo el directorio de trabajo:
+
+| Qué | Ruta histórica |
+| --- | --- |
+| Base SQLite | `data/app.db` |
+| Biblioteca de clips | `media/` (y `media/thumbs/`) |
+| Temporales de subidas | `.uploads/` |
+| Logs y `pending-media.txt` | `logs/` |
+| Herramientas administradas | `bin/` |
+| Cerrojo de recursos compartidos | `.viurewards.lock` (raíz) |
+
+**Con `VIUREWARDS_DATA_DIR`** (distribución) todos los recursos mutables viven
+en ese directorio, que debe ser una ruta **absoluta**. Así el código de la app
+se puede reemplazar al actualizar sin tocar los datos:
+
+| Qué | Ruta configurada |
+| --- | --- |
+| Base SQLite | `<datos>/app.db` (sin subcarpeta `data/`) |
+| Biblioteca de clips | `<datos>/media/` (y `<datos>/media/thumbs/`) |
+| Temporales de subidas | `<datos>/.uploads/` |
+| Logs y `pending-media.txt` | `<datos>/logs/` |
+| Herramientas administradas | `<datos>/bin/` |
+| Cerrojo de recursos compartidos | `<datos>/.viurewards.lock` |
+
+- Una ruta **relativa**, vacía o que apunta a algo que no es una carpeta **no
+  arranca**: se informa en español y el proceso sale con **código 2** (distinto
+del 3 de "datos en uso"). Nunca inicializa en otra carpeta en silencio.
+- El directorio de datos se crea si falta, junto con `bin/` y `logs/`.
+- Los **recursos estáticos** (`web/`, `overlay/`) **no** dependen de esta
+  variable: se resuelven con `import.meta.url`, así que cambiar el directorio de
+datos no los mueve.
+- Si configurás un directorio nuevo y todavía queda una base con contenido en la
+  ubicación heredada (`<cwd>/data/app.db`), el arranque lo **avisa** y sigue:
+  **no mueve, no copia y no borra nada**. Hay que copiar los datos a mano (o
+  quitar la variable).
+- El cerrojo se toma en el directorio de **datos** (no en la carpeta de la
+  versión), así que sigue siendo el mismo tras una actualización.
+- `scripts/play-test.ts` resuelve el **mismo** directorio de datos y toma el
+  mismo cerrojo; si se configuró, escribe ahí en vez de en el cwd.
+
 ### Ciclo de vida: cierre ordenado
 
 El dueño del proceso es `scripts/start.ts`. `AppServer.stop()` **no** cierra la
@@ -77,9 +124,12 @@ orden:
 
 1. **Toma la exclusividad de los recursos compartidos**
    (`acquireSharedResourcesLock`, `src/db/instance-lock.ts`): un archivo oculto
-   `.viurewards.lock` en la **raíz de la instalación** (la carpeta que contiene
+   `.viurewards.lock` en la **raíz de los datos** (la carpeta que contiene
    `media/`, `.uploads/` y `logs/`), creado con `openSync(..., "wx")` (atómico
    en Windows y Unix) y con `{ pid, at }`.
+   - En desarrollo la raíz es el directorio de trabajo; con
+     `VIUREWARDS_DATA_DIR` es el directorio de datos (así sobrevive a una
+     actualización que reemplaza la carpeta de la versión).
    - Dos copias con carpetas `data/` **distintas** pero el mismo `media/` sí se
      ven entre sí (el cerrojo no vive en `data/`, vive en la raíz compartida).
    - Un cerrojo de un proceso **que ya no existe** se libera solo; uno de un
@@ -88,18 +138,33 @@ orden:
    - **Sin exclusividad la app NO arranca**: `main()` lanza
      `SharedDataInUseError` antes de abrir SQLite, reconciliar o levantar el
      servidor, y el punto de entrada sale con **código 3** y un mensaje en
-     español. Nunca borra el cerrojo de la otra instancia (solo se libera el que
-     creó esta).
+     español (**no** es un error genérico: el launcher futuro debe leerlo como
+     "ya hay una instancia usando estos datos"). Nunca borra el cerrojo de la
+     otra instancia (solo se libera el que creó esta).
    - Si después de tomar el cerrojo falla la apertura de la base o el arranque
      del servidor, el cerrojo propio se libera (no queda tomado a una copia que
      no está corriendo).
    - El cerrojo queda **fuera** de `media/`: la carpeta de medios la recorre la
      reconciliación y es la que apunta OBS.
    - Está en `.gitignore` (`/.viurewards.lock`): es estado local, no código.
-   - `scripts/play-test.ts` toma el **mismo** cerrojo sobre su cwd (o
-     `--shared-root=`), porque comparte `media/` y `logs/` con la app: si hay una
-     instancia viva, se niega a arrancar y sale sin tocar nada.
-2. **Abre la base** (`data/app.db`) con las migraciones.
+   - `scripts/play-test.ts` toma el **mismo** cerrojo sobre la misma raíz que
+     resuelve el arranque, porque comparte `media/`, `.uploads/` y `logs/` con la
+     app: si hay una instancia viva, se niega a arrancar y sale sin tocar nada.
+   - **Contrato de rutas de `play-test.ts`** (corregido): primero resuelve y
+     normaliza TODAS las rutas efectivas y solo después toma el cerrojo. El
+     cerrojo se toma siempre sobre la raíz que **contiene** los tres
+     directorios que la herramienta escribe; `--shared-root` es solo una
+     **validación de coherencia** y nunca redirige el cerrojo a otra carpeta.
+     La precedencia es: `VIUREWARDS_DATA_DIR` → `--media-dir` (los demás
+     recursos van al padre de ese `media/`) → directorio de trabajo. Si la
+     combinación dejara algún recurso fuera de la raíz del cerrojo (por ejemplo,
+     medios en el directorio de datos y `--shared-root` en el del proyecto, o
+     `--media-dir` con un `--shared-root` que apunta a otro lado), la
+     herramienta **rechaza** la combinación con un mensaje en español que nombra
+     las rutas en conflicto, antes de descargar, escribir logs o tocar
+     `pending-media.txt`.
+2. **Abre la base** (`data/app.db`, o `<datos>/app.db` si está configurado) con
+   las migraciones.
 3. **Toma un segundo cerrojo de diagnóstico** en `data/instance.lock` (misma
    mecánica). Su falta ya no se da en uso normal (el de la raíz lo garantiza);
    el mensaje explica si hay una copia con otro `data/`.

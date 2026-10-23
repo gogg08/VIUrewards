@@ -64,7 +64,20 @@ export type MediaPassthroughOptions = Partial<
     | "binarySearch"
     | "jsRuntime"
   >
->;
+> & {
+  /**
+   * Directorio de herramientas administradas (Fase de distribución, Etapa 1).
+   * En modo configurado es `<VIUREWARDS_DATA_DIR>/bin` (absoluto); si no viene,
+   * la detección usa el histórico `bin` relativo al directorio de trabajo.
+   */
+  binDir?: string;
+  /**
+   * Ruta del Node que yt-dlp debe usar como runtime JS (`--js-runtimes
+   * node:<ruta>`) cuando se conoce (distribución portable). Si no viene, el
+   * comportamiento es el histórico: se usa el Node que corre la app.
+   */
+  nodeRuntime?: string;
+};
 
 /** Clip candidato a miniaturas (lo arma el servidor con la base). */
 export interface ThumbBackfillClip {

@@ -26,4 +26,8 @@ node_modules/
 # raíz mientras la app corre: es estado local, nunca código.
 /.viurewards.lock
 
+# Resumen de traspaso de una conversación externa: contexto de trabajo, no
+# documentación del proyecto. No se versiona.
+/resumen-continuar-proyecto-sin-tokens.md
+
 # Dashboard: Alpine servido como archivo local (no CDN). No se ignora.

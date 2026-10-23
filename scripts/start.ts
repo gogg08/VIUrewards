@@ -27,13 +27,19 @@
  * arranque termina con `SharedDataInUseError` (código 3) sin abrir SQLite, sin
  * reconciliar y sin levantar el servidor.
  *
+ * Rutas (Fase de distribución, Etapa 1): todas las rutas MUTABLES las resuelve
+ * `resolveRuntimePaths` (`src/server/paths.ts`), el único lugar que lee
+ * `VIUREWARDS_DATA_DIR`. Sin la variable se conserva la distribución histórica
+ * (todo bajo el directorio de trabajo); con la variable, base, medios, uploads,
+ * logs y `bin/` viven dentro del directorio de datos y el cerrojo se toma ahí.
+ * Los recursos estáticos del servidor no dependen de esta configuración.
+ *
  * Este archivo es el **dueño** de la base y del logger: `AppServer.stop()` no
  * los cierra (los tests y otros consumidores comparten ese método sin ser dueños
  * de la base). Se cierran acá, en ese orden y una sola vez.
  */
 
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { openDatabase, reconcileClips, type SqliteDatabase } from "../src/db/index.ts";
@@ -43,6 +49,15 @@ import { cleanupOrphanTemporaries, openMediaDir } from "../src/media/cleanup.ts"
 import { FileMediaOperationJournal } from "../src/media/pending-media.ts";
 import { createClipRebuilder } from "../src/media/rebuild.ts";
 import { processSupervisor } from "../src/media/run-process.ts";
+import {
+  INVALID_DATA_DIR_EXIT_CODE,
+  InvalidDataDirError,
+  describePaths,
+  legacyDataNotice,
+  prepareDataDir,
+  resolveRuntimePaths,
+  type RuntimePaths,
+} from "../src/server/paths.ts";
 import { createServer } from "../src/server/server.ts";
 import { readSettings } from "../src/server/settings.ts";
 import { createShutdownController, DEFAULT_SHUTDOWN_TIMEOUT_MS } from "../src/server/shutdown.ts";
@@ -118,11 +133,34 @@ function resolvePort(args: string[], db: SqliteDatabase): number {
 }
 
 async function main(): Promise<void> {
-  const root = process.cwd();
-  const mediaDir = join(root, "media");
-  const dataDir = join(root, "data");
-  const logsDir = join(root, "logs");
-  const uploadsDir = join(root, ".uploads");
+  // Rutas mutables: resueltas ANTES de tocar nada (cerrojo, base, carpetas). Una
+  // configuración inválida sale con `InvalidDataDirError` (código 2) y sin
+  // inicializar en otra carpeta. Sin `VIUREWARDS_DATA_DIR` esto devuelve
+  // exactamente las rutas históricas bajo el directorio de trabajo.
+  const resolved = resolveRuntimePaths();
+  if (!resolved.ok) throw new InvalidDataDirError(resolved.message);
+  const paths: RuntimePaths = resolved.paths;
+
+  // En modo configurado el directorio de datos puede no existir todavía; se crea
+  // (con `bin/` y `logs/`) antes del cerrojo, para que un problema de permisos se
+  // informe como tal y no como "datos en uso". En modo heredado no se crea nada
+  // nuevo: `logs/` y `.uploads/` los crea el arranque como siempre.
+  if (paths.mode === "configured") {
+    const prepared = prepareDataDir(paths.dataDir);
+    if (!prepared.ok) throw new InvalidDataDirError(prepared.message);
+  }
+
+  for (const warning of paths.warnings) console.warn(`Aviso: ${warning}`);
+
+  // Aviso si se configuró un directorio externo vacío y quedó una base anterior
+  // en la ubicación heredada: no se mueve ni se copia nada, solo se avisa.
+  const legacyNotice = legacyDataNotice(paths);
+  if (legacyNotice) console.warn(legacyNotice);
+
+  const mediaDir = paths.mediaDir;
+  const dataDir = paths.dataDir;
+  const logsDir = paths.logsDir;
+  const uploadsDir = paths.uploadsDir;
 
   // Exclusividad sobre los RECURSOS COMPARTIDOS (la raíz con `media/`,
   // `.uploads/` y `logs/`), ANTES de abrir la base: dos copias con `data/`
@@ -130,7 +168,11 @@ async function main(): Promise<void> {
   // SQLite. Si falta, se sale sin tocar nada (ni base, ni reconciliación, ni
   // servidor) y sin liberar el cerrojo ajeno: `acquireInstanceLock` solo borra
   // el archivo que creó esta instancia.
-  const sharedLock = acquireSharedResourcesLock(root, {
+  //
+  // En modo configurado la raíz es el directorio de datos persistente, así que el
+  // cerrojo no queda en una carpeta de versión que se reemplaza al actualizar.
+  const sharedLock = acquireSharedResourcesLock(paths.root, {
+    path: paths.lockPath,
     log: (message) => console.warn(`Aviso: ${message}`),
   });
   if (!sharedLock.acquired) {
@@ -141,7 +183,7 @@ async function main(): Promise<void> {
 
   let db: SqliteDatabase;
   try {
-    db = openDatabase(join(dataDir, "app.db"));
+    db = openDatabase(paths.dbPath);
   } catch (error) {
     // La base no se abrió: el cerrojo de esta instancia igual se libera.
     sharedLock.release();
@@ -150,10 +192,12 @@ async function main(): Promise<void> {
 
   // Segundo cerrojo (dentro de `data/`): diagnóstico de la carpeta de datos y
   // de la limpieza. La exclusividad real ya la garantiza el de arriba.
-  const lock: InstanceLock = acquireInstanceLock(join(dataDir, "app.db"), {
+  const lock: InstanceLock = acquireInstanceLock(paths.dbPath, {
     log: (message) => console.warn(`Aviso: ${message}`),
   });
   if (!lock.acquired) console.warn(`Aviso: ${lock.message}`);
+
+  console.log(`VIUrewards: ${describePaths(paths)}`);
 
   // El log del servidor vive fuera de /media. Se crea antes del libro y de la
   // limpieza para que el libro pueda persistirse desde el primer momento.
@@ -225,6 +269,14 @@ async function main(): Promise<void> {
     uploadsDir,
     logDir: logsDir,
     journal,
+    // Herramientas administradas: `bin/` del directorio de datos (absoluta). En
+    // modo heredado es `<cwd>/bin`, así que el comportamiento no cambia; en modo
+    // configurado sigue a los datos y el botón del dashboard actualiza ESE
+    // ejecutable, que una actualización de VIUrewards no reemplaza.
+    media: {
+      binDir: paths.binDir,
+      nodeRuntime: paths.nodeRuntime,
+    },
   });
   let info;
   try {
@@ -283,9 +335,15 @@ if (isEntryPoint) {
       process.exitCode = SHARED_DATA_IN_USE_EXIT_CODE;
       return;
     }
+    if (error instanceof InvalidDataDirError) {
+      // Ruta de datos mal configurada: NO se inicializó en otra carpeta.
+      console.error(`No se puede arrancar VIUrewards: ${error.reason}`);
+      process.exitCode = INVALID_DATA_DIR_EXIT_CODE;
+      return;
+    }
     console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
     process.exitCode = 1;
   });
 }
 
-export { main, SharedDataInUseError, SHARED_DATA_IN_USE_EXIT_CODE };
+export { main, SharedDataInUseError, SHARED_DATA_IN_USE_EXIT_CODE, InvalidDataDirError, INVALID_DATA_DIR_EXIT_CODE };

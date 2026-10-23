@@ -81,7 +81,7 @@ import { removeThumb, thumbExists, thumbsDir } from "../media/thumbs.ts";
 import { createClipRebuilder } from "../media/rebuild.ts";
 import { FileMediaOperationJournal, type MediaOperationJournal } from "../media/pending-media.ts";
 import { isTempFileName } from "../media/temp-patterns.ts";
-import { detectBinaries } from "../media/binaries.ts";
+import { detectBinaries, type FindBinaryOptions } from "../media/binaries.ts";
 import { runProcess } from "../media/run-process.ts";
 import { candidatesBytes, cleanupCandidates, libraryUsage, readToolVersions, updateYtdlp } from "./tools.ts";
 import { listGuideShots } from "./guide-shots.ts";
@@ -452,6 +452,14 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
       seed: String(processStartMs),
     });
   const mediaOptions: MediaPassthroughOptions = options.media ?? {};
+  // Búsqueda de binarios con el directorio administrado ya resuelto. TODA la
+  // detección del servidor (versiones, actualizador de yt-dlp, miniaturas,
+  // reconstrucción) usa esta misma, para que el dashboard informe y actualice el
+  // ejecutable que la app realmente ejecuta (Fase de distribución, Etapa 1).
+  const binarySearch: FindBinaryOptions = {
+    ...(mediaOptions.binarySearch ?? {}),
+    ...(mediaOptions.binDir ? { binDir: mediaOptions.binDir } : {}),
+  };
   // Ejecutor de procesos real por defecto (spawn con argumentos en array). En
   // tests se inyecta uno falso con `options.run`. Toda ruta del servidor que
   // ejecute un binario DEBE usar `run`, no `options.run`, para no quedar
@@ -506,7 +514,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
         maxBytes: settings.maxVideoBytes,
         timeoutMs: mediaOptions.timeoutMs,
         maxHeight: mediaOptions.maxHeight,
-        binarySearch: mediaOptions.binarySearch,
+        binarySearch,
         logsDir: mediaOptions.logsDir,
       };
     },
@@ -1576,7 +1584,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     // sin la evidencia de temporales: esa es solo del arranque).
     api.post("/api/clips/reconcile", async () => {
       const result = await reconcileClips(db, mediaDir, {
-        rebuild: createClipRebuilder({ mediaDir, run, binarySearch: mediaOptions.binarySearch, logsDir: mediaOptions.logsDir }),
+        rebuild: createClipRebuilder({ mediaDir, run, binarySearch, logsDir: mediaOptions.logsDir }),
         log: debug ? (message) => logDebug("debug", "library", message) : undefined,
       });
       const notice = result.aborted ? null : {
@@ -1600,14 +1608,14 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     // solo lectura salvo la actualización de yt-dlp, que es por acción explícita.
     api.get("/api/library/usage", async () => {
       const usage = libraryUsage(mediaDir, listClips(db));
-      const detection = detectBinaries(mediaOptions.binarySearch);
+      const detection = detectBinaries(binarySearch);
       let tools: { ytDlp: string | null; ffmpeg: string | null; ffprobe: string | null } = {
         ytDlp: null,
         ffmpeg: null,
         ffprobe: null,
       };
       if (detection.ok) {
-        tools = await readToolVersions({ run, binarySearch: mediaOptions.binarySearch });
+        tools = await readToolVersions({ run, binarySearch });
       }
       return {
         ok: true,
@@ -1620,7 +1628,7 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
 
     // Actualiza yt-dlp (solo por acción explícita del creador).
     api.post("/api/tools/ytdlp/update", async () => {
-      const result = await updateYtdlp({ run, binarySearch: mediaOptions.binarySearch });
+      const result = await updateYtdlp({ run, binarySearch });
       return { ok: result.ok, message: result.message, output: result.output };
     });
 
@@ -1655,9 +1663,9 @@ export async function createServer(options: ServerOptions): Promise<AppServer> {
     // Resumen apto para soporte: sin secretos. Incluye versiones, sistema,
     // puerto, estado de Kick y del overlay y los últimos errores del log.
     api.get("/api/support/summary", async () => {
-      const detection = detectBinaries(mediaOptions.binarySearch);
+      const detection = detectBinaries(binarySearch);
       const tools = detection.ok
-        ? await readToolVersions({ run, binarySearch: mediaOptions.binarySearch })
+        ? await readToolVersions({ run, binarySearch })
         : { ytDlp: null, ffmpeg: null, ffprobe: null };
       const platform =
         integrations.length === 0

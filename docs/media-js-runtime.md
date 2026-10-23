@@ -31,6 +31,40 @@ Es decir: en una instalación normal solo se necesita **el flag**, nada más.
 ≥ 22 (`nodeSupportsEjs`). Si el Node es anterior, no se agrega el flag y todo
 sigue funcionando como antes (con la advertencia de yt-dlp).
 
+## Runtime con ruta explícita (distribución portable)
+
+En desarrollo, yt-dlp usa el Node **que ejecuta la app**: no hace falta indicar
+ruta. En una distribución portable pueden ser **dos cosas distintas**:
+
+1. El Node portable que **ejecuta el servidor** de VIUrewards.
+2. Ese mismo Node usado como **runtime JS de yt-dlp**.
+
+Cuando se conoce la ruta del segundo, `MediaOptions.nodeRuntime` la propaga y
+el argumento real es `--js-runtimes node:<ruta>`. La ruta va como **un solo
+elemento de argv** (nunca concatenada ni en una shell), así que funciona con
+espacios.
+
+¿De dónde sale la ruta? De `resolveRuntimePaths` (`src/server/paths.ts`):
+
+- `VIUREWARDS_NODE_RUNTIME`: ruta **absoluta** al binario de Node. Si no es
+  absoluta se **ignora con un aviso** y se usa el Node del proceso (no rompe el
+  arranque).
+- Si no está definida, se busca `node[.exe]` dentro de `<binDir>` (en desarrollo
+  `./bin`, en distribución `<VIUREWARDS_DATA_DIR>/bin`).
+- Si no se encuentra ninguna, `nodeRuntime` queda vacío y se usa el
+  comportamiento histórico (`--js-runtimes node`).
+
+**Verificado contra el yt-dlp real instalado** (`yt-dlp --version` →
+`2026.08.19`, `--help`): la opción es exactamente
+`--js-runtimes RUNTIME[:PATH]` y el PATH puede ser el binario **o su carpeta**.
+
+**Verificado localmente**: Node `v22.23.2` (≥ 22, el mínimo documentado).
+
+**Sin verificar**: que el Node **portable empaquetado** funcione como runtime
+(no hay paquete todavía), y el comportamiento con un yt-dlp más viejo. La
+integración con un binario portable queda **pendiente de la Etapa 2**
+(empaquetado): no se descargó ni se empaquetó ningún binario.
+
 ## Limitaciones / a verificar
 
 - `TODO(verificar)`: si el usuario tiene Node 20 o 21, no se habilita el runtime

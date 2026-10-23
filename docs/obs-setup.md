@@ -93,8 +93,13 @@ hace falta volver a cargar la página ni recrear la fuente:
 - `scripts/play-test.ts` sigue existiendo como herramienta de desarrollo, pero ya
   no es la forma normal de levantar el overlay: para eso está `npm start`. Ese
   script levanta el servidor sin dashboard ni base de datos.
-  **Ahora toma el mismo cerrojo compartido que `npm start`**
-  (`acquireSharedResourcesLock` sobre el cwd, o `--shared-root=`): escribe en la
-  misma `media/` y en `logs/server.log` / `logs/pending-media.txt`, así que no
-  puede correr a la vez que la app. Si la app está abierta, se niega con un
-  mensaje en español y sale sin tocar nada.
+  **Toma el mismo cerrojo compartido que `npm start`**
+  (`acquireSharedResourcesLock`) sobre la raíz que contiene `media/`,
+  `.uploads/` y `logs/`: escribe en esos recursos, así que no puede correr a la
+  vez que la app. Si la app está abierta, se niega con un mensaje en español y
+  sale sin tocar nada.
+  El cerrojo se toma sobre la raíz de los recursos, no sobre una carpeta
+  elegida aparte: las rutas efectivas se resuelven y validan **antes** de tomar
+  el cerrojo, y `--shared-root` solo sirve para confirmar que esa raíz es la
+  esperada (si no coincide, la herramienta rechaza la combinación en vez de
+  escribir en un sitio protegido por otro cerrojo).

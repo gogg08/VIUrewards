@@ -73,6 +73,7 @@ const UUID = "0d9b1f6e-1f2a-4a3c-9d19-7f5b6c0e2a44";
 /** Arnés: importa `main()` y traduce el aviso de cierre a la señal real. */
 const HARNESS = String.raw`
 const { main, SharedDataInUseError, SHARED_DATA_IN_USE_EXIT_CODE } = await import(process.env.START_MODULE);
+const { InvalidDataDirError, INVALID_DATA_DIR_EXIT_CODE } = await import(process.env.PATHS_MODULE);
 
 process.on("message", (message) => {
   if (message === "close") process.emit("SIGINT");
@@ -86,6 +87,10 @@ try {
   if (error instanceof SharedDataInUseError) {
     console.error("No se puede arrancar VIUrewards: " + error.reason);
     process.exit(SHARED_DATA_IN_USE_EXIT_CODE);
+  }
+  if (error instanceof InvalidDataDirError) {
+    console.error("No se puede arrancar VIUrewards: " + error.reason);
+    process.exit(INVALID_DATA_DIR_EXIT_CODE);
   }
   throw error;
 }
@@ -178,6 +183,7 @@ async function startServer(
   root: string,
   env: Env,
   requestedPort = 0,
+  extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<Running> {
   const scriptPath = join(env.root, `harness-${Date.now()}-${Math.random().toString(16).slice(2)}.ts`);
   writeFileSync(scriptPath, HARNESS);
@@ -192,7 +198,9 @@ async function startServer(
     env: {
       ...process.env,
       START_MODULE: new URL("../../scripts/start.ts", import.meta.url).href,
+      PATHS_MODULE: new URL("../../src/server/paths.ts", import.meta.url).href,
       PORT: String(chosenPort),
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     windowsHide: true,
@@ -496,6 +504,95 @@ it(
 
       first.child.send("close");
       expect((await waitForExit(first, 30_000)).code).toBe(0);
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+it(
+  "con VIUREWARDS_DATA_DIR los datos viven fuera del directorio de la app",
+  { timeout: 120_000 },
+  async () => {
+    // La app corre desde una carpeta (simula la versión instalada) y los datos
+    // viven en OTRA carpeta persistente: base, medios, uploads, logs y bin/ deben
+    // resolverse allí, y el cerrojo debe quedar en esa carpeta (no en la versión).
+    const appDir = mkdtempSync(join(tmpdir(), "viu-e2e-appdir-"));
+    roots.push(appDir);
+    const dataDir = mkdtempSync(join(tmpdir(), "viu-e2e-datadir-"));
+    roots.push(dataDir);
+
+    const mediaDir = join(dataDir, "media");
+    const logsDir = join(dataDir, "logs");
+    const uploadsDir = join(dataDir, ".uploads");
+    for (const dir of [mediaDir, logsDir, uploadsDir]) mkdirSync(dir, { recursive: true });
+
+    let running: Running | null = null;
+    try {
+      running = await startServer(
+        appDir,
+        { root: dataDir, mediaDir, uploadsDir, logsDir, dataDir },
+        0,
+        { VIUREWARDS_DATA_DIR: dataDir },
+      );
+      expect(await waitForHttp(running.port), running.output()).toBe(true);
+      expect(running.output()).toContain("VIUrewards está corriendo.");
+      // Imprime el mapa de rutas resuelto (diagnóstico y soporte).
+      expect(running.output()).toContain("datos en");
+
+      // La base y el cerrojo viven en el directorio de DATOS…
+      expect(existsSync(join(dataDir, "app.db"))).toBe(true);
+      expect(existsSync(join(dataDir, SHARED_RESOURCES_LOCK_FILE))).toBe(true);
+      // …y NO en la carpeta de la aplicación (que se reemplaza al actualizar).
+      expect(existsSync(join(appDir, "app.db"))).toBe(false);
+      expect(existsSync(join(appDir, "data"))).toBe(false);
+      expect(existsSync(join(appDir, "media"))).toBe(false);
+      expect(existsSync(join(appDir, "logs"))).toBe(false);
+      expect(existsSync(join(appDir, SHARED_RESOURCES_LOCK_FILE))).toBe(false);
+
+      // Los logs se escribieron en el directorio de datos.
+      expect(existsSync(join(logsDir, "server.log"))).toBe(true);
+
+      running.child.send("close");
+      const { code } = await waitForExit(running, 30_000);
+      expect(code).toBe(0);
+      // La base se puede reabrir desde su ubicación configurada.
+      const db = openDatabase(join(dataDir, "app.db"));
+      try {
+        const row = db.prepare("SELECT COUNT(*) AS total FROM clips").get() as { total: number };
+        expect(row.total).toBe(0);
+      } finally {
+        db.close();
+      }
+      // El cerrojo propio se liberó al cerrar.
+      expect(existsSync(join(dataDir, SHARED_RESOURCES_LOCK_FILE))).toBe(false);
+    } finally {
+      cleanup();
+    }
+  },
+);
+
+it(
+  "una VIUREWARDS_DATA_DIR relativa se rechaza sin arrancar en otra carpeta",
+  { timeout: 120_000 },
+  async () => {
+    const env = makeEnv();
+    seedDatabase(env);
+
+    let running: Running | null = null;
+    try {
+      // Ruta RELATIVA: dependería del directorio de trabajo. Debe salir con el
+      // código de configuración inválida (2) y NO inicializar en ningún lado.
+      running = await startServer(env.root, env, 0, { VIUREWARDS_DATA_DIR: "datos-relativos" });
+      const { code } = await waitForExit(running, 60_000);
+
+      expect(code).toBe(2);
+      expect(running.output()).toContain("No se puede arrancar VIUrewards");
+      expect(running.output()).toContain("ABSOLUTA");
+      // No sirvió ni arrancó.
+      expect(running.output()).not.toContain("VIUrewards está corriendo.");
+      // Y no creó la carpeta relativa bajo el directorio de trabajo.
+      expect(existsSync(join(env.root, "datos-relativos"))).toBe(false);
     } finally {
       cleanup();
     }

@@ -54,6 +54,13 @@ export interface MediaOptions {
   run?: RunProcess;
   /** Habilita el runtime JS de Node para yt-dlp. Por defecto según la versión de Node. */
   jsRuntime?: boolean;
+  /**
+   * Ruta EXPLÍCITA del Node que yt-dlp debe usar como runtime JS (distribución
+   * portable). Se traduce a `--js-runtimes node:<ruta>`, con la ruta como un
+   * elemento aparte de argv (nunca en una shell). Si se omite, se usa el Node que
+   * corre la app con `--js-runtimes node`. Ver `docs/media-js-runtime.md`.
+   */
+  nodeRuntime?: string;
   /** Notifica la etapa en curso (para mostrar progreso en el dashboard). */
   onStage?: (stage: MediaStage) => void;
   /**
@@ -360,7 +367,9 @@ export async function processVideo(url: string, options: MediaOptions): Promise<
   const ytdlpArgs = buildYtdlpArgs(validation.url, outputTemplate, {
     maxBytes,
     maxDurationSec,
-    jsRuntime: useJsRuntime ? "node" : undefined,
+    // Con una ruta explícita (distribución portable) se indica el binario de
+    // Node; sin ella se usa el Node que corre la app, como hasta ahora.
+    jsRuntime: useJsRuntime ? (options.nodeRuntime ? `node:${options.nodeRuntime}` : "node") : undefined,
   });
   options.onStage?.("downloading");
   journal?.begin("downloads", id);

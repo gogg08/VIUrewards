@@ -28,6 +28,13 @@ export interface FindBinaryOptions {
   platform?: NodeJS.Platform;
   /** Inyectable en tests; por defecto `existsSync`. */
   exists?: (path: string) => boolean;
+  /**
+   * Directorio de herramientas administradas, buscado ANTES que todo lo demás.
+   * Debe ser una ruta ya resuelta (absoluta): `detectBinaries` nunca la deriva
+   * del directorio de trabajo. Vive acá (y no solo en `detectBinaries`) para que
+   * también lo respete un `findBinary` directo.
+   */
+  binDir?: string;
 }
 
 export function binaryCandidates(name: string, platform: NodeJS.Platform): string[] {
@@ -39,7 +46,12 @@ export function findBinary(name: string, options: FindBinaryOptions = {}): strin
   const exists = options.exists ?? existsSync;
   const pathEnv = options.pathEnv ?? process.env.PATH ?? "";
   const pathDirs = pathEnv.split(delimiter).filter((dir) => dir.length > 0);
-  const dirs = [...(options.extraDirs ?? []), ...pathDirs];
+  // El `binDir` administrado tiene prioridad sobre cualquier `extraDirs`.
+  const dirs = [
+    ...(options.binDir ? [options.binDir] : []),
+    ...(options.extraDirs ?? []),
+    ...pathDirs,
+  ];
 
   for (const dir of dirs) {
     for (const candidate of binaryCandidates(name, platform)) {
@@ -64,14 +76,17 @@ function missingMessage(missing: string[]): string {
 export function detectBinaries(
   options: FindBinaryOptions & { binDir?: string } = {},
 ): BinaryDetection {
-  const extraDirs = options.extraDirs ?? [options.binDir ?? "bin"];
+  // Sin `binDir` se conserva el comportamiento histórico: `bin/` relativo al
+  // directorio de trabajo. El arranque siempre pasa una ruta absoluta.
+  const binDir = options.binDir ?? "bin";
+  const extraDirs = options.extraDirs ?? [];
 
-  const ytDlp = findBinary("yt-dlp", { ...options, extraDirs });
-  const ffmpeg = findBinary("ffmpeg", { ...options, extraDirs });
+  const ytDlp = findBinary("yt-dlp", { ...options, extraDirs, binDir });
+  const ffmpeg = findBinary("ffmpeg", { ...options, extraDirs, binDir });
   // ffprobe se usa para validar archivos locales por contenido (Etapa 3B). Suele
   // venir junto con ffmpeg; si no está, la subida de archivos locales falla con
   // un mensaje claro en vez de intentar adivinar el tipo por la extensión.
-  const ffprobe = findBinary("ffprobe", { ...options, extraDirs });
+  const ffprobe = findBinary("ffprobe", { ...options, extraDirs, binDir });
 
   if (ytDlp && ffmpeg && ffprobe) return { ok: true, binaries: { ytDlp, ffmpeg, ffprobe } };
 

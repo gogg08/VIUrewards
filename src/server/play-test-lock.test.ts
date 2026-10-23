@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { main } from "../../scripts/play-test.ts";
 import { SHARED_RESOURCES_LOCK_FILE } from "../db/instance-lock.ts";
@@ -127,4 +127,185 @@ describe("scripts/play-test.ts y la exclusividad compartida", () => {
     expect(code).toBe(1);
     expect(err).toContain("no se tocó ningún archivo");
   });
+});
+
+/**
+ * Contrato de rutas: el cerrojo tiene que cubrir EXACTAMENTE los recursos que la
+ * herramienta escribe. Antes, `--shared-root`/`--media-dir` permitían tomar el
+ * cerrojo de una raíz y escribir en otra (medios en un lado, logs en otro), así
+ * que se podía correr junto a `npm start` sobre los mismos datos.
+ */
+describe("scripts/play-test.ts: coherencia del cerrojo con las rutas efectivas", () => {
+  const originalEnv = process.env.VIUREWARDS_DATA_DIR;
+
+  beforeEach(() => {
+    delete process.env.VIUREWARDS_DATA_DIR;
+  });
+
+  afterEach(() => {
+    if (originalEnv === undefined) delete process.env.VIUREWARDS_DATA_DIR;
+    else process.env.VIUREWARDS_DATA_DIR = originalEnv;
+  });
+
+  /** Un directorio de datos con media/, logs/, .uploads/ y bin/. */
+  function makeDataDir(): string {
+    const data = mkdtempSync(join(tmpdir(), "viu-playtest-data-"));
+    dirs.push(data);
+    for (const dir of ["media", "logs", ".uploads", "bin"]) mkdirSync(join(data, dir), { recursive: true });
+    return data;
+  }
+
+  /** Huella de un árbol: qué archivos hay en cada carpeta de recursos. */
+  function snapshot(dir: string): Record<string, string[]> {
+    return {
+      media: readdirSync(join(dir, "media")),
+      logs: readdirSync(join(dir, "logs")),
+      uploads: readdirSync(join(dir, ".uploads")),
+    };
+  }
+
+  it("rechaza VIUREWARDS_DATA_DIR + --shared-root del cwd ANTES de escribir o descargar", async () => {
+    const cwd = makeRoot();
+    const data = makeDataDir();
+    process.env.VIUREWARDS_DATA_DIR = data;
+    const before = snapshot(data);
+    const cwdLock = join(cwd, SHARED_RESOURCES_LOCK_FILE);
+
+    // Una URL forzaría la descarga: si el rechazo no fuera previo, lanzaría
+    // yt-dlp sobre `<datos>/media`.
+    const { code, err } = await run(["https://youtu.be/abc", "--port=0", `--shared-root=${cwd}`], cwd);
+
+    expect(code).toBe(1);
+    expect(err).toContain("No se puede usar play-test");
+    expect(err).toContain("--shared-root");
+    expect(err).toContain(data);
+    // No descargó, no creó el servidor ni el journal.
+    expect(err).not.toContain("Descargando");
+    expect(snapshot(data)).toEqual(before);
+    // Ni dejó un cerrojo propio en el cwd: nunca se tomó uno ajeno ni se creó
+    // uno para una raíz que no son los recursos.
+    expect(existsSync(cwdLock)).toBe(false);
+  }, 30_000);
+
+  it("no modifica el cerrojo de otra instancia cuando rechaza por incoherencia", async () => {
+    const cwd = makeRoot();
+    const data = makeDataDir();
+    process.env.VIUREWARDS_DATA_DIR = data;
+    // Cerrojo ajeno VIVO en el cwd: el rechazo no debe tocarlo.
+    const foreign = JSON.stringify({ pid: process.pid, at: Date.now() });
+    writeFileSync(join(cwd, SHARED_RESOURCES_LOCK_FILE), foreign, "utf8");
+
+    const { code, err } = await run(["abc123", "--port=0", `--shared-root=${cwd}`], cwd);
+
+    expect(code).toBe(1);
+    expect(err).toContain("--shared-root");
+    expect(readFileSync(join(cwd, SHARED_RESOURCES_LOCK_FILE), "utf8")).toBe(foreign);
+    // Tampoco tomó el cerrojo del directorio de datos (no hay ninguno).
+    expect(existsSync(join(data, SHARED_RESOURCES_LOCK_FILE))).toBe(false);
+  }, 30_000);
+
+  it("rechaza --media-dir que dejaría logs/uploads fuera del cerrojo y no toca nada", async () => {
+    // Sin la variable: el media manda y logs/uploads van a su padre. Si además
+    // se pide un --shared-root distinto, la combinación es incoherente.
+    const cwd = makeRoot();
+    const shared = makeRoot();
+    const before = snapshot(shared);
+
+    const { code, err } = await run(
+      ["https://youtu.be/abc", "--port=0", `--media-dir=${join(shared, "media")}`, `--shared-root=${cwd}`],
+      cwd,
+    );
+
+    expect(code).toBe(1);
+    expect(err).toContain("--shared-root");
+    expect(err).not.toContain("Descargando");
+    expect(snapshot(shared)).toEqual(before);
+    // El otro conjunto no quedó tocado: ni logs compartidos ni cerrojo propio.
+    expect(existsSync(join(shared, "logs", "server.log"))).toBe(false);
+    expect(existsSync(join(shared, SHARED_RESOURCES_LOCK_FILE))).toBe(false);
+    expect(existsSync(join(cwd, SHARED_RESOURCES_LOCK_FILE))).toBe(false);
+  }, 30_000);
+
+  it("con opciones coherentes usa el directorio de datos y libera SU cerrojo al cerrar", async () => {
+    const cwd = makeRoot();
+    const data = makeDataDir();
+    process.env.VIUREWARDS_DATA_DIR = data;
+
+    let release: () => void = () => {};
+    const waitForClose = (): Promise<void> => new Promise<void>((resolve) => (release = resolve));
+    const out: string[] = [];
+    const err: string[] = [];
+    const pending = main({
+      args: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--port=0", `--shared-root=${data}`],
+      cwd,
+      log: (m) => out.push(m),
+      error: (m) => err.push(m),
+      waitForClose,
+    }).catch((caught: unknown) => {
+      err.push(caught instanceof Error ? caught.message : String(caught));
+      return 1;
+    });
+
+    const lockPath = join(data, SHARED_RESOURCES_LOCK_FILE);
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(lockPath) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect({ out: out.join("\n"), err: err.join("\n") }).toEqual({
+      out: expect.stringContaining("Servidor arriba"),
+      err: "",
+    });
+    // El cerrojo está en el DIRECTORIO DE DATOS, no en el cwd.
+    expect(existsSync(lockPath)).toBe(true);
+    expect(existsSync(join(cwd, SHARED_RESOURCES_LOCK_FILE))).toBe(false);
+    // Los recursos que escribió son los del directorio de datos.
+    expect(existsSync(join(data, "logs", "server.log"))).toBe(true);
+
+    release();
+    expect(await pending).toBe(0);
+    expect(existsSync(lockPath)).toBe(false);
+  }, 60_000);
+
+  it("con --media-dir coherente (sin la variable) protege el padre del media", async () => {
+    const cwd = makeRoot();
+    const shared = makeRoot();
+
+    let release: () => void = () => {};
+    const waitForClose = (): Promise<void> => new Promise<void>((resolve) => (release = resolve));
+    const out: string[] = [];
+    const err: string[] = [];
+    const pending = main({
+      args: ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "--port=0", `--media-dir=${join(shared, "media")}`],
+      cwd,
+      log: (m) => out.push(m),
+      error: (m) => err.push(m),
+      waitForClose,
+    }).catch((caught: unknown) => {
+      err.push(caught instanceof Error ? caught.message : String(caught));
+      return 1;
+    });
+
+    const lockPath = join(shared, SHARED_RESOURCES_LOCK_FILE);
+    const deadline = Date.now() + 20_000;
+    while (!existsSync(lockPath) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    expect({ out: out.join("\n"), err: err.join("\n") }).toEqual({
+      out: expect.stringContaining("Servidor arriba"),
+      err: "",
+    });
+    // El cerrojo y los logs están en el padre del media; el cwd no se tocó.
+    expect(existsSync(lockPath)).toBe(true);
+    expect(existsSync(join(shared, "logs", "server.log"))).toBe(true);
+    expect(readdirSync(join(cwd, "logs"))).toEqual([]);
+    expect(existsSync(join(cwd, SHARED_RESOURCES_LOCK_FILE))).toBe(false);
+
+    release();
+    expect(await pending).toBe(0);
+    expect(existsSync(lockPath)).toBe(false);
+  }, 60_000);
 });
