@@ -26,6 +26,26 @@ al directorio de trabajo.
 En Windows solo se aceptan ejecutables (`.exe`): un `.cmd` o `.bat` no se puede
 lanzar sin shell.
 
+### De dónde salen los binarios
+
+**VIUrewards no redistribuye** `yt-dlp.exe`, `ffmpeg.exe` ni `ffprobe.exe`, ni
+`node.exe`: el paquete portable solo lleva la aplicación. El instalador
+(`scripts/dist/install-tools.ps1`, ver `docs/distribution.md` §8) los descarga
+desde el proveedor, verifica el SHA-256 fijado en `scripts/dist/config.ts` y los
+deja en el directorio de datos:
+
+| Herramienta | Ruta instalada | Política si ya existe |
+| --- | --- | --- |
+| Node.js | `<datos>/runtime/node.exe` | `match-manifest` (lo controla el instalador) |
+| yt-dlp | `<datos>/bin/yt-dlp.exe` | `if-missing` (el dashboard manda) |
+| ffmpeg / ffprobe | `<datos>/bin/ffmpeg.exe`, `bin/ffprobe.exe` | `if-missing` |
+
+La instalación **nunca sobrescribe** yt-dlp ni FFmpeg ya instalados, así que una
+actualización de VIUrewards no pisa la versión que el usuario actualizó desde el
+dashboard. Para Node se compara el SHA-256 del **archivo instalado**
+(`installedSha256` en `config.ts`), no el del ZIP descargado: son hashes
+distintos y usar el del ZIP rechazaba una instalación válida en cada reintento.
+
 ## El actualizador del dashboard
 
 Ajustes → **Biblioteca y descargas** muestra la versión de yt-dlp y ofrece
@@ -48,10 +68,37 @@ informa y actualiza exactamente lo que la app ejecuta.
 
 ## ffmpeg y ffprobe
 
-Se resuelven con la misma regla, así que en distribución pueden ir en
-`<datos>/bin/` junto a yt-dlp. **Todavía no se decide** qué distribución o
-compilación se empaqueta (depende de las licencias): esa decisión es de la
-etapa de empaquetado.
+Se resuelven con la misma regla, así que en distribución van en
+`<datos>/bin/` junto a yt-dlp.
+
+**Decidido para la distribución (Etapa 2C):** FFmpeg **9.0.2 essentials de
+gyan.dev**, compilación **estática** (un `.exe` por herramienta, sin DLL
+externas) porque trae `libx264`, que es lo que la app usa para recodificar. La
+versión y el hash de origen se fijan en `scripts/dist/config.ts`.
+
+gyan.dev es un **proveedor externo**: un sitio de terceros que la página de
+descargas de FFmpeg.org **enlaza**, **no** el upstream de FFmpeg. El instalador
+descarga el ZIP del proveedor y deja junto a los binarios su texto de licencia y
+su información de procedencia (`ffmpeg-LICENSE.txt`, `ffmpeg-PROCEDENCIA.txt`).
+
+> Ese build es **GPLv3**: las obligaciones de la GPLv3 recaen sobre quien
+> **redistribuya** los binarios, y descargarlos del proveedor no las elimina. La
+> licencia de VIUrewards todavía no está declarada, así que esto es un
+> **bloqueante antes de publicar** una release. Ver `docs/distribution.md` §4.
+
+El hash fijado **no es una firma digital**: detecta corrupción y cambios de
+archivo, no autoría.
+
+## Runtime de JavaScript para yt-dlp
+
+`VIUREWARDS_NODE_RUNTIME` permite apuntar al `node.exe` portable; el argv recibe
+`--js-runtimes node:<ruta>` como **un solo elemento** (las rutas con espacios no
+se rompen). Ver `docs/media-js-runtime.md`.
+
+Si la variable no está, `resolveRuntimePaths` busca el runtime en
+`<datos>/runtime/node[.exe]` (donde lo instala el instalador) y después en
+`<datos>/bin/` (ubicación anterior). Sin ninguno, yt-dlp usa el Node que ejecuta
+la app.
 
 ## Pruebas
 
@@ -61,5 +108,24 @@ etapa de empaquetado.
   administrado y no reescribe el ejecutable.
 - `src/media/js-runtime.test.ts` y `runtime-propagation.test.ts`: la forma
   `--js-runtimes node:<ruta>` llega al argv real (con `run` simulado).
+- `tests/dist/package.test.ts` (`npm run test:dist`): el paquete extraído no
+  contiene ejecutables de terceros y el manifiesto declara las herramientas con
+  su URL, SHA-256 y política de instalación. Las herramientas **ya no viajan en
+  el paquete**: no hay una prueba de ffmpeg/ffprobe empaquetados.
+- `tests/dist/installer.test.ts` (`npm run test:dist`): el instalador **real**
+  contra directorios temporales — instala y verifica hashes, `node.exe` se
+  ejecuta, reinstalar no cambia bytes, conserva yt-dlp/FFmpeg del usuario, código
+  3 con el cerrojo en uso y nada escrito (también con `-ForceRuntime`: cerrojo y
+  `node.exe` intactos, ningún proceso terminado), cerrojo huérfano, hash
+  incorrecto, extracción insegura, rutas inválidas (incluidas la raíz de unidad y
+  una **estructura de aplicación temporal**, con sus subcarpetas y formas
+  equivalentes), fallo a mitad de instalación con reintento y fallo al mover el
+  ejecutable.
+- `tests/dist/config.test.ts`: el bloque `$Tools` del `.ps1` coincide con
+  `config.ts`, el archivo es ASCII + CRLF, parsea en PowerShell 5.1 y conserva el
+  guard contra escribir dentro de la aplicación (raíz deducida de `$PSScriptRoot`,
+  sin tope de profundidad y **sin** una variable local `$applicationRoot` que
+  colisione con el parámetro `$ApplicationRoot`, porque PowerShell no distingue
+  mayúsculas entre nombres de variable).
 
 No se ejecuta `yt-dlp -U` en ninguna prueba.

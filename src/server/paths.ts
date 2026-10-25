@@ -46,6 +46,16 @@ export const INVALID_DATA_DIR_EXIT_CODE = 2;
 /** Subcarpeta de datos dentro del directorio heredado (solo en modo histórico). */
 export const LEGACY_DATA_SUBDIR = "data";
 
+/**
+ * Subcarpeta del directorio de datos donde el instalador deja el runtime de
+ * Node portable (`runtime/node.exe`).
+ *
+ * La Estrategia C de distribución no empaqueta Node dentro del ZIP de la app:
+ * el instalador lo descarga y lo instala acá, separado de los archivos de cada
+ * versión y de las herramientas administradas (`bin/`).
+ */
+export const NODE_RUNTIME_SUBDIR = "runtime";
+
 /** Error de arranque: la configuración de rutas no es utilizable. */
 export class InvalidDataDirError extends Error {
   /** Mensaje en español, listo para la consola. */
@@ -117,12 +127,13 @@ export function nodeRuntimeCandidates(platform: NodeJS.Platform): string[] {
  * Ruta del runtime de Node para yt-dlp.
  *
  * Prioridad: `VIUREWARDS_NODE_RUNTIME` (debe ser absoluta; una relativa se
- * ignora y se avisa) y, si no está, `<binDir>/node[.exe]` cuando existe. Si no
- * hay ninguna, devuelve `undefined` y la app usa el Node que la ejecuta.
+ * ignora y se avisa) y, si no está, se buscan los `nodeRuntimeDirs` en orden
+ * (`<datos>/runtime` y después `<datos>/bin`). Si no hay ninguna, devuelve
+ * `undefined` y la app usa el Node que la ejecuta.
  */
 function resolveNodeRuntime(
   env: NodeJS.ProcessEnv,
-  binDir: string,
+  runtimeDirs: readonly string[],
   platform: NodeJS.Platform,
   exists: (path: string) => boolean,
   warnings: string[],
@@ -135,9 +146,11 @@ function resolveNodeRuntime(
       `${NODE_RUNTIME_ENV} se ignoró porque no es una ruta absoluta ("${explicit}"): se usará el Node que ejecuta la app.`,
     );
   }
-  for (const name of nodeRuntimeCandidates(platform)) {
-    const candidate = join(binDir, name);
-    if (exists(candidate)) return candidate;
+  for (const dir of runtimeDirs) {
+    for (const name of nodeRuntimeCandidates(platform)) {
+      const candidate = join(dir, name);
+      if (exists(candidate)) return candidate;
+    }
   }
   return undefined;
 }
@@ -162,9 +175,20 @@ function legacyPaths(
     uploadsDir: join(cwd, ".uploads"),
     logsDir: join(cwd, "logs"),
     binDir,
-    nodeRuntime: resolveNodeRuntime(env, binDir, platform, exists, warnings),
+    nodeRuntime: resolveNodeRuntime(env, nodeRuntimeDirs(cwd, binDir), platform, exists, warnings),
     warnings,
   };
+}
+
+/**
+ * Directorios donde se busca el runtime de Node, en orden de prioridad.
+ *
+ * `runtime/` primero (donde lo deja el instalador de la distribución) y `bin/`
+ * después (ubicación histórica de las herramientas administradas): así una
+ * instalación que ya tenía `bin/node.exe` sigue funcionando igual.
+ */
+function nodeRuntimeDirs(root: string, binDir: string): string[] {
+  return [join(root, NODE_RUNTIME_SUBDIR), binDir];
 }
 
 /**
@@ -222,7 +246,7 @@ export function resolveRuntimePaths(options: ResolvePathsOptions = {}): ResolveP
       uploadsDir: join(dataDir, ".uploads"),
       logsDir: join(dataDir, "logs"),
       binDir,
-      nodeRuntime: resolveNodeRuntime(env, binDir, platform, exists, warnings),
+      nodeRuntime: resolveNodeRuntime(env, nodeRuntimeDirs(dataDir, binDir), platform, exists, warnings),
       warnings,
     },
   };

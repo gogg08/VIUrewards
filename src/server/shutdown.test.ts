@@ -148,4 +148,51 @@ describe("cierre ordenado: controlador", () => {
     release();
     await flush();
   });
+
+  it("avisa antes de salir, con el resultado final, y después sale", async () => {
+    const announcements: { code: 0 | 1; message: string }[] = [];
+    const h = harness({
+      onBeforeExit: (outcome) => {
+        announcements.push(outcome);
+      },
+    });
+    await h.controller.shutdown("launcher");
+    expect(announcements).toEqual([{ code: 0, message: expect.stringContaining("cerró") }]);
+    // El aviso va DESPUÉS del log (el logger ya se cerró) y ANTES de salir.
+    expect(h.order).toEqual(["stop", "db", "log", "exit:0"]);
+  });
+
+  it("avisa la salida forzada con código 1", async () => {
+    const announcements: { code: 0 | 1; message: string }[] = [];
+    const h = harness({
+      stop: () => new Promise<void>(() => {}),
+      timeoutMs: 5000,
+      onBeforeExit: (outcome) => {
+        announcements.push(outcome);
+      },
+    });
+    void h.controller.shutdown("SIGTERM");
+    await flush();
+    h.fireTimer();
+    expect(announcements).toEqual([{ code: 1, message: expect.stringContaining("forzado") }]);
+  });
+
+  it("una orden del launcher repetida NO fuerza la salida", async () => {
+    const h = harness();
+    const first = h.controller.shutdown("launcher");
+    const second = h.controller.shutdown("launcher");
+    await Promise.all([first, second]);
+    expect(h.exits).toEqual([0]);
+    expect(h.logs.some((line) => /pedido repetido/.test(line))).toBe(true);
+  });
+
+  it("un aviso que lanza no impide la salida", async () => {
+    const h = harness({
+      onBeforeExit: () => {
+        throw new Error("canal roto");
+      },
+    });
+    await h.controller.shutdown("SIGINT");
+    expect(h.exits).toEqual([0]);
+  });
 });

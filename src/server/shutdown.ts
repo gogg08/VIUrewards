@@ -31,14 +31,34 @@ export interface ShutdownDeps {
   timeoutMs?: number;
   /** Procesos vivos, para reportar cuántos se terminan al forzar la salida. */
   runningProcesses?: () => number;
+  /**
+   * Aviso justo antes de cada `exit()`. Puede ser asíncrono: el controlador
+   * ESPERA a que termine (el canal del launcher necesita que `finished` llegue
+   * antes de salir). Un `await` después de `shutdown()` no serviría porque la
+   * salida ocurre dentro de su propia promesa.
+   */
+  onBeforeExit?: (outcome: ShutdownOutcome) => void | Promise<void>;
 }
 
 export interface ShutdownController {
-  /** Pide el cierre. Devuelve la promesa del cierre ordenado. */
-  shutdown(signal: string): Promise<void>;
+  /**
+   * Pide el cierre. Devuelve la promesa del cierre ordenado, que se resuelve
+   * con el resultado (`code: 0` bien; `code: 1` si se forzó) justo antes de
+   * llamar a `exit`. Ese resultado es lo que el canal del launcher informa con
+   * `finished` (Etapa 3A).
+   */
+  shutdown(signal: string): Promise<ShutdownOutcome>;
   /** ¿Hay un cierre en curso? */
   isClosing(): boolean;
 }
+
+export interface ShutdownOutcome {
+  code: 0 | 1;
+  /** Mensaje en español del resultado (el mismo que se registra). */
+  message: string;
+}
+
+const CLOSED_MESSAGE = "VIUrewards se cerró correctamente.";
 
 /**
  * Crea el controlador: una sola secuencia de cierre, plazo duro y salida
@@ -48,7 +68,11 @@ export interface ShutdownController {
  * el proceso igual sale, para no dejar nunca un cierre a medias colgado.
  */
 export function createShutdownController(deps: ShutdownDeps): ShutdownController {
-  const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const exit =
+    deps.exit ??
+    ((code: number) => {
+      process.exit(code);
+    });
   const log = deps.log ?? ((message: string) => console.log(message));
   const setTimer = deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
   const clearTimer = deps.clearTimer ?? ((timer) => clearTimeout(timer));
@@ -57,7 +81,30 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
   let closing = false;
   let forced = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let pending: Promise<void> | null = null;
+  let pending: Promise<ShutdownOutcome> | null = null;
+
+  /** Avisa antes de salir (el canal del launcher manda `finished`). */
+  const notify = (outcome: ShutdownOutcome): Promise<void> | void => {
+    try {
+      return deps.onBeforeExit?.(outcome);
+    } catch {
+      // Un aviso que falla no puede impedir la salida.
+      return undefined;
+    }
+  };
+
+  /**
+   * Salida ordenada: espera el aviso (el canal del launcher necesita que
+   * `finished` salga antes de que el proceso termine) y recién ahí sale.
+   */
+  const exitWith = async (code: number, outcome: ShutdownOutcome): Promise<void> => {
+    try {
+      await notify(outcome);
+    } catch {
+      // Un aviso que falla no puede impedir la salida.
+    }
+    exit(code);
+  };
 
   /** Salida forzada: no espera a que termine la misma operación bloqueada. */
   const forceExit = (reason: string, code: number): void => {
@@ -73,38 +120,49 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
       // La salida forzada no puede fallar por la limpieza.
     }
     log(`Cierre forzado (${reason}).`);
+    // Forzar es justamente NO esperar: el aviso se intenta y se sale ya.
+    void notify({ code: 1, message: `Cierre forzado (${reason}).` });
     exit(code);
   };
 
-  const shutdown = (signal: string): Promise<void> => {
+  const shutdown = (signal: string): Promise<ShutdownOutcome> => {
     if (pending) {
-      // Segunda señal: el cierre ya está en curso, así que no se repite ni se
-      // espera. Se fuerza la salida para no dejar el proceso colgado.
+      // Ya hay un cierre en curso: no se repite. Si la petición llegó por otro
+      // camino (p. ej. el launcher pide cerrar y la consola recibe Ctrl+C, o al
+      // revés), NO se fuerza la salida: el cierre sigue y termina bien. Solo una
+      // señal REPETIDA (segunda interrupción de la consola) fuerza la salida.
+      if (!isSignal(signal)) {
+        log(`Cierre: ya está en curso (pedido repetido: ${signal}); se ignora.`);
+        return pending;
+      }
       log("Segunda interrupción: forzando la salida sin esperar el cierre ordenado.");
       forceExit("segunda señal", 1);
       return pending;
     }
 
     closing = true;
-    log(`Cierre: recibida la señal ${signal}; cerrando VIUrewards…`);
+    log(`Cierre: recibida la orden ${signal}; cerrando VIUrewards…`);
     timer = setTimer(() => {
       forceExit(`sin terminar en ${Math.round(timeoutMs / 1000)} s`, 1);
     }, timeoutMs);
 
-    pending = (async () => {
+    pending = (async (): Promise<ShutdownOutcome> => {
+      let message = CLOSED_MESSAGE;
       try {
         await deps.stop();
       } catch (error) {
-        log(`Cierre: error al detener el servidor: ${describe(error)}`);
+        message = `Cierre: error al detener el servidor: ${describe(error)}`;
+        log(message);
       }
       // Orden: primero lo que usa la base, después la base, y el log al final
       // (para que quede escrito el resultado del cierre).
       try {
         deps.closeDb?.();
       } catch (error) {
-        log(`Cierre: error al cerrar la base: ${describe(error)}`);
+        message = `Cierre: error al cerrar la base: ${describe(error)}`;
+        log(message);
       }
-      log("VIUrewards se cerró correctamente.");
+      log(CLOSED_MESSAGE);
       try {
         deps.closeLog?.();
       } catch {
@@ -112,8 +170,9 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
       }
       if (timer) clearTimer(timer);
       timer = null;
-      if (forced) return;
-      exit(0);
+      if (forced) return { code: 1, message: "Cierre forzado: no terminó a tiempo." };
+      await exitWith(0, { code: 0, message: CLOSED_MESSAGE });
+      return { code: 0, message: CLOSED_MESSAGE };
     })();
 
     return pending;
@@ -124,4 +183,9 @@ export function createShutdownController(deps: ShutdownDeps): ShutdownController
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Las señales del sistema operativo son las únicas que fuerzan al repetirse. */
+function isSignal(source: string): boolean {
+  return source === "SIGINT" || source === "SIGTERM" || source === "SIGBREAK";
 }

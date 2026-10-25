@@ -1,0 +1,191 @@
+# Construcción manual del paquete portable de Windows x64 (Fase de distribución,
+# Etapa 2C, Parte F).
+#
+# Qué hace: corre las pruebas, construye el ZIP portable con la aplicación y sus
+# dependencias de producción, le aplica el smoke test sobre el paquete YA
+# EXTRAÍDO y sube el ZIP, su SHA-256 y el manifiesto como artefactos de la
+# ejecución.
+#
+# El paquete NO contiene ejecutables de terceros (Node, yt-dlp, FFmpeg): el
+# instalador los descarga desde cada proveedor y los verifica contra los SHA-256
+# fijados en `scripts/dist/config.ts`. Por eso el build ya no descarga binarios
+# ni necesita `choco`: las pruebas e2e usan el ffmpeg del runner.
+#
+# Qué NO hace (a propósito, en esta etapa):
+#   - No crea tags, ni GitHub Releases, ni publica assets.
+#   - No necesita permisos de escritura: `contents: read` alcanza para clonar.
+#   - No consulta `latest`: las versiones salen de `scripts/dist/config.ts`.
+#
+# La primera versión requiere inspección y prueba manual del ZIP antes de
+# publicarla (ver `docs/distribution.md`).
+name: Paquete portable (Windows x64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      smoke:
+        description: "Ejecutar el smoke test sobre el paquete extraído"
+        type: boolean
+        default: true
+      retention_days:
+        description: "Días de retención de los artefactos (GitHub Free: máximo 90)"
+        type: choice
+        options: ["1", "3", "7"]
+        default: "3"
+
+# Permisos mínimos: el build solo lee el repositorio.
+permissions:
+  contents: read
+
+# Un build por vez: dos ZIP simultáneos del mismo commit no aportan nada.
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Construir y verificar el paquete
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      # Acciones OFICIALES con versión fija (nunca `@main` ni `@latest`).
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # La versión de Node del runner tiene que ser la MISMA que la fijada: el
+      # binario precompilado de better-sqlite3 se liga a un ABI concreto y el
+      # build verifica contra `NODE_ABI` con ese runtime.
+      # Se toma de `scripts/dist/config.ts`, que es el único lugar que la fija.
+      - name: Leer las versiones fijadas
+        id: versions
+        run: |
+          $config = Get-Content -Raw -LiteralPath "scripts/dist/config.ts"
+          $match = [regex]::Match($config, 'NODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $match.Success) {
+            throw "No se pudo leer NODE_VERSION de scripts/dist/config.ts"
+          }
+          $node = $match.Groups[1].Value
+          Write-Output "node=$node" >> $env:GITHUB_OUTPUT
+          Write-Host "Node fijado: $node"
+
+      # El runner de `windows-latest` es x64; se comprueba en vez de suponerlo.
+      - name: Comprobar plataforma x64
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Este paquete es para Windows x64 y el runner informa $env:PROCESSOR_ARCHITECTURE."
+          }
+
+      - name: Preparar Node.js fijado
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          cache: npm
+
+      - name: Verificar la versión de Node del build
+        run: |
+          $expected = "${{ steps.versions.outputs.node }}"
+          $actual = (node --version).TrimStart("v")
+          if ($actual -ne $expected) {
+            throw "El build exige Node $expected (la versión fijada) y hay $actual."
+          }
+          Write-Host "Node $actual listo."
+
+      - name: Instalar dependencias de desarrollo
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Pruebas unitarias
+        run: npm test
+
+      # Las pruebas e2e necesitan ffmpeg/ffprobe reales en el PATH (NO se toman
+      # del paquete: el paquete no redistribuye ejecutables). Chocolatey ya viene
+      # en el runner; si la instalación falla, el paso FALLA (no se omite).
+      - name: Herramientas de medios para las pruebas e2e
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      - name: Pruebas e2e
+        run: npm run test:e2e
+
+      # Construye el ZIP, comprueba que no haya ejecutables de terceros y corre
+      # el smoke sobre el paquete extraído con el runtime fijado (si el smoke
+      # falla, el build falla). El runtime que corre el smoke es este mismo Node
+      # del runner: es la versión fijada, ya verificada arriba.
+      - name: Construir el paquete portable
+        if: ${{ inputs.smoke }}
+        run: |
+          $env:VIUREWARDS_TEST_NODE_EXE = (Get-Command node).Source
+          npm run package:portable -- --smoke
+
+      - name: Construir el paquete portable (sin smoke)
+        if: ${{ !inputs.smoke }}
+        run: npm run package:portable
+
+      # Los tests de distribución usan el ZIP recién construido y el runtime
+      # fijado (el de este runner, por `VIUREWARDS_TEST_NODE_EXE`). No descargan
+      # Node ni herramientas, y no ejecutan `yt-dlp -U`.
+      - name: Pruebas de distribución
+        run: |
+          $env:VIUREWARDS_TEST_NODE_EXE = (Get-Command node).Source
+          npm run test:dist
+
+      - name: Leer el nombre del paquete
+        id: package
+        run: |
+          $zip = Get-ChildItem -LiteralPath "build/dist" -Filter "VIUrewards-*.zip" |
+            Where-Object { $_.Name -notlike "*.sha256" } |
+            Select-Object -First 1
+          if ($null -eq $zip) {
+            throw "No se generó ningún ZIP en build/dist"
+          }
+          $checksum = "$($zip.FullName).sha256"
+          if (-not (Test-Path -LiteralPath $checksum)) {
+            throw "Falta el checksum $checksum"
+          }
+          Write-Output "zip=$($zip.FullName)" >> $env:GITHUB_OUTPUT
+          Write-Output "checksum=$checksum" >> $env:GITHUB_OUTPUT
+          Write-Output "name=$($zip.BaseName)" >> $env:GITHUB_OUTPUT
+          Get-Content -LiteralPath $checksum
+          Write-Host ("Tamaño del ZIP: {0:N1} MB" -f ($zip.Length / 1MB))
+
+      # Se extrae el manifiesto del PROPIO ZIP: es el del paquete que se
+      # distribuye, no el del directorio de staging.
+      - name: Extraer el manifiesto del ZIP
+        run: |
+          $out = "artifacts"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $zip = "${{ steps.package.outputs.zip }}"
+          $probe = Join-Path $env:RUNNER_TEMP "manifest-probe"
+          if (Test-Path -LiteralPath $probe) { Remove-Item -Recurse -Force -LiteralPath $probe }
+          Expand-Archive -LiteralPath $zip -DestinationPath $probe -Force
+          $manifest = Get-ChildItem -LiteralPath $probe -Recurse -Filter "manifest.json" |
+            Where-Object { $_.Directory.Name -like "VIUrewards-*" } |
+            Select-Object -First 1
+          if ($null -eq $manifest) { throw "El ZIP no contiene manifest.json" }
+          Copy-Item -LiteralPath $manifest.FullName -Destination (Join-Path $out "manifest.json")
+          Get-Content -LiteralPath (Join-Path $out "manifest.json") | Select-Object -First 20
+          Remove-Item -Recurse -Force -LiteralPath $probe
+
+      - name: Subir los artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          # Solo el ZIP, su checksum y el manifiesto: nada de bases, medios,
+          # logs ni credenciales.
+          path: |
+            ${{ steps.package.outputs.zip }}
+            ${{ steps.package.outputs.checksum }}
+            artifacts/manifest.json
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}
+          compression-level: 0

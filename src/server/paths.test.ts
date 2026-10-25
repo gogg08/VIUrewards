@@ -29,6 +29,7 @@ import {
   InvalidDataDirError,
   LEGACY_DATA_SUBDIR,
   NODE_RUNTIME_ENV,
+  NODE_RUNTIME_SUBDIR,
   describePaths,
   legacyDataNotice,
   nodeRuntimeCandidates,
@@ -338,6 +339,49 @@ describe("runtime de Node para yt-dlp", () => {
       env: env({ [DATA_DIR_ENV]: dataDir }),
       platform: "win32",
     });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.paths.nodeRuntime).toBe(portable);
+  });
+
+  it("detecta el Node portable en runtime/ del directorio de datos (distribución)", () => {
+    const dataDir = makeDir("viu-data-");
+    mkdirSync(join(dataDir, NODE_RUNTIME_SUBDIR), { recursive: true });
+    const portable = join(dataDir, NODE_RUNTIME_SUBDIR, "node.exe");
+    writeFileSync(portable, "");
+    const result = resolveRuntimePaths({
+      cwd: makeDir(),
+      env: env({ [DATA_DIR_ENV]: dataDir }),
+      platform: "win32",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.paths.nodeRuntime).toBe(portable);
+  });
+
+  it("runtime/ tiene prioridad sobre bin/ si existen los dos", () => {
+    const dataDir = makeDir("viu-data-");
+    mkdirSync(join(dataDir, "bin"), { recursive: true });
+    mkdirSync(join(dataDir, NODE_RUNTIME_SUBDIR), { recursive: true });
+    writeFileSync(join(dataDir, "bin", "node.exe"), "");
+    const expected = join(dataDir, NODE_RUNTIME_SUBDIR, "node.exe");
+    writeFileSync(expected, "");
+    const result = resolveRuntimePaths({
+      cwd: makeDir(),
+      env: env({ [DATA_DIR_ENV]: dataDir }),
+      platform: "win32",
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.paths.nodeRuntime).toBe(expected);
+  });
+
+  it("en modo histórico también busca runtime/ bajo el directorio de trabajo", () => {
+    const cwd = makeDir();
+    mkdirSync(join(cwd, NODE_RUNTIME_SUBDIR), { recursive: true });
+    const portable = join(cwd, NODE_RUNTIME_SUBDIR, "node.exe");
+    writeFileSync(portable, "");
+    const result = resolveRuntimePaths({ cwd, env: env(), platform: "win32" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.paths.nodeRuntime).toBe(portable);

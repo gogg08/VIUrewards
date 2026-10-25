@@ -31,3 +31,10 @@ node_modules/
 /resumen-continuar-proyecto-sin-tokens.md
 
 # Dashboard: Alpine servido como archivo local (no CDN). No se ignora.
+
+# Paquete de distribución (Fase de distribución, Etapa 2): staging, descargas
+# verificadas y ZIP. Son artefactos de build, nunca código.
+/build/
+
+# Configuración local de la máquina para el build (nunca se versiona).
+/.env.package

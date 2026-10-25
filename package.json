@@ -8,7 +8,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "test:all": "vitest run && vitest run --config vitest.e2e.config.ts"
+    "test:all": "vitest run && vitest run --config vitest.e2e.config.ts",
+    "package:portable": "node scripts/package.ts",
+    "build:installer": "node scripts/dist/build-installer.ts",
+    "test:dist": "vitest run --config vitest.dist.config.ts"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

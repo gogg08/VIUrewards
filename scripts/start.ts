@@ -17,9 +17,16 @@
  *   se limpian esperas y timers, se cierran los overlays y el HTTP, y recién al
  *   final la base y el log. Si todo sale bien: código 0.
  * - Una **segunda** señal durante el cierre fuerza la salida (código 1): mata
- *   los procesos externos vivos sin esperar y sale.
+ *   los procesos externos vivos sin esperar y sale. Una segunda petición por el
+ *   **canal del launcher** NO fuerza nada: el cierre sigue y termina bien.
  * - Un plazo duro (`SHUTDOWN_TIMEOUT_MS`, 10 s) limita el cierre: si vence, se
  *   registra y se fuerza la salida (código 1).
+ *
+ * Canal del launcher (Fase de distribución, Etapa 3A): si el proceso se lanzó con
+ * `--Control=<id> --Exchange=<token>` y un canal IPC, se instala el canal de
+ * `src/server/control-channel.ts` (informa `started` y acepta `shutdown`); la
+ * orden de cierre pasa por el MISMO controlador. Sin esos argumentos no existe:
+ * `npm start`, Ctrl+C y el arnés de distribución no cambian.
  *
  * Exclusividad: una sola instancia por conjunto de datos. El cerrojo de la
  * raíz de recursos compartidos (`.viurewards.lock`, ver
@@ -60,6 +67,7 @@ import {
 } from "../src/server/paths.ts";
 import { createServer } from "../src/server/server.ts";
 import { readSettings } from "../src/server/settings.ts";
+import { installControlChannel, type ControlChannel } from "../src/server/control-channel.ts";
 import { createShutdownController, DEFAULT_SHUTDOWN_TIMEOUT_MS } from "../src/server/shutdown.ts";
 
 /**
@@ -250,6 +258,8 @@ async function main(): Promise<void> {
       : undefined;
 
   let dbClosed = false;
+  let control: ControlChannel | null = null;
+  let exitListener: ((outcome: { code: 0 | 1; message: string }) => void) | null = null;
   const closeDb = (): void => {
     if (dbClosed) return;
     dbClosed = true;
@@ -311,7 +321,33 @@ async function main(): Promise<void> {
       console.log(message);
       server.logger.info(message);
     },
+    onBeforeExit: (outcome) => exitListener?.(outcome),
   });
+
+  // Canal del launcher (Etapa 3A): solo existe con `--Control` y `--Exchange`
+  // (ver `src/server/control-channel.ts`). Sin esos argumentos devuelve `null` y
+  // no abre ningún pipe: `npm start`, Ctrl+C y el arnés de distribución siguen
+  // igual. Con el launcher, su orden de cierre pasa por el MISMO controlador de
+  // arriba, así que la secuencia de apagado es la de siempre.
+  control = installControlChannel({
+    argv: process.argv.slice(1),
+    log: (message) => {
+      // El logger se cierra DENTRO del apagado; un aviso posterior no puede
+      // romper el cierre ni impedir que `finished` salga por el canal.
+      try {
+        server.logger.warn(message);
+      } catch {
+        // Logger cerrado: el aviso ya no tiene destino.
+      }
+    },
+    requestShutdown: (reason) => controller.shutdown(reason),
+    // `finished` sale justo antes de `exit()`; el controlador avisa ahí porque un
+    // `await` posterior no llegaría a correr.
+    onBeforeExit: (listener) => {
+      exitListener = listener;
+    },
+  });
+  control?.started(info);
 
   for (const signal of SHUTDOWN_SIGNALS) {
     try {
