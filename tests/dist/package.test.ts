@@ -269,9 +269,11 @@ describePackage("estructura, runtime y SQLite", () => {
     const text = readFileSync(licensePath, "utf8");
     expect(text).toContain("SPDX-License-Identifier: 0BSD");
     expect(text).toContain("BSD Zero Clause License");
-    // La licencia propia NO reemplaza las de terceros: lo dice explícitamente y
-    // las licencias npm recopiladas siguen siendo archivos independientes.
-    expect(text).toMatch(/does NOT cover|does NOT replace/);
+    // El archivo es el texto estándar: la aclaración de alcance vive en la
+    // documentación, no en la licencia.
+    expect(text).not.toContain("Alcance / Scope");
+    // La licencia propia NO reemplaza las de terceros: las npm recopiladas
+    // siguen siendo archivos independientes.
     expect(readFileSync(join(packageDir, "licenses", "better-sqlite3.txt"), "utf8")).not.toContain("0BSD");
     // El manifiesto declara la licencia del proyecto junto a las de terceros.
     expect(manifest.projectLicense.spdx).toBe("0BSD");

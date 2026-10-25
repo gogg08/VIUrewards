@@ -762,10 +762,11 @@ versión: el instalador no sobrescribe una herramienta existente
 
 ## Licencias
 
-- **VIUrewards (código propio):** licencia 0BSD, texto completo en \`LICENSE\`.
-  Permite usar, modificar y redistribuir el código sin exigir que los derivados
-  se publiquen como código abierto. Cubre **solo** los archivos de este
-  repositorio.
+- **VIUrewards (código propio):** licencia 0BSD, texto estándar completo en
+  \`LICENSE\`. Permite usar, modificar y redistribuir el código sin exigir que
+  los derivados se publiquen como código abierto. Cubre **solo** los archivos de
+  este repositorio; el detalle del alcance y de lo que queda fuera está en
+  \`docs/distribution.md\` §4.
 - **Dependencias npm:** ver \`licenses/\`, con la versión y la licencia declarada
   de cada paquete redistribuido.
 - **SQLite** (embebido en \`better-sqlite3\`): dominio público (\`licenses/SQLITE.txt\`).

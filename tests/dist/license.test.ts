@@ -55,13 +55,26 @@ describe("licencia de VIUrewards (0BSD)", () => {
     expect(text).not.toMatch(/must cause it to be licensed/i);
   });
 
-  it("aclara que cubre SOLO el código propio y no sustituye licencias de terceros", () => {
+  it("es el texto estándar de 0BSD, sin sección personalizada", () => {
+    // El texto tiene que ser el estándar para que GitHub y las herramientas de
+    // licencias lo detecten como 0BSD. La aclaración de alcance vive en
+    // `docs/distribution.md` §4, no acá.
+    expect(text).not.toContain("Alcance / Scope");
+    expect(text).not.toMatch(/does NOT cover|does NOT replace/);
+    // Empieza por el título estándar y no tiene texto propio después de la
+    // cláusula de responsabilidad.
+    expect(text.trimStart().startsWith("BSD Zero Clause License")).toBe(true);
+  });
+
+  it("la aclaración de alcance está en docs/distribution.md", () => {
     expect(PROJECT_LICENSE.coversProjectCodeOnly).toBe(true);
-    // Los cuatro grupos de terceros que el paquete usa o descarga.
+    const docs = readFileSync(join(REPO_ROOT, "docs", "distribution.md"), "utf8");
+    // Los grupos de terceros que el paquete usa o descarga siguen documentados.
     for (const thirdParty of ["npm", "SQLite", "Node.js", "yt-dlp", "FFmpeg"]) {
-      expect(text).toContain(thirdParty);
+      expect(docs).toContain(thirdParty);
     }
-    expect(text).toMatch(/does NOT cover|does NOT replace/);
+    expect(docs).toMatch(/No cubre ni reemplaza|does NOT cover|does NOT replace/);
+    expect(docs).toContain("Alcance de la licencia del proyecto");
   });
 
   it("no inventa un titular corporativo: usa la forma neutra de contribuyentes", () => {

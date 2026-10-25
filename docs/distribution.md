@@ -178,6 +178,33 @@ paquete permite verificar cada archivo extraído.
 
 ## 4. Licencias y redistribución
 
+### Alcance de la licencia del proyecto
+
+`LICENSE` (raíz del repositorio y del paquete) contiene el texto estándar de la
+**BSD Zero Clause License** (SPDX `0BSD`), sin modificaciones. Permite usar,
+modificar y redistribuir el código propio sin exigir que los derivados se
+publiquen como código abierto.
+
+Esa licencia cubre **solo** el código propio de VIUrewards en este repositorio:
+las fuentes TypeScript/JavaScript, los recursos del dashboard y del overlay en
+`web/` y `overlay/`, los scripts de build y empaquetado en `scripts/`, y la
+documentación en `docs/`, salvo donde un archivo diga otra cosa.
+
+**No cubre ni reemplaza** las licencias de componentes de terceros:
+
+- Las **dependencias npm** de `package.json` / `package-lock.json` mantienen sus
+  propias licencias; el paquete de distribución incluye una copia de cada una en
+  `licenses/`.
+- **SQLite**, embebido en el binding nativo de `better-sqlite3`, es de dominio
+  público (`licenses/SQLITE.txt`).
+- **Node.js, yt-dlp, FFmpeg y ffprobe** son programas separados. **No** se
+  redistribuyen en el paquete de este repositorio: el instalador los descarga de
+  cada proveedor y deja el aviso de cada uno junto a los binarios instalados.
+
+La aclaración de alcance vive acá y **no** en `LICENSE`, para que el archivo de
+licencia sea el texto estándar reconocible por herramientas y por GitHub
+(`detecta 0BSD`).
+
 ### Lo que sí viaja en el paquete
 
 - **`LICENSE` (raíz del paquete)**: la licencia del **código propio** de
