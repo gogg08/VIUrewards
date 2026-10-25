@@ -132,27 +132,136 @@ export interface ProcessRow {
 /**
  * Tabla de procesos (solo lectura).
  *
- * Windows: `wmic`. Unix: `ps`. `execFileSync` espera a que el proceso termine,
- * así que no deja procesos que limpiar.
+ * Windows: `Get-CimInstance Win32_Process` por `powershell.exe`. **No** se usa
+ * `wmic`: Microsoft lo declaró obsoleto y ya no existe en `windows-latest`
+ * (medido: el runner fallaba con `spawnSync wmic ENOENT`).
+ *
+ * Se piden solo tres propiedades y se re-emiten como objetos con nombres
+ * propios: `Select-Object` sobre un `CimInstance` devuelve TODAS las
+ * propiedades (44 columnas), y el CSV posicional se vuelve ilegible. Se usa CSV
+ * (no texto libre) porque escapa comas y comillas de `CommandLine`; por eso se
+ * parsea con un lector de CSV real y no con `split(",")`.
+ *
+ * Unix: `ps`. `execFileSync` espera a que el proceso termine, así que no deja
+ * procesos que limpiar.
  */
+const WINDOWS_TABLE_SCRIPT = [
+  "$ErrorActionPreference = 'Stop'",
+  "Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,CommandLine -ErrorAction Stop |",
+  "  ForEach-Object {",
+  // `CommandLine` es null para los procesos protegidos: se normaliza a "" para
+  // que la columna nunca cambie de cantidad y el CSV siga siendo posicional.
+  "    $cmd = if ($null -eq $_.CommandLine) { '' } else { $_.CommandLine }",
+  "    [pscustomobject]@{ pid = [int]$_.ProcessId; ppid = [int]$_.ParentProcessId; cmd = $cmd }",
+  "  } |",
+  "  ConvertTo-Csv -NoTypeInformation",
+].join("\n");
+
+/**
+ * Parser de CSV mínimo (RFC 4180) para la salida de `ConvertTo-Csv`.
+ *
+ * Soporta los campos entrecomillados y las comillas escapadas como `""`, que es
+ * lo que produce PowerShell cuando `CommandLine` trae comas o comillas.
+ */
+export function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    if (quoted) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          quoted = false;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+    } else if (char === ",") {
+      row.push(field);
+      field = "";
+    } else if (char === "\n") {
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = "";
+    } else if (char !== "\r") {
+      field += char;
+    }
+  }
+  if (field.length > 0 || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
+
+/**
+ * Convierte el CSV de la consulta de Windows en filas de proceso.
+ *
+ * Descarta el encabezado y las filas sin `pid` numérico: un `pid` ilegible
+ * nunca se inventa como 0, porque 0 se confundiría con un proceso real.
+ */
+export function rowsFromWindowsCsv(text: string): ProcessRow[] {
+  const rows = parseCsv(text);
+  const out: ProcessRow[] = [];
+  // El primer registro es el encabezado (`pid,ppid,cmd`).
+  for (const cells of rows.slice(1)) {
+    if (cells.length < 2) continue;
+    const pid = Number(cells[0]);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    const ppid = Number(cells[1]);
+    out.push({
+      pid,
+      ppid: Number.isInteger(ppid) && ppid >= 0 ? ppid : 0,
+      cmd: (cells[2] ?? "").trim(),
+    });
+  }
+  return out;
+}
+
+/**
+ * Último error de enumeración, si lo hubo.
+ *
+ * `processTable()` devuelve `[]` ante un fallo para que los llamadores no
+ * revienten, pero eso es indistinguible de "no hay procesos". La limpieza usa
+ * este campo para **fallar** en vez de creer que no quedaba nada vivo: con
+ * `[]` silencioso, `ownTree()` no encontraría descendientes y los procesos del
+ * test quedarían corriendo sin que nadie lo note.
+ */
+let lastTableError: string | null = null;
+
+/** Error de la última llamada a `processTable()`, o `null` si funcionó. */
+export function processTableError(): string | null {
+  return lastTableError;
+}
+
+/** Enumera los procesos actuales. Ver `lastTableError` para el porqué de `[]`. */
 export function processTable(): ProcessRow[] {
   try {
     if (IS_WINDOWS) {
-      const out = execFileSync(
-        "wmic",
-        ["process", "get", "ProcessId,ParentProcessId,CommandLine", "/format:list"],
-        { encoding: "utf8", windowsHide: true, maxBuffer: 32 * 1024 * 1024 },
-      );
-      const rows: ProcessRow[] = [];
-      for (const block of out.split(/\r?\n\r?\n/)) {
-        const pid = /ProcessId=(\d+)/.exec(block)?.[1];
-        if (!pid) continue;
-        rows.push({
-          pid: Number(pid),
-          ppid: Number(/ParentProcessId=(\d+)/.exec(block)?.[1] ?? 0),
-          cmd: (/CommandLine=(.*)/.exec(block)?.[1] ?? "").trim(),
-        });
+      const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_TABLE_SCRIPT], {
+        encoding: "utf8",
+        windowsHide: true,
+        maxBuffer: 32 * 1024 * 1024,
+      });
+      const rows = rowsFromWindowsCsv(out);
+      // Una consulta que no devuelve NADA sí es un fallo: hasta el proceso
+      // System (pid 4) existe siempre, así que una tabla vacía es un error de
+      // enumeración, no una máquina sin procesos.
+      if (rows.length === 0) {
+        lastTableError = "Get-CimInstance no devolvió ningún proceso";
+        return [];
       }
+      lastTableError = null;
       return rows;
     }
     const out = execFileSync("ps", ["-eo", "pid=,ppid=,args="], {
@@ -164,8 +273,10 @@ export function processTable(): ProcessRow[] {
       const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
       if (match) rows.push({ pid: Number(match[1]), ppid: Number(match[2]), cmd: match[3].trim() });
     }
+    lastTableError = rows.length === 0 ? "ps no devolvió ningún proceso" : null;
     return rows;
-  } catch {
+  } catch (error) {
+    lastTableError = error instanceof Error ? error.message : String(error);
     return [];
   }
 }
@@ -185,8 +296,8 @@ export function parentChain(table: ProcessRow[] = processTable()): number[] {
 
 /**
  * Fija qué procesos ya existían (lista blanca): la línea de padres del test y
- * los shells del sistema (`cmd.exe`, que es lo que lanza `wmic`). Se llama al
- * empezar el archivo de test.
+ * los shells del sistema (`cmd.exe`, que es lo que lanzan los procesos
+ * externos). Se llama al empezar el archivo de test.
  */
 export function captureBaseline(extra: number[] = []): void {
   baseline = new Set(parentChain());
@@ -294,7 +405,7 @@ export function isSameProcess(pid: number, expectedCmd?: string): boolean {
   if (!isAlive(pid)) return false;
   if (!expectedCmd) return true;
   const row = processTable().find((entry) => entry.pid === pid);
-  // Sin tabla (wmic falló) se prefiere no tocar nada.
+  // Sin tabla (la enumeración falló) se prefiere no tocar nada.
   return row !== undefined && row.cmd.includes(expectedCmd);
 }
 
@@ -302,6 +413,14 @@ export interface KillResult {
   killed: number[];
   /** Pids que siguen vivos después de la escalada. */
   survivors: number[];
+  /**
+   * La enumeración de procesos falló: no se puede saber qué quedó vivo.
+   *
+   * Preferir esto a un resultado vacío: con `[]` el test creería que limpió
+   * todo y los procesos del test seguirían corriendo (el fallo original con
+   * `wmic` ausente se silenciaba justo así).
+   */
+  enumerationError: string | null;
 }
 
 /**
@@ -317,6 +436,12 @@ export interface KillResult {
 export async function killOwnTree(options: OwnTreeOptions = {}): Promise<KillResult> {
   const killed: number[] = [];
   const { targets, protectedPids } = ownTree(options);
+  const enumerationError = processTableError();
+  // Sin tabla no se puede calcular el árbol ni comprobar supervivientes: se
+  // informa en vez de matar a ciegas o de fingir que no quedó nada.
+  if (enumerationError !== null && targets.length === 0) {
+    return { killed, survivors: [], enumerationError };
+  }
   const table = processTable();
   const depthOf = (pid: number): number => ancestorsOf(table, pid).length;
   const ordered = targets
@@ -341,7 +466,7 @@ export async function killOwnTree(options: OwnTreeOptions = {}): Promise<KillRes
     if (await waitGone(pid, FORCE_WAIT_MS)) continue;
     survivors.push(pid);
   }
-  return { killed, survivors };
+  return { killed, survivors, enumerationError };
 }
 
 /** Error de limpieza con la lista de sobrevivientes (para fallar el test). */

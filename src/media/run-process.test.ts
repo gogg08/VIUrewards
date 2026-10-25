@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +22,41 @@ function alive(pid: number): boolean {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Pids hijos directos de `parent`, sin `wmic`.
+ *
+ * `wmic` está obsoleto y ya no existe en `windows-latest` (medido: el runner
+ * fallaba con `spawnSync wmic ENOENT`). Se usa `Get-CimInstance Win32_Process`,
+ * que está en cualquier Windows con PowerShell 5.1.
+ *
+ * Devuelve `null` si la consulta falló: distinguir "no hay hijos" de "no se
+ * pudo preguntar" importa, porque el test afirma que el nieto EXISTE.
+ */
+function childPids(parent: number): number[] | null {
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    // La canalización va al final de la línea anterior: PowerShell no acepta
+    // empezar una línea con `|` ("elementos de canalización vacíos").
+    `Get-CimInstance Win32_Process -Filter 'ParentProcessId=${parent}' -Property ProcessId -ErrorAction Stop |`,
+    "  ForEach-Object { $_.ProcessId }",
+  ].join("\n");
+  try {
+    const listing = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    // Una línea por pid; se descarta cualquier cosa que no sea un entero.
+    return listing
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => /^\d+$/.test(line))
+      .map(Number);
+  } catch {
+    return null;
+  }
+}
 
 describe("supervisor de procesos: cancelación real", () => {
   it("cancela una ejecución viva y resuelve como cancelada (no como éxito)", async () => {
@@ -77,7 +113,7 @@ describe("supervisor de procesos: cancelación real", () => {
   });
 
   it("termina también a los descendientes (árbol)", async () => {
-    if (process.platform !== "win32") return; // la verificación usa tasklist
+    if (process.platform !== "win32") return; // la verificación usa la tabla de procesos de Windows
     const dir = tmp();
     const log = join(dir, "nieto.log");
     const script = join(dir, "abuelo.cjs");
@@ -95,12 +131,11 @@ describe("supervisor de procesos: cancelación real", () => {
     await sleep(700);
     const root = supervisor.running()[0]?.pid as number;
     expect(alive(root)).toBe(true);
-    // El nieto existe mientras el abuelo corre: se busca por línea de comandos.
-    const { execFileSync } = await import("node:child_process");
-    const listing = execFileSync("wmic", ["process", "where", `ParentProcessId=${root}`, "get", "ProcessId"], {
-      encoding: "utf8",
-    });
-    const grandchildPid = Number(listing.split("\n").map((l) => l.trim()).filter((l) => /^\d+$/.test(l))[0]);
+    // El nieto existe mientras el abuelo corre: se busca por parentesco.
+    const children = childPids(root);
+    expect(children, "la enumeración de procesos descendientes falló").not.toBeNull();
+    expect((children as number[]).length, "el abuelo no tenía ningún hijo").toBeGreaterThan(0);
+    const grandchildPid = (children as number[])[0];
     expect(Number.isInteger(grandchildPid)).toBe(true);
     // El nieto está vivo ANTES de cancelar (si no, la prueba no verifica nada).
     expect(alive(grandchildPid)).toBe(true);

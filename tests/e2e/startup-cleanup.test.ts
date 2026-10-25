@@ -324,6 +324,7 @@ function cleanup(): void {
 afterEach(async () => {
   const roots_ = created.splice(0).map((child) => child.pid).filter((pid): pid is number => typeof pid === "number");
   const result = await killOwnTree({ roots: roots_ });
+  expect(result.enumerationError, "la enumeración de procesos falló; no se puede afirmar que no quedó nada vivo").toBeNull();
   expect(result.survivors, describeSurvivors(result.survivors)).toEqual([]);
   cleanup();
 });
