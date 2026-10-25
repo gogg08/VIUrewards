@@ -45,6 +45,11 @@ export interface ProcessResult {
 export interface RunProcessOptions {
   timeoutMs: number;
   cwd?: string;
+  /**
+   * Variables de entorno **adicionales** para el hijo (se combinan con las del
+   * proceso). Solo lo usa la verificación de releases para aislar `GNUPGHOME`.
+   */
+  env?: NodeJS.ProcessEnv;
   /** Tope de salida capturada por stream, para no crecer sin límite. */
   maxOutputBytes?: number;
   /**
@@ -215,6 +220,7 @@ export function createProcessSupervisor(options: ProcessSupervisorOptions = {}):
         cwd: runOptions.cwd,
         shell: false,
         windowsHide: true,
+        env: runOptions.env ? { ...process.env, ...runOptions.env } : process.env,
         // En Windows: raíz de su propio grupo (taskkill /T). En Unix: líder de
         // grupo, para poder mandar la señal a todo el grupo.
         detached: true,

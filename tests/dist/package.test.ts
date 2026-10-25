@@ -48,6 +48,7 @@ import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  FFMPEG_ASSET,
   FFMPEG_VERSION,
   FORBIDDEN_EXECUTABLES,
   NODE_ABI,
@@ -259,6 +260,42 @@ describePackage("estructura, runtime y SQLite", () => {
     // Las licencias de las dependencias npm SÍ viajan (esas sí se redistribuyen).
     expect(existsSync(join(packageDir, "licenses", "better-sqlite3.txt"))).toBe(true);
     expect(existsSync(join(packageDir, "licenses", "SQLITE.txt"))).toBe(true);
+    expect(existsSync(join(packageDir, "licenses", "FFMPEG.md"))).toBe(true);
+  });
+
+  it("la licencia 0BSD del código propio viaja en la raíz y no sustituye a las de terceros", () => {
+    const licensePath = join(packageDir, "LICENSE");
+    expect(existsSync(licensePath)).toBe(true);
+    const text = readFileSync(licensePath, "utf8");
+    expect(text).toContain("SPDX-License-Identifier: 0BSD");
+    expect(text).toContain("BSD Zero Clause License");
+    // La licencia propia NO reemplaza las de terceros: lo dice explícitamente y
+    // las licencias npm recopiladas siguen siendo archivos independientes.
+    expect(text).toMatch(/does NOT cover|does NOT replace/);
+    expect(readFileSync(join(packageDir, "licenses", "better-sqlite3.txt"), "utf8")).not.toContain("0BSD");
+    // El manifiesto declara la licencia del proyecto junto a las de terceros.
+    expect(manifest.projectLicense.spdx).toBe("0BSD");
+    expect(manifest.projectLicense.coversProjectCodeOnly).toBe(true);
+  });
+
+  it("el aviso de FFmpeg del paquete coincide con el artefacto fijado", () => {
+    const notice = readFileSync(join(packageDir, "licenses", "FFMPEG.md"), "utf8");
+    // Versión, hash y URL salen de config.ts: el aviso no puede divergir del pin.
+    expect(notice).toContain(FFMPEG_VERSION);
+    expect(notice).toContain(FFMPEG_ASSET.sha256);
+    expect(notice).toContain(FFMPEG_ASSET.url);
+    expect(notice).toContain("gyan.dev");
+    expect(notice).toContain("GPLv3");
+    expect(notice).toContain("946fcce07b");
+    // Proveedor externo, no el upstream.
+    expect(notice).toContain("NO el upstream");
+    // El hash no es una firma y la descarga no resuelve las obligaciones.
+    expect(notice).toMatch(/NO es una firma digital/);
+    expect(notice).toMatch(/NO elimina por sí solo/);
+    // La procedencia también está en el manifiesto, legible por máquina.
+    const ffmpeg = manifest.managedTools.find((tool) => tool.id === "ffmpeg");
+    expect(ffmpeg?.provenance.sourceCode).toBe("https://github.com/FFmpeg/FFmpeg/commit/946fcce07b");
+    expect(ffmpeg?.provenance.license).toContain("GPLv3");
   });
 
   it("el manifiesto trae un hash por archivo, sin rutas de la máquina", () => {

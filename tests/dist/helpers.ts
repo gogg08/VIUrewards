@@ -320,7 +320,15 @@ export interface Manifest {
     policy: string;
     updatedBy: string;
     licenseNote: string;
+    provenance: {
+      vendor: string;
+      vendorPage: string;
+      license: string;
+      sourceCode?: string;
+      verified: string;
+    };
   }>;
+  projectLicense: { spdx: string; name: string; file: string; coversProjectCodeOnly: boolean };
   entries: Array<{ path: string; bytes: number; sha256: string }>;
 }
 

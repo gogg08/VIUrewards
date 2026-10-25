@@ -46,6 +46,39 @@ dashboard. Para Node se compara el SHA-256 del **archivo instalado**
 (`installedSha256` en `config.ts`), no el del ZIP descargado: son hashes
 distintos y usar el del ZIP rechazaba una instalación válida en cada reintento.
 
+### Procedencia y avisos (Etapa 3D)
+
+Cada `ManagedTool` declara un `provenance: ToolProvenance` **obligatorio** con
+hechos verificables del artefacto, no instrucciones de instalación:
+
+| Campo | Qué es |
+| --- | --- |
+| `vendor` | Proveedor real del archivo. Para FFmpeg dice expresamente que **no** es el upstream de FFmpeg. |
+| `vendorPage` | Página del proveedor donde se publica esa compilación concreta. |
+| `license` | Licencia declarada por el proveedor. |
+| `sourceCode` | Fuente del **código** de esa compilación, si el proveedor la publica. `undefined` cuando no la identifica: no se inventa un enlace. |
+| `verified` | Cómo se obtuvo y comprobó la información. |
+
+`provenance` viaja al manifiesto (`managedTools[].provenance`) y lo usan los tests
+para comprobar que los avisos coinciden con el pin. `licenses/FFMPEG.md` del
+paquete se genera desde estos mismos datos.
+
+### Licencia del código propio
+
+`PROJECT_LICENSE` en `config.ts` declara **0BSD** (SPDX `0BSD`) para el código de
+VIUrewards. El texto completo está en `LICENSE` (raíz del repo) y se copia a la
+raíz del paquete; `manifest.json` lo expone como `projectLicense`.
+`coversProjectCodeOnly: true` marca que cubre **solo** el código propio: las
+dependencias npm, SQLite y los ejecutables externos mantienen sus licencias.
+
+### Firma del release de Node
+
+`NODE_RELEASE_KEYS` fija el repositorio oficial de claves (`nodejs/release-keys`)
+y las huellas de los firmantes activos. `npm run verify:node-release` verifica la
+firma GPG de `SHASUMS256.txt` y que el hash fijado provenga del manifiesto
+**firmado**. Es un paso de **mantenimiento**: ni el instalador ni el launcher
+usan GPG. Ver `docs/node-release-verification.md`.
+
 ## El actualizador del dashboard
 
 Ajustes → **Biblioteca y descargas** muestra la versión de yt-dlp y ofrece

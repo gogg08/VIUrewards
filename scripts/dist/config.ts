@@ -73,6 +73,30 @@ export interface PinnedAsset {
   checksumSource: string;
 }
 
+/**
+ * Origen y procedencia de un artefacto externo, para los avisos de terceros.
+ *
+ * Se separa de `PinnedAsset` a propósito: son **hechos verificables** (de dónde
+ * sale el archivo y qué licencia declara), no instrucciones de instalación. Se
+ * copia al manifiesto (`thirdPartyNotices`) y lo usan los tests para comprobar
+ * que los avisos coinciden con la configuración fijada.
+ */
+export interface ToolProvenance {
+  /** Proveedor real del artefacto (no se confunde con el upstream). */
+  vendor: string;
+  /** Página del proveedor donde se publica esta compilación concreta. */
+  vendorPage: string;
+  /** Licencia del artefacto, tal como la declara el proveedor. */
+  license: string;
+  /**
+   * Fuente del **código** de la compilación, si el proveedor la publica. Es
+   * `undefined` cuando el proveedor no la identifica: no se inventa un enlace.
+   */
+  sourceCode?: string;
+  /** Notas sobre cómo se obtuvo/verificó la información de esta entrada. */
+  verified: string;
+}
+
 /** Identificador estable de cada herramienta administrada. */
 export type ManagedToolId = "node" | "yt-dlp" | "ffmpeg";
 
@@ -118,6 +142,8 @@ export interface ManagedTool {
    * licencia del artefacto. Se documenta en el manifiesto y en el README.
    */
   licenseNote: string;
+  /** Proveedor, licencia y fuente del código de la compilación. */
+  provenance: ToolProvenance;
 }
 
 const GITHUB_YTDLP = "https://github.com/yt-dlp/yt-dlp/releases/download";
@@ -169,6 +195,39 @@ const NODE_ARCHIVE_ROOT = `node-v${NODE_VERSION}-${TARGET.label}`;
 const FFMPEG_ARCHIVE_ROOT = "ffmpeg-9.0.2-essentials_build";
 
 /**
+ * Claves GPG de los responsables de releases de Node.js, para la verificación
+ * de **mantenimiento** (`docs/node-release-verification.md`).
+ *
+ * La lista autorizada sale de <https://github.com/nodejs/release-keys> (el
+ * repositorio oficial de claves de release de Node.js). Acá se fijan las
+ * huellas de las claves **activas** que ese repositorio lista, para que el
+ * script de verificación falle si un release viene firmado por otra.
+ *
+ * Esto NO se usa en el instalador ni en el launcher: el usuario final solo
+ * verifica SHA-256 y nunca necesita GPG (ver `install-tools.ps1`).
+ */
+export const NODE_RELEASE_KEYS = {
+  /** Repositorio oficial con las claves y la lista de firmantes autorizados. */
+  source: "https://github.com/nodejs/release-keys",
+  /** Keyring precargado del repositorio (se usa si existe GPG local). */
+  keyringUrl: "https://github.com/nodejs/release-keys.git",
+  /**
+   * Huellas de las claves primarias de los firmantes activos, tal como las
+   * publica el repositorio. Una firma de otra clave se rechaza.
+   */
+  fingerprints: [
+    "5BE8A3F6C8A5C01D106C0AD820B1A390B168D356", // Antoine du Hamel
+    "DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7", // Juan José Arboleda
+    "CC68F5A3106FF448322E48ED27F5E38D5B0A215F", // Marco Ippolito
+    "890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4", // Rafael Gonzaga
+    "C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C", // Richard Lau
+    "108F52B48DB57BB0CC439B2997B01419BD92F80A", // Ruy Adorno
+    "655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD", // Stewart X Addison
+    "A363A499291CBBC940DD62E41F10027AF002F8B0", // Ulises Gascón
+  ],
+} as const;
+
+/**
  * Herramientas que el instalador descarga e instala en el directorio de datos.
  *
  * Orden: primero el runtime (lo necesita todo lo demás), después las
@@ -192,6 +251,15 @@ export const MANAGED_TOOLS: readonly ManagedTool[] = [
     updatedBy: "installer",
     licenseNote:
       "Node.js se distribuye bajo la licencia MIT. Se descarga del sitio oficial y se instala junto con su archivo LICENSE.",
+    provenance: {
+      vendor: "Node.js (OpenJS Foundation)",
+      vendorPage: `https://nodejs.org/dist/v${NODE_VERSION}/`,
+      license: "MIT",
+      sourceCode: `https://github.com/nodejs/node/tree/v${NODE_VERSION}`,
+      verified:
+        `nodejs.org publica SHASUMS256.txt junto con SHASUMS256.txt.sig (firma GPG de un responsable de ` +
+        "release, ver docs/node-release-verification.md). El hash fijado se copió de ese manifiesto.",
+    },
   },
   {
     id: "yt-dlp",
@@ -209,6 +277,15 @@ export const MANAGED_TOOLS: readonly ManagedTool[] = [
       "yt-dlp es Unlicense, pero su ejecutable se empaqueta con PyInstaller e incluye componentes con otras licencias: " +
       "con los avisos de https://github.com/yt-dlp/yt-dlp/blob/master/THIRD_PARTY_LICENSES.txt. " +
       "La instalación deja los avisos junto al binario.",
+    provenance: {
+      vendor: "yt-dlp (proyecto en GitHub)",
+      vendorPage: `https://github.com/yt-dlp/yt-dlp/releases/tag/${YTDLP_VERSION}`,
+      license: "Unlicense (el ejecutable incluye componentes con otras licencias)",
+      sourceCode: `https://github.com/yt-dlp/yt-dlp/tree/${YTDLP_VERSION}`,
+      verified:
+        "El release publica SHA2-256SUMS; el hash fijado se copió de ahí. El propio release no trae un archivo de " +
+        "licencia separado: los avisos están en THIRD_PARTY_LICENSES.txt del repositorio.",
+    },
   },
   {
     id: "ffmpeg",
@@ -231,6 +308,20 @@ export const MANAGED_TOOLS: readonly ManagedTool[] = [
       "GPLv3, estática y con bibliotecas externas incluidas en el binario. El hash fijado NO es una firma digital: " +
       "descargar el binario del proveedor no elimina por sí solo las obligaciones de la GPLv3 para quien lo redistribuya. " +
       "La instalación conserva junto a los binarios el texto GPLv3 y la información de procedencia del paquete original.",
+    provenance: {
+      vendor: "gyan.dev (Gyan Doshi) — proveedor externo enlazado por FFmpeg.org, NO el upstream de FFmpeg",
+      vendorPage: "https://www.gyan.dev/ffmpeg/builds/",
+      license: "GPLv3 (build estática; incluye libx264, que es GPLv2+) — declarada por el proveedor",
+      // Verificado leyendo el README.txt DEL ZIP de la versión fijada:
+      //   "Source Code: https://github.com/FFmpeg/FFmpeg/commit/946fcce07b"
+      // y la página del proveedor, que muestra el mismo commit para el release 9.0.2.
+      sourceCode: "https://github.com/FFmpeg/FFmpeg/commit/946fcce07b",
+      verified:
+        "Configuración leída de la línea `configuration:` que imprime ffmpeg.exe -version del ZIP de la versión " +
+        "fijada (incluye --enable-gpl --enable-version3 --enable-libx264, sin --enable-nonfree). El README.txt del " +
+        "mismo ZIP declara GPL v3, el commit citado y las versiones de las bibliotecas externas. El .sha256 lo sirve " +
+        "el proveedor desde el mismo origen que el ZIP: no es una firma independiente.",
+    },
   },
 ];
 
@@ -243,7 +334,26 @@ export function managedTool(id: ManagedToolId): ManagedTool {
 
 /** Nombre del paquete y del ZIP. */
 export const PACKAGE_NAME = "VIUrewards";
+
 export const PACKAGE_FLAVOR = `portable-${TARGET.label}`;
+
+/**
+ * Licencia del **código propio** de VIUrewards.
+ *
+ * No cubre las dependencias npm ni los ejecutables externos, que mantienen sus
+ * propias licencias (ver `LICENSE` y `licenses/` del paquete). El texto completo
+ * está en `LICENSE`, en la raíz del repositorio, y se copia al paquete.
+ */
+export const PROJECT_LICENSE = {
+  spdx: "0BSD",
+  name: "BSD Zero Clause License",
+  file: "LICENSE",
+  /**
+   * `true` cuando la licencia cubre solo el código propio. Los tests lo usan
+   * para impedir que el `LICENSE` raíz se confunda con las de terceros.
+   */
+  coversProjectCodeOnly: true as const,
+} as const;
 
 /** Nombre del ZIP: `VIUrewards-<version>-portable-win-x64.zip`. */
 export function packageFileName(version: string): string {

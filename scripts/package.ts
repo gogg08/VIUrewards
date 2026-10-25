@@ -78,11 +78,13 @@ import {
   NODE_VERSION,
   PACKAGE_CONTRACT_VERSION,
   PACKAGE_NAME,
+  PROJECT_LICENSE,
   TARGET,
   packageFileName,
 } from "./dist/config.ts";
 import { findForbiddenPaths, formatBytes, listFiles, sha256File, treeSize } from "./dist/fs-utils.ts";
 import { INSTALLER_FILE } from "./dist/build-installer.ts";
+import { managedTool } from "./dist/config.ts";
 
 /** Launcher gráfico del paquete (Etapa 3C); se copia a `app/scripts/dist/`. */
 const LAUNCHER_GUI_FILE = "launcher-gui.ps1";
@@ -314,7 +316,20 @@ interface Manifest {
     policy: string;
     updatedBy: string;
     licenseNote: string;
+    /** Proveedor, licencia y fuente del código del artefacto (avisos de terceros). */
+    provenance: {
+      vendor: string;
+      vendorPage: string;
+      license: string;
+      sourceCode?: string;
+      verified: string;
+    };
   }>;
+  /**
+   * Licencia del código propio de VIUrewards. Es independiente de las de
+   * terceros: cubre solo los archivos de este repositorio.
+   */
+  projectLicense: { spdx: string; name: string; file: string; coversProjectCodeOnly: true };
   entries: Array<{ path: string; bytes: number; sha256: string }>;
 }
 
@@ -462,12 +477,13 @@ function pruneNodeModules(nodeModules: string): { removed: number; bytes: number
 
 /**
  * Copia las licencias de las dependencias de producción de terceros que viajan
- * en el paquete. **No** incluye la licencia de VIUrewards: el repositorio
- * todavía no declara una, y el README del paquete lo informa.
+ * en el paquete. **No** incluye la licencia de VIUrewards (`LICENSE`, en la
+ * raíz del paquete), que cubre solo el código propio.
  *
  * Las licencias de los ejecutables externos (Node, yt-dlp, FFmpeg) **no** van
  * acá: no se redistribuyen, y el instalador deja los avisos de cada proveedor
  * junto a los binarios en el directorio de datos (`MANAGED_TOOLS[].notices`).
+ * `licenses/FFMPEG.md` documenta esa procedencia aunque el binario no viaje.
  */
 function collectLicenses(nodeModules: string, licensesDir: string): string[] {
   mkdirSync(licensesDir, { recursive: true });
@@ -550,6 +566,93 @@ function writeSqliteNotice(nodeModules: string, licensesDir: string): string {
 // Documentación del paquete
 // -----------------------------------------------------------------------------
 
+/**
+ * Aviso de terceros de FFmpeg (`licenses/FFMPEG.md` del paquete).
+ *
+ * Los datos salen de `config.ts`, así que el aviso no puede divergir de la
+ * versión/hash configurados. Separa a propósito los hechos verificados (de dónde
+ * sale el archivo, qué declara el proveedor) de las obligaciones legales, que
+ * este proyecto no resuelve por su cuenta.
+ */
+function writeFfmpegNotice(licensesDir: string): string {
+  const tool = managedTool("ffmpeg");
+  const { provenance } = tool;
+  const target = "FFMPEG.md";
+  writeFileSync(
+    join(licensesDir, target),
+    [
+      "# FFmpeg / ffprobe — aviso de terceros",
+      "",
+      "FFmpeg NO se redistribuye dentro de este paquete. Lo descarga el instalador",
+      "(app/scripts/dist/install-tools.ps1) desde el proveedor y lo deja en el",
+      "directorio de datos (bin/ffmpeg.exe, bin/ffprobe.exe) junto con el texto",
+      "GPLv3 y la información de procedencia del propio paquete del proveedor.",
+      "",
+      "## Artefacto fijado",
+      "",
+      "| Dato | Valor |",
+      "| --- | --- |",
+      `| Proveedor | ${provenance.vendor} |`,
+      `| Página del proveedor | ${provenance.vendorPage} |`,
+      `| Archivo | \`${tool.asset.file}\` |`,
+      `| Versión | ${tool.version} |`,
+      `| URL de descarga | ${tool.asset.url} |`,
+      `| SHA-256 | \`${tool.asset.sha256}\` |`,
+      `| Origen del hash | ${tool.asset.checksumSource} |`,
+      `| Licencia declarada | ${provenance.license} |`,
+      `| Código fuente citado por el proveedor | ${provenance.sourceCode ?? "(el proveedor no lo identifica)"} |`,
+      "",
+      "## Hechos verificados",
+      "",
+      provenance.verified,
+      "",
+      "El ZIP del proveedor incluye su propio LICENSE (texto GPLv3) y un README.txt",
+      "con la versión exacta de la compilación, el commit de FFmpeg y las versiones",
+      "de las bibliotecas externas incluidas. El instalador copia ambos junto a los",
+      "binarios (bin/ffmpeg-LICENSE.txt y bin/ffmpeg-PROCEDENCIA.txt).",
+      "",
+      "## Qué usa VIUrewards",
+      "",
+      "VIUrewards ejecuta ffmpeg.exe y ffprobe.exe como PROCESOS SEPARADOS, con",
+      "argumentos de línea de comandos (src/media/args.ts). Las operaciones que",
+      "necesita son libx264 (video), aac (audio), loudnorm y scale: todas están",
+      "presentes en esta compilación, lo que se comprobó con los binarios reales.",
+      "",
+      "Sobre la relación entre los dos programas (obra combinada frente a programas",
+      "separados que se comunican por línea de comandos): aquí solo se deja",
+      "constancia de los hechos técnicos. Este proyecto NO afirma que esa separación",
+      "resuelva por sí sola las obligaciones de la GPLv3.",
+      "",
+      "## Obligaciones y límites",
+      "",
+      "- El hash fijado NO es una firma digital: se publica desde el mismo origen que",
+      "  el ZIP y sirve para detectar corrupción y cambios de archivo, no para",
+      "  autenticar la autoría.",
+      "- Descargar el binario directamente desde el proveedor NO elimina por sí solo",
+      "  las obligaciones de la GPLv3 para quien lo redistribuya. Quien lo haga debe",
+      "  evaluar por su cuenta el código fuente correspondiente y la información de",
+      "  compilación de esa compilación exacta.",
+      "- Este aviso NO constituye una opinión legal ni una declaración de",
+      "  cumplimiento.",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  return target;
+}
+
+/** Copia el `LICENSE` del código propio a la raíz del paquete. */
+function copyProjectLicense(stagingDir: string): string {
+  const from = join(REPO_ROOT, PROJECT_LICENSE.file);
+  if (!existsSync(from)) {
+    throw new BuildError(
+      `Falta ${PROJECT_LICENSE.file} en la raíz del repositorio (licencia del código propio, ${PROJECT_LICENSE.spdx}).`,
+    );
+  }
+  copyFileSync(from, join(stagingDir, PROJECT_LICENSE.file));
+  return PROJECT_LICENSE.file;
+}
+
 function writePackageReadme(target: string, version: string): void {
   const tools = MANAGED_TOOLS.map((tool) => {
     const base = tool.install[0]?.to.split("/")[0] ?? "";
@@ -562,9 +665,11 @@ bandeja del sistema e inicio con Windows) y el instalador de herramientas, pero
 todavía **no** incluye un instalador gráfico ni la actualización automática de
 la aplicación.
 
-> **No es una release.** La licencia de VIUrewards todavía no está declarada:
-> antes de publicar hay que decidirla y revisar las obligaciones de los
-> proveedores de los binarios externos (\`docs/distribution.md\` §4).
+> **No es una release pública.** El código propio de VIUrewards se distribuye
+> bajo 0BSD (ver \`LICENSE\`); las dependencias npm y los ejecutables externos
+> conservan sus propias licencias (\`licenses/\`). Antes de publicar hay que
+> revisar las obligaciones de los proveedores de los binarios externos
+> (\`docs/distribution.md\` §4).
 
 ## Qué contiene
 
@@ -572,7 +677,9 @@ la aplicación.
 VIUrewards.cmd    punto de entrada: doble clic (abre el launcher)
 app/              aplicación (código TS, web/, overlay/, dependencias de producción,
                   instalador de herramientas y launcher en app/scripts/dist/)
-licenses/         licencias de las dependencias npm redistribuidas
+licenses/         licencias de las dependencias npm redistribuidas y avisos
+                  de terceros (FFMPEG.md)
+LICENSE           licencia 0BSD del código propio de VIUrewards
 manifest.json     versión, commit, plataforma, runtime esperado y hashes
 SHA256SUMS.txt    hashes de los archivos del paquete
 \`\`\`
@@ -655,11 +762,23 @@ versión: el instalador no sobrescribe una herramienta existente
 
 ## Licencias
 
-Ver \`licenses/\` para las dependencias npm. Los avisos de Node.js, yt-dlp y
-FFmpeg los deja el instalador junto a cada binario en el directorio de datos.
+- **VIUrewards (código propio):** licencia 0BSD, texto completo en \`LICENSE\`.
+  Permite usar, modificar y redistribuir el código sin exigir que los derivados
+  se publiquen como código abierto. Cubre **solo** los archivos de este
+  repositorio.
+- **Dependencias npm:** ver \`licenses/\`, con la versión y la licencia declarada
+  de cada paquete redistribuido.
+- **SQLite** (embebido en \`better-sqlite3\`): dominio público (\`licenses/SQLITE.txt\`).
+- **Avisos de terceros:** \`licenses/FFMPEG.md\` documenta la procedencia de
+  FFmpeg/ffprobe aunque el binario no viaje en el paquete. Los avisos de
+  Node.js, yt-dlp y FFmpeg los deja el instalador junto a cada binario en el
+  directorio de datos; \`manifest.json\` (\`managedTools[].provenance\`) guarda la
+  misma información en forma legible por máquina.
+
 FFmpeg es una compilación **GPLv3** de un proveedor externo (gyan.dev, enlazado
-por FFmpeg.org; **no** es el upstream de FFmpeg): consultá
-\`docs/distribution.md\` §4 antes de redistribuir nada.
+por FFmpeg.org; **no** es el upstream de FFmpeg). Descargarlo desde el proveedor
+no elimina por sí solo las obligaciones de la GPLv3 para quien lo redistribuya:
+consultá \`docs/distribution.md\` §4 antes de redistribuir nada.
 `;
   writeFileSync(target, text, "utf8");
 }
@@ -741,7 +860,14 @@ async function main(): Promise<void> {
   // SQLite se documenta ANTES de podar: `better-sqlite3/deps` (fuente) es lo
   // único que trae el header del que se lee el texto de atribución.
   licenseFiles.push(writeSqliteNotice(nodeModules, licensesDir));
+  // Aviso de terceros de FFmpeg: el binario no viaja, pero la procedencia
+  // fijada y su licencia GPLv3 quedan documentadas en el paquete.
+  licenseFiles.push(writeFfmpegNotice(licensesDir));
   info(`${licenseFiles.length} archivos de licencia`);
+
+  step("Copiando la licencia del proyecto");
+  const projectLicenseFile = copyProjectLicense(stagingDir);
+  info(`${projectLicenseFile} (${PROJECT_LICENSE.spdx})`);
 
   step("Podiendo node_modules (lista explícita de config.ts)");
   const pruned = pruneNodeModules(nodeModules);
@@ -794,7 +920,9 @@ async function main(): Promise<void> {
       policy: tool.policy,
       updatedBy: tool.updatedBy,
       licenseNote: tool.licenseNote,
+      provenance: tool.provenance,
     })),
+    projectLicense: PROJECT_LICENSE,
     entries,
   };
   writeFileSync(join(stagingDir, MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");

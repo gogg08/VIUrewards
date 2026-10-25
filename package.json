@@ -11,6 +11,7 @@
     "test:all": "vitest run && vitest run --config vitest.e2e.config.ts",
     "package:portable": "node scripts/package.ts",
     "build:installer": "node scripts/dist/build-installer.ts",
+    "verify:node-release": "node scripts/dist/verify-node-release.ts",
     "test:dist": "vitest run --config vitest.dist.config.ts"
   },
   "devDependencies": {

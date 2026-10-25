@@ -1,0 +1,37 @@
+BSD Zero Clause License
+
+Copyright (c) 2026 The VIUrewards contributors
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+
+--------------------------------------------------------------------------------
+Alcance / Scope
+--------------------------------------------------------------------------------
+
+This license covers ONLY the original source code of VIUrewards in this
+repository (the TypeScript/JavaScript sources, the dashboard and overlay
+assets in web/ and overlay/, the build and packaging scripts in scripts/, and
+the documentation in docs/), except where a file states otherwise.
+
+It does NOT cover, and does NOT replace, the licenses of third-party
+components:
+
+- npm dependencies listed in package.json / package-lock.json keep their own
+  licenses; copies are collected into licenses/ in the distribution package.
+- SQLite, embedded in the better-sqlite3 native binding, is in the public
+  domain.
+- Node.js, yt-dlp, FFmpeg and ffprobe are separate programs. They are NOT
+  redistributed in this repository's distribution package: the installer
+  downloads them from each vendor and keeps each vendor notice next to the
+  installed binaries. See docs/distribution.md.
+
+SPDX-License-Identifier: 0BSD

@@ -180,11 +180,25 @@ paquete permite verificar cada archivo extraído.
 
 ### Lo que sí viaja en el paquete
 
+- **`LICENSE` (raíz del paquete)**: la licencia del **código propio** de
+  VIUrewards, **0BSD** (SPDX `0BSD`, texto oficial de la BSD Zero Clause License).
+  Permite usar, modificar y redistribuir el código propio sin exigir que los
+  derivados se publiquen como código abierto. Su sección «Alcance / Scope»
+  aclara que cubre **solo** los archivos de este repositorio y que **no** cubre
+  ni reemplaza las licencias de terceros.
 - **Dependencias npm** (`fastify`, `ws`, `better-sqlite3`, …):
   `licenses/<paquete>.txt`, con la licencia declarada en su `package.json` y su
-  archivo de licencia.
+  archivo de licencia. Ninguno de esos archivos menciona 0BSD: son documentos
+  independientes.
 - **SQLite**: `licenses/SQLITE.txt` (dominio público, con el texto de atribución
   del header de SQLite 3.53.4 que embebe `better-sqlite3`).
+- **`licenses/FFMPEG.md`**: aviso de terceros de FFmpeg/ffprobe. El binario **no**
+  viaja; el archivo documenta proveedor, archivo, versión, hash, licencia
+  declarada, enlaces verificados y qué hace falta antes de redistribuir. Se
+  genera desde `config.ts`, así que no puede divergir del pin.
+- **`manifest.json`**: `managedTools[].provenance` (proveedor, página, licencia,
+  fuente del código y cómo se verificó) y `projectLicense` (SPDX del código
+  propio). Misma información, legible por máquina.
 
 ### Lo que NO viaja y por qué
 
@@ -206,10 +220,42 @@ hay que tener presente antes de publicar:
    sí cambia quién hace la distribución. La procedencia y el texto de la licencia
    quedan junto a los binarios.
 2. **El hash fijado no es una firma.** Ver §1.
-3. **La licencia de VIUrewards no está declarada.** El repositorio no tiene
-   archivo `LICENSE` y esa decisión es del autor del proyecto: **no se inventa una**
-   ni se crea el archivo desde el código. Sin ella, el paquete no puede presentarse
-   como listo para publicarse.
+3. **La identidad de la clave GPG de Node no se verifica de forma autónoma.** El
+   script de mantenimiento (`npm run verify:node-release`) comprueba la firma
+   contra el keyring del repositorio `nodejs/release-keys`, pero **ese keyring se
+   clona del mismo GitHub cuya identidad no se puede probar sin un canal
+   independiente**. Sirve para detectar un release alterado en `nodejs.org` o una
+   clave que no esté en la lista oficial; no sustituye la verificación manual de
+   las huellas por un segundo canal (§4.1).
+
+### 4.1 Datos verificados de FFmpeg (Etapa 3D)
+
+Hechos comprobados sobre el artefacto **fijado** (no sobre «una compilación de
+gyan» en general):
+
+| Dato | Valor | Cómo se verificó |
+| --- | --- | --- |
+| Archivo | `ffmpeg-9.0.2-essentials_build.zip` | `config.ts` (`FFMPEG_ASSET`) |
+| SHA-256 | `60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba` | coincide con la caché `build/downloads/` |
+| Versión | 9.0.2 | `README.txt` del ZIP y página del proveedor (release 2026-09-19) |
+| Commit de FFmpeg | `946fcce07b` | `README.txt` del ZIP («Source Code») y página de gyan.dev |
+| Licencia | GPL v3 | `README.txt` del ZIP («License: GPL v3») y la página del proveedor |
+| `configure` | `--enable-gpl --enable-version3 --enable-static … --enable-libx264 --enable-libx265 …` | salida de `ffmpeg.exe -version` del ZIP fijado; **sin** `--enable-nonfree` |
+| Bibliotecas externas | ~40 (x264 v0.165.3223, x265 4.3-45-g116b875, lame 3.100, opus v1.6.1-68, …) | listado del `README.txt` del ZIP |
+| Funciones que usa la app | `libx264`, `aac`, `loudnorm`, `scale` | `src/media/args.ts`; presentes en esta compilación |
+
+Enlaces reales (no inventados):
+
+- Página del proveedor: <https://www.gyan.dev/ffmpeg/builds/>
+- Descarga fijada: <https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-9.0.2-essentials_build.zip>
+- Fuente citada por el proveedor: <https://github.com/FFmpeg/FFmpeg/commit/946fcce07b>
+
+**Lo que no está resuelto:** el proveedor cita el commit de FFmpeg, pero no
+publica un *Corresponding Source* empaquetado con los scripts de compilación ni
+con el código de las bibliotecas externas de esa compilación. Un enlace al
+repositorio de FFmpeg **no alcanza** para cumplir las obligaciones de una
+compilación estática con bibliotecas externas. Eso queda **pendiente** y no se
+presenta como resuelto.
 
 ### VIUrewards y los programas externos
 
@@ -221,9 +267,17 @@ de la FSF sobre agregación e "obra combinada" no es un dictamen jurídico, y
 **requiere asesoramiento legal** antes de una publicación que conceda permisos de
 reutilización del código.
 
-> **Bloqueante antes de publicar:** la licencia de VIUrewards no está decidida y
-> las obligaciones de redistribución de FFmpeg deben aclararse para el canal de
-> distribución que se elija. El paquete actual es de **prueba**.
+> **Bloqueante antes de publicar:** las obligaciones de redistribución de FFmpeg
+> deben aclararse para el canal de distribución que se elija. La licencia del
+> código propio ya está declarada (0BSD, ver `LICENSE`). El paquete actual es de
+> **prueba**.
+
+### 4.2 Verificación GPG del release de Node (solo mantenimiento)
+
+El instalador y el launcher para streamers verifican **solo SHA-256** y nunca
+necesitan GPG. La comprobación de la firma es un paso de **quien prepara un
+release**, reproducible con `npm run verify:node-release`. Procedimiento,
+fuente de las claves y alternativa manual en `docs/node-release-verification.md`.
 
 ---
 
