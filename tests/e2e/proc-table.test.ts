@@ -7,16 +7,23 @@
  * NO se confunda con "no queda nada vivo".
  */
 
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 
 import {
   IS_WINDOWS,
   directChildren,
+  noteTest,
   parseCsv,
   processTable,
   rowsFromWindowsCsv,
 } from "./helpers/proc-tree.ts";
+
+// Diagnóstico (solo con `CI`): los avisos de la consulta de procesos identifican
+// el test en curso, así un cuelgue de `processTable()` deja ver cuál era.
+beforeEach((context) => {
+  noteTest(context.task.name);
+});
 
 describe("parseCsv", () => {
   it("separa campos simples y descarta el CR de CRLF", () => {

@@ -40,7 +40,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.ts";
 import { upsertClip } from "../../src/db/clips.ts";
@@ -49,6 +49,7 @@ import {
   captureBaseline,
   describeSurvivors,
   killOwnTree,
+  noteTest,
   spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
 
@@ -313,6 +314,12 @@ function cleanup(): void {
     }
   }
 }
+
+// Diagnóstico (solo con `CI`): el nombre del test que está por correr, para que
+// los avisos de la limpieza identifiquen la prueba aunque el proceso se cuelgue.
+beforeEach((context) => {
+  noteTest(context.task.name);
+});
 
 /**
  * Limpieza al terminar CADA test, falle o no.

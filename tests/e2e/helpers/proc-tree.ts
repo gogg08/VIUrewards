@@ -46,6 +46,20 @@ export const KILL_WAIT_MS = 5_000;
 /** Espera máxima después de escalar. */
 export const FORCE_WAIT_MS = 10_000;
 
+/*
+ * `processTable()` usa una consulta CIM SÍNCRONA (`Get-CimInstance` vía
+ * `execFileSync`) y, por ahora, NO tiene timeout propio: si `powershell.exe` o el
+ * servicio WMI no responden, la consulta espera indefinidamente y bloquea el
+ * bucle de eventos de todo el proceso de test.
+ *
+ * Una solución con límite de tiempo seguro tiene que evitar ese bloqueo (un
+ * `Atomics.wait` en el hilo principal NO sirve: impide que corra el callback que
+ * entrega el resultado) y además gestionar el proceso enumerador, porque acotar
+ * con `execFileSync({ timeout })` lo MATA a mitad de una consulta CIM.
+ *
+ * Es un RIESGO DE BLOQUEO conocido, no una causa confirmada de ningún fallo.
+ */
+
 let spawnedPids: number[] = [];
 let originalSpawn: typeof cp.spawn | null = null;
 let baseline = new Set<number>();
@@ -229,6 +243,36 @@ export function rowsFromWindowsCsv(text: string): ProcessRow[] {
 }
 
 /**
+ * Mensajes de diagnóstico de la limpieza, SOLO con `CI` definido.
+ *
+ * Sin `CI` (uso local) no se imprime nada: la salida de los tests queda igual.
+ * Con `CI`, se emite un evento ANTES de cada paso que puede quedarse esperando
+ * (la consulta de procesos es la única llamada que puede bloquearse de forma
+ * indefinida). Un mensaje posterior a la limpieza no sirve para localizar un
+ * cuelgue.
+ *
+ * No se imprimen líneas de comandos completas, variables de entorno, tokens ni
+ * pids: solo el archivo, el nombre del test y tiempos.
+ */
+export const CI_DIAGNOSTICS = process.env.CI === "true" || process.env.CI === "1";
+
+let currentTest = "(sin nombre)";
+
+/** Declara el test que arranca (aparece en los siguientes diagnósticos). */
+export function noteTest(name: string): void {
+  currentTest = name;
+  if (CI_DIAGNOSTICS) diagStart(`test | ${currentTest}`);
+}
+
+function diagStart(stage: string): void {
+  process.stdout.write(`[ci-diag] inicio ${stage} t=${Date.now()}\n`);
+}
+
+function diagEnd(stage: string, startedAt: number, detail: string): void {
+  process.stdout.write(`[ci-diag] fin ${stage} ms=${Date.now() - startedAt} ${detail}\n`);
+}
+
+/**
  * Último error de enumeración, si lo hubo.
  *
  * `processTable()` devuelve `[]` ante un fallo para que los llamadores no
@@ -246,6 +290,22 @@ export function processTableError(): string | null {
 
 /** Enumera los procesos actuales. Ver `lastTableError` para el porqué de `[]`. */
 export function processTable(): ProcessRow[] {
+  // El aviso va ANTES de la consulta: es la llamada que puede bloquearse, y un
+  // mensaje que solo se imprima al volver no permitiría localizar el cuelgue.
+  const startedAt = Date.now();
+  if (CI_DIAGNOSTICS) diagStart(`processTable | ${currentTest}`);
+  const rows = readProcessTable();
+  if (CI_DIAGNOSTICS) {
+    diagEnd(
+      `processTable | ${currentTest}`,
+      startedAt,
+      `filas=${rows.length} error=${lastTableError === null ? "null" : JSON.stringify(lastTableError)}`,
+    );
+  }
+  return rows;
+}
+
+function readProcessTable(): ProcessRow[] {
   try {
     if (IS_WINDOWS) {
       const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_TABLE_SCRIPT], {
@@ -434,6 +494,21 @@ export interface KillResult {
  * - Devuelve los que sobrevivieron para que el test falle con nombre y apellido.
  */
 export async function killOwnTree(options: OwnTreeOptions = {}): Promise<KillResult> {
+  const startedAt = Date.now();
+  if (CI_DIAGNOSTICS) diagStart(`cleanup | ${currentTest}`);
+  const result = await runCleanup(options);
+  if (CI_DIAGNOSTICS) {
+    diagEnd(
+      `cleanup | ${currentTest}`,
+      startedAt,
+      `muertos=${result.killed.length} vivos=${result.survivors.length} ` +
+        `enumeracion=${result.enumerationError === null ? "ok" : "FALLO"}`,
+    );
+  }
+  return result;
+}
+
+async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
   const killed: number[] = [];
   const { targets, protectedPids } = ownTree(options);
   const enumerationError = processTableError();

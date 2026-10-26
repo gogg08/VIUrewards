@@ -35,7 +35,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.ts";
 import { SHARED_RESOURCES_LOCK_FILE } from "../../src/db/instance-lock.ts";
@@ -43,6 +43,7 @@ import {
   captureBaseline,
   describeSurvivors,
   killOwnTree,
+  noteTest,
   spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
 
@@ -154,6 +155,12 @@ function cleanupRoots(): void {
     }
   }
 }
+
+// Diagnóstico (solo con `CI`): identifica el test en curso en los avisos de la
+// limpieza, para saber cuál estaba corriendo si el proceso se cuelga.
+beforeEach((context) => {
+  noteTest(context.task.name);
+});
 
 afterEach(async () => {
   const pids = created

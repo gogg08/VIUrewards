@@ -114,8 +114,40 @@ jobs:
           ffmpeg -version | Select-Object -First 1
           ffprobe -version | Select-Object -First 1
 
-      - name: Pruebas e2e
-        run: npm run test:e2e
+      # Cada archivo e2e corre en SU PROPIO paso, secuencial y con nombre
+      # propio. Un paso único de 45 minutos es opaco: si se cuelga, el fallo del
+      # runner no deja logs y no se sabe qué prueba lo causó. Con pasos separados,
+      # el paso que falla (o el último sin completar) identifica el archivo.
+      #
+      # LIMITACIÓN: `timeout-minutes` corta el paso solo si el runner está sano.
+      # Si el runner pierde comunicación con GitHub, el log se pierde igual; lo
+      # único que sobrevive es QUÉ PASO no llegó a completar.
+      #
+      # NO se corren en paralelo: Vitest ya usa workers y lanzar seis suites a la
+      # vez aumentaría la presión sobre un runner de 4 vCPU.
+      - name: E2E · tabla de procesos
+        timeout-minutes: 5
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/proc-table.test.ts
+
+      - name: E2E · cierre ordenado
+        timeout-minutes: 8
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/shutdown.test.ts
+
+      - name: E2E · limpieza y exclusividad al arrancar
+        timeout-minutes: 8
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/startup-cleanup.test.ts
+
+      - name: E2E · canal de control del launcher
+        timeout-minutes: 8
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/launcher-control.test.ts
+
+      - name: E2E · reconstrucción de la biblioteca
+        timeout-minutes: 8
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/reconcile-rebuild.test.ts
+
+      - name: E2E · herramientas de la biblioteca
+        timeout-minutes: 8
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/library-tools.test.ts
 
       # Construye el ZIP, comprueba que no haya ejecutables de terceros y corre
       # el smoke sobre el paquete extraído con el runtime fijado (si el smoke

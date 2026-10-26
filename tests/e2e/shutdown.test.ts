@@ -3,12 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, afterEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, expect, it } from "vitest";
 
 import {
   captureBaseline,
   describeSurvivors,
   killOwnTree,
+  noteTest,
   spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
 
@@ -220,6 +221,12 @@ function cleanup(): void {
     }
   }
 }
+
+// Diagnóstico (solo con `CI`): identifica el test en curso en los avisos de la
+// limpieza, para saber cuál estaba corriendo si el proceso se cuelga.
+beforeEach((context) => {
+  noteTest(context.task.name);
+});
 
 /**
  * Limpieza al terminar CADA test, falle o no.
