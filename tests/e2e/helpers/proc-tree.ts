@@ -368,18 +368,42 @@ export function processTableError(): string | null {
   return lastTableError;
 }
 
+/*
+ * Contador de consultas REALES al enumerador (medido, no estimado).
+ *
+ * Existe para que los tests puedan afirmar cuántas consultas hace una
+ * operación: en un paso de CI limitado a 5 minutos, cada consulta son ~1 s en
+ * esta PC y más en un runner cargado. Se cuenta cada invocación del enumerador,
+ * que es justo la llamada a `Get-CimInstance`.
+ */
+let tableQueries = 0;
+
+/** Consultas de procesos hechas desde que arrancó este proceso de test. */
+export function processTableQueryCount(): number {
+  return tableQueries;
+}
+
+/** Reinicia el contador (tests). Devuelve cuántas se habían hecho. */
+export function resetProcessTableQueryCount(): number {
+  const previous = tableQueries;
+  tableQueries = 0;
+  return previous;
+}
+
 /** Enumera los procesos actuales. Ver `lastTableError` para el porqué de `[]`. */
 export async function processTable(): Promise<ProcessRow[]> {
   // El aviso va ANTES de la consulta: es la llamada que puede tardar o fallar. Un
   // mensaje que solo se imprima al volver no permitiría localizar un cuelgue.
   const startedAt = Date.now();
+  tableQueries += 1;
   if (CI_DIAGNOSTICS) diagStart(`processTable | ${currentTest}`);
   const rows = await readProcessTable();
   if (CI_DIAGNOSTICS) {
     diagEnd(
       `processTable | ${currentTest}`,
       startedAt,
-      `filas=${rows.length} error=${lastTableError === null ? "null" : JSON.stringify(lastTableError)}`,
+      `filas=${rows.length} consultas=${tableQueries} ` +
+        `error=${lastTableError === null ? "null" : JSON.stringify(lastTableError)}`,
     );
   }
   return rows;
@@ -449,9 +473,12 @@ export async function parentChain(table?: ProcessRow[]): Promise<number[]> {
  * externos). Se llama al empezar el archivo de test.
  */
 export async function captureBaseline(extra: number[] = []): Promise<void> {
-  baseline = new Set(await parentChain());
+  // UNA sola consulta: antes `parentChain()` enumeraba por su cuenta y después
+  // se volvía a enumerar para los `cmd.exe`, el doble de WMI para la misma foto.
+  const table = await processTable();
+  baseline = new Set(await parentChain(table));
   for (const pid of extra) baseline.add(pid);
-  for (const row of await processTable()) {
+  for (const row of table) {
     if (/(^|[\\/])cmd\.exe$/i.test(row.cmd)) baseline.add(row.pid);
   }
 }
@@ -498,6 +525,16 @@ export interface OwnTree {
   targets: number[];
   /** Procesos de la línea de padres: nunca se tocan. */
   protectedPids: number[];
+  /**
+   * La instantánea de procesos con la que se calcularon los objetivos.
+   *
+   * Se devuelve para que el llamador que necesita la MISMA foto (p. ej. ordenar
+   * por profundidad) no repita la consulta CIM: cada consulta cuesta ~1 s en
+   * esta PC y más en un runner cargado. Es una foto del momento en que se
+   * calcularon los objetivos: NUNCA sirve para afirmar que un proceso terminó
+   * (para eso está `isAlive`, que pregunta al SO en el acto).
+   */
+  table: ProcessRow[];
 }
 
 /**
@@ -506,6 +543,8 @@ export interface OwnTree {
  * `targets`: hijos directos y descendientes del proceso de test, más los pids
  * del espía con sus ancestros, menos la línea de padres. Los pids de la lista
  * blanca que no sean ancestros de un hijo propios se excluyen.
+ *
+ * Hace UNA consulta de procesos y devuelve esa misma tabla en `table`.
  */
 export async function ownTree(options: OwnTreeOptions = {}): Promise<OwnTree> {
   const table = await processTable();
@@ -541,7 +580,7 @@ export async function ownTree(options: OwnTreeOptions = {}): Promise<OwnTree> {
 
   for (const pid of chain) targets.delete(pid);
   targets.delete(process.pid);
-  return { targets: [...targets], protectedPids: chain };
+  return { targets: [...targets], protectedPids: chain, table };
 }
 
 /**
@@ -619,7 +658,9 @@ async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
   };
 
   phaseStartedAt = beginPhase("objetivos");
-  const { targets, protectedPids } = await ownTree(options);
+  // Una sola consulta de procesos: la misma tabla se reutiliza para ordenar y
+  // para decidir si se puede seguir. No se comparte fuera de esta limpieza.
+  const { targets, protectedPids, table } = await ownTree(options);
   const enumerationError = processTableError();
   endPhase("objetivos", phaseStartedAt, `candidatos=${targets.length}`);
   // Sin tabla no se puede calcular el árbol ni comprobar supervivientes: se
@@ -629,7 +670,8 @@ async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
   }
 
   phaseStartedAt = beginPhase("orden");
-  const table = await processTable();
+  // Fotografía de los objetivos: sólo decide el orden (hojas primero). Una
+  // tabla de hace un momento no afirma nada sobre quién sigue vivo.
   const depthOf = (pid: number): number => ancestorsOf(table, pid).length;
   const ordered = targets
     .filter((pid) => pid !== process.pid && !protectedPids.includes(pid))
@@ -682,13 +724,15 @@ async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
   }
 
   phaseStartedAt = beginPhase("supervivientes");
-  // Comprobación independiente de las esperas: se vuelve a preguntar al SO. Un
-  // error de enumeración aquí también hace fallar la limpieza: sin tabla no se
-  // puede afirmar que no quedó nada vivo.
-  await processTable();
-  const survivorEnumerationError = processTableError();
+  // Comprobación independiente de las esperas, pero SIN otra consulta CIM: antes
+  // se enumeraba la tabla entera sólo para leer el error global y la tabla no se
+  // usaba. La supervivencia se pregunta al SO en el acto con `isAlive`, y un
+  // fallo de enumeración ya quedó registrado en `enumerationError` (arriba).
   for (const pid of killed) {
     if (!survivors.includes(pid) && isAlive(pid)) survivors.push(pid);
+  }
+  for (const pid of ordered) {
+    if (!protectedPids.includes(pid) && !survivors.includes(pid) && isAlive(pid)) survivors.push(pid);
   }
   endPhase("supervivientes", phaseStartedAt, `vivos=${survivors.length}`);
 
@@ -696,7 +740,7 @@ async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
   return {
     killed,
     survivors,
-    enumerationError: enumerationError ?? survivorEnumerationError,
+    enumerationError,
   };
 }
 

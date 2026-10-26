@@ -24,6 +24,8 @@ import {
   parseCsv,
   processTable,
   processTableError,
+  processTableQueryCount,
+  resetProcessTableQueryCount,
   rowsFromWindowsCsv,
   setProcessEnumerator,
   spyOnChildProcess,
@@ -127,12 +129,23 @@ describe.runIf(IS_WINDOWS)("processTable con el proceso real", () => {
     try {
       expect(typeof child.pid).toBe("number");
       const pid = child.pid as number;
-      // Se espera a que el SO lo registre con el padre correcto.
+      /*
+       * Se espera a que el SO lo registre con el padre correcto.
+       *
+       * El bucle sondea como MUCHO hasta el plazo, no un número fijo de
+       * intentos: cada consulta cuesta ~1 s (más en un runner cargado), así que
+       * "40 intentos" podían ser 40 consultas si el hijo nunca aparecía, y en el
+       * caso normal son casi todas desperdiciadas porque el hijo tarda unos
+       * milisegundos en registrarse. El plazo se mide con el reloj, no contando
+       * consultas: ser lento no lo vuelve intermitente.
+       */
+      const deadline = Date.now() + 20_000;
       let found: number[] = [];
-      for (let attempt = 0; attempt < 40 && found.length === 0; attempt++) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
+      do {
         found = await directChildren(process.pid);
-      }
+        if (found.includes(pid)) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      } while (Date.now() < deadline);
       expect(found, "la enumeración no vio al hijo recién lanzado").toContain(pid);
     } finally {
       if (child.pid !== undefined) {
@@ -248,6 +261,89 @@ describe("enumerador simulado", () => {
       expect(processTableError()).toBeNull();
     } finally {
       restore();
+    }
+  });
+});
+
+/**
+ * Cuántas consultas de procesos hace cada operación.
+ *
+ * Se cuentan con un enumerador simulado (`setProcessEnumerator`): no se invoca
+ * PowerShell ni WMI, así que la prueba es instantánea y comprueba exactamente
+ * la propiedad que importa — que no se repita la consulta dentro de una misma
+ * operación. El plazo, el parsing y los errores ya se prueban aparte.
+ *
+ * En un paso de CI de 5 minutos, cada consulta son ~1 s en esta PC y más en un
+ * runner cargado: `killOwnTree` bajó de 3 consultas a 1.
+ */
+describe("consultas de procesos por operación", () => {
+  /** Enumerador que cuenta y responde un CSV mínimo (proceso actual + pid 4). */
+  function countingEnumerator(rows?: Array<[number, number, string]>): {
+    calls: () => number;
+    restore: () => void;
+  } {
+    let calls = 0;
+    const body = rows ??
+      [
+        [process.pid, 0, "node.exe"],
+        [4, 0, ""],
+      ];
+    const csv = [
+      '"pid","ppid","cmd"',
+      ...body.map(([pid, ppid, cmd]) => `"${pid}","${ppid}","${cmd}"`),
+      "",
+    ].join("\r\n");
+    const restore = setProcessEnumerator(() => {
+      calls += 1;
+      return Promise.resolve(csv);
+    });
+    return { calls: () => calls, restore };
+  }
+
+  it("ownTree hace UNA consulta y devuelve esa misma tabla", async () => {
+    const fake = countingEnumerator();
+    try {
+      const tree = await ownTree();
+      expect(fake.calls()).toBe(1);
+      // La tabla que se devuelve es la que se usó para calcular los objetivos.
+      expect(tree.table.some((row) => row.pid === process.pid)).toBe(true);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("captureBaseline hace UNA sola consulta (antes hacía dos)", async () => {
+    const fake = countingEnumerator();
+    try {
+      await captureBaseline();
+      expect(fake.calls()).toBe(1);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("una limpieza hace UNA consulta en total (antes hacía tres)", async () => {
+    // Sin raíces ni descendientes propios: se ejecuta el camino completo que
+    // antes encadenaba objetivos (1) + orden (1) + supervivientes (1).
+    const fake = countingEnumerator();
+    try {
+      const result = await killOwnTree({ roots: [] });
+      expect(result.enumerationError).toBeNull();
+      expect(fake.calls()).toBe(1);
+    } finally {
+      fake.restore();
+    }
+  });
+
+  it("el contador real refleja las consultas hechas", async () => {
+    const fake = countingEnumerator();
+    try {
+      resetProcessTableQueryCount();
+      await processTable();
+      await processTable();
+      expect(processTableQueryCount()).toBe(2);
+    } finally {
+      fake.restore();
     }
   });
 });
