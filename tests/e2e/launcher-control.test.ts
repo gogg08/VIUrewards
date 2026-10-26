@@ -35,7 +35,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.ts";
 import { SHARED_RESOURCES_LOCK_FILE } from "../../src/db/instance-lock.ts";
@@ -47,8 +47,12 @@ import {
   spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
 
-captureBaseline();
 spyOnChildProcess();
+// La línea base se toma ASÍNCRONA: la consulta de procesos ya no bloquea el
+// bucle de eventos, así que hay que esperarla antes del primer test.
+beforeAll(async () => {
+  await captureBaseline();
+});
 
 const IS_WINDOWS = process.platform === "win32";
 const LAUNCHER = new URL("../../scripts/dist/launcher-harness.ps1", import.meta.url).pathname.replace(
@@ -169,7 +173,7 @@ afterEach(async () => {
     .filter((pid): pid is number => typeof pid === "number");
   const result = await killOwnTree({ roots: pids });
   expect(result.enumerationError, "la enumeración de procesos falló; no se puede afirmar que no quedó nada vivo").toBeNull();
-  expect(result.survivors, describeSurvivors(result.survivors)).toEqual([]);
+  expect(result.survivors, await describeSurvivors(result.survivors)).toEqual([]);
   cleanupRoots();
 });
 

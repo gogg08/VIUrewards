@@ -34,7 +34,7 @@
  */
 
 import cp from "node:child_process";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 
 import { killProcessTree } from "../../../src/media/run-process.ts";
@@ -46,19 +46,85 @@ export const KILL_WAIT_MS = 5_000;
 /** Espera máxima después de escalar. */
 export const FORCE_WAIT_MS = 10_000;
 
-/*
- * `processTable()` usa una consulta CIM SÍNCRONA (`Get-CimInstance` vía
- * `execFileSync`) y, por ahora, NO tiene timeout propio: si `powershell.exe` o el
- * servicio WMI no responden, la consulta espera indefinidamente y bloquea el
- * bucle de eventos de todo el proceso de test.
+/**
+ * Plazo de UNA consulta de procesos.
  *
- * Una solución con límite de tiempo seguro tiene que evitar ese bloqueo (un
- * `Atomics.wait` en el hilo principal NO sirve: impide que corra el callback que
- * entrega el resultado) y además gestionar el proceso enumerador, porque acotar
- * con `execFileSync({ timeout })` lo MATA a mitad de una consulta CIM.
- *
- * Es un RIESGO DE BLOQUEO conocido, no una causa confirmada de ningún fallo.
+ * Medido en esta PC: `Get-CimInstance Win32_Process` tarda ~1 s por llamada. En
+ * un runner de CI cargado puede ser varias veces más lento, así que 15 s deja
+ * margen amplio y sigue cortando mucho antes que el plazo de un test e2e (90 s)
+ * y que el `timeout-minutes` del paso de CI (8 min). Los dos plazos son
+ * INDEPENDIENTES: este acota la consulta, no el test.
  */
+export const PROCESS_TABLE_TIMEOUT_MS = 15_000;
+
+/**
+ * Enumerador de procesos, inyectable en tests.
+ *
+ * Resuelve con la salida cruda del comando (CSV en Windows, texto en Unix).
+ * Rechaza con el error de la ejecución, de un código de salida distinto de 0 o
+ * del plazo. El llamador decide qué es cada cosa; aquí no se interpreta nada.
+ */
+export type ProcessEnumerator = (command: string, args: string[], timeoutMs: number) => Promise<string>;
+
+/*
+ * La consulta de procesos es ASÍNCRONA a propósito.
+ *
+ * Antes era `execFileSync` sin plazo: si `powershell.exe` o el servicio WMI no
+ * respondían, la consulta esperaba para siempre y congelaba el bucle de eventos
+ * del worker de test (medido: un timer de 1000 ms no llegó a dispararse y el
+ * proceso quedó trabado hasta matarlo). Con el bucle congelado, ni el plazo del
+ * test ni el `timeout-minutes` del paso de CI pueden actuar, y el runner muere
+ * sin dejar logs.
+ *
+ * Con `execFile` + `timeout` + `killSignal: SIGKILL` el bucle sigue libre, el
+ * plazo se cumple y el enumerador se termina de verdad. No se usa `Atomics.wait`
+ * ni ninguna espera síncrona.
+ */
+
+/** Ejecutor real: `execFile` asíncrono con plazo y cierre fuerte. */
+const execFileEnumerator: ProcessEnumerator = (command, args, timeoutMs) =>
+  new Promise<string>((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        encoding: "utf8",
+        windowsHide: true,
+        maxBuffer: 32 * 1024 * 1024,
+        timeout: timeoutMs,
+        // Terminación fuerte: un `SIGTERM` en Windows no detiene de forma fiable
+        // a un `powershell.exe` colgado dentro de una llamada CIM.
+        killSignal: "SIGKILL",
+      },
+      (error, stdout) => {
+        if (error) {
+          const killed = (error as { killed?: unknown }).killed === true;
+          const detail = killed
+            ? `la consulta de procesos superó el plazo de ${timeoutMs} ms y se terminó`
+            : `la consulta de procesos falló: ${error.message}`;
+          reject(new Error(detail));
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+
+let enumerator: ProcessEnumerator = execFileEnumerator;
+
+/**
+ * Reemplaza el enumerador (tests). Devuelve una función para restaurarlo.
+ *
+ * El repo de tests lo usa para simular una consulta lenta o fallida sin
+ * depender de que el WMI real se bloquee.
+ */
+export function setProcessEnumerator(next: ProcessEnumerator): () => void {
+  const previous = enumerator;
+  enumerator = next;
+  return () => {
+    enumerator = previous;
+  };
+}
 
 let spawnedPids: number[] = [];
 let originalSpawn: typeof cp.spawn | null = null;
@@ -156,8 +222,8 @@ export interface ProcessRow {
  * (no texto libre) porque escapa comas y comillas de `CommandLine`; por eso se
  * parsea con un lector de CSV real y no con `split(",")`.
  *
- * Unix: `ps`. `execFileSync` espera a que el proceso termine, así que no deja
- * procesos que limpiar.
+ * Unix: `ps`, con el mismo plazo y la misma terminación fuerte que la consulta
+ * de Windows.
  */
 const WINDOWS_TABLE_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -289,12 +355,12 @@ export function processTableError(): string | null {
 }
 
 /** Enumera los procesos actuales. Ver `lastTableError` para el porqué de `[]`. */
-export function processTable(): ProcessRow[] {
-  // El aviso va ANTES de la consulta: es la llamada que puede bloquearse, y un
-  // mensaje que solo se imprima al volver no permitiría localizar el cuelgue.
+export async function processTable(): Promise<ProcessRow[]> {
+  // El aviso va ANTES de la consulta: es la llamada que puede tardar o fallar. Un
+  // mensaje que solo se imprima al volver no permitiría localizar un cuelgue.
   const startedAt = Date.now();
   if (CI_DIAGNOSTICS) diagStart(`processTable | ${currentTest}`);
-  const rows = readProcessTable();
+  const rows = await readProcessTable();
   if (CI_DIAGNOSTICS) {
     diagEnd(
       `processTable | ${currentTest}`,
@@ -305,29 +371,37 @@ export function processTable(): ProcessRow[] {
   return rows;
 }
 
-function readProcessTable(): ProcessRow[] {
+/**
+ * Filas de la tabla de procesos.
+ *
+ * Un error NUNCA se devuelve como tabla vacía silenciosa: se anota en
+ * `lastTableError` y se devuelve `[]` para que el llamador no reviente, pero la
+ * limpieza comprueba ese campo y **falla** en vez de creer que no quedó nada
+ * vivo. Una tabla vacía de verdad (sin procesos) también es un error: hasta el
+ * proceso System (pid 4) existe siempre.
+ */
+async function readProcessTable(): Promise<ProcessRow[]> {
   try {
     if (IS_WINDOWS) {
-      const out = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_TABLE_SCRIPT], {
-        encoding: "utf8",
-        windowsHide: true,
-        maxBuffer: 32 * 1024 * 1024,
-      });
+      const out = await enumerator(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_TABLE_SCRIPT],
+        PROCESS_TABLE_TIMEOUT_MS,
+      );
       const rows = rowsFromWindowsCsv(out);
-      // Una consulta que no devuelve NADA sí es un fallo: hasta el proceso
-      // System (pid 4) existe siempre, así que una tabla vacía es un error de
-      // enumeración, no una máquina sin procesos.
+      // Un CSV con encabezado y sin filas, o sin encabezado, está MAL FORMADO:
+      // se distingue de "no hay procesos" para no confundir un parseo roto con
+      // una limpieza completa.
       if (rows.length === 0) {
-        lastTableError = "Get-CimInstance no devolvió ningún proceso";
+        lastTableError = parseCsv(out).length <= 1
+          ? "Get-CimInstance no devolvió ningún proceso"
+          : "el CSV de procesos no tenía filas válidas";
         return [];
       }
       lastTableError = null;
       return rows;
     }
-    const out = execFileSync("ps", ["-eo", "pid=,ppid=,args="], {
-      encoding: "utf8",
-      maxBuffer: 32 * 1024 * 1024,
-    });
+    const out = await enumerator("ps", ["-eo", "pid=,ppid=,args="], PROCESS_TABLE_TIMEOUT_MS);
     const rows: ProcessRow[] = [];
     for (const line of out.split("\n")) {
       const match = /^\s*(\d+)\s+(\d+)\s+(.*)$/.exec(line);
@@ -342,11 +416,12 @@ function readProcessTable(): ProcessRow[] {
 }
 
 /** Cadena de padres del proceso actual (incluido el propio proceso). */
-export function parentChain(table: ProcessRow[] = processTable()): number[] {
+export async function parentChain(table?: ProcessRow[]): Promise<number[]> {
+  const rows = table ?? (await processTable());
   const chain: number[] = [process.pid];
   let cursor = process.pid;
   for (let depth = 0; depth < 8; depth++) {
-    const parent = table.find((row) => row.pid === cursor)?.ppid;
+    const parent = rows.find((row) => row.pid === cursor)?.ppid;
     if (parent === undefined || parent === 0 || chain.includes(parent)) break;
     chain.push(parent);
     cursor = parent;
@@ -359,10 +434,10 @@ export function parentChain(table: ProcessRow[] = processTable()): number[] {
  * los shells del sistema (`cmd.exe`, que es lo que lanzan los procesos
  * externos). Se llama al empezar el archivo de test.
  */
-export function captureBaseline(extra: number[] = []): void {
-  baseline = new Set(parentChain());
+export async function captureBaseline(extra: number[] = []): Promise<void> {
+  baseline = new Set(await parentChain());
   for (const pid of extra) baseline.add(pid);
-  for (const row of processTable()) {
+  for (const row of await processTable()) {
     if (/(^|[\\/])cmd\.exe$/i.test(row.cmd)) baseline.add(row.pid);
   }
 }
@@ -418,9 +493,9 @@ export interface OwnTree {
  * del espía con sus ancestros, menos la línea de padres. Los pids de la lista
  * blanca que no sean ancestros de un hijo propios se excluyen.
  */
-export function ownTree(options: OwnTreeOptions = {}): OwnTree {
-  const table = processTable();
-  const chain = parentChain(table);
+export async function ownTree(options: OwnTreeOptions = {}): Promise<OwnTree> {
+  const table = await processTable();
+  const chain = await parentChain(table);
   const white = new Set([...baseline, ...chain, ...(options.extra ?? [])]);
   const roots = new Set((options.roots ?? []).filter((pid) => !chain.includes(pid) && pid !== process.pid));
   const targets = new Set<number>();
@@ -461,10 +536,10 @@ export function ownTree(options: OwnTreeOptions = {}): OwnTree {
  * Con `expectedCmd`, el proceso actual debe contenerla: un pid reciclado
  * muestra otra línea de comandos y se deja intacto.
  */
-export function isSameProcess(pid: number, expectedCmd?: string): boolean {
+export async function isSameProcess(pid: number, expectedCmd?: string): Promise<boolean> {
   if (!isAlive(pid)) return false;
   if (!expectedCmd) return true;
-  const row = processTable().find((entry) => entry.pid === pid);
+  const row = (await processTable()).find((entry) => entry.pid === pid);
   // Sin tabla (la enumeración falló) se prefiere no tocar nada.
   return row !== undefined && row.cmd.includes(expectedCmd);
 }
@@ -510,14 +585,14 @@ export async function killOwnTree(options: OwnTreeOptions = {}): Promise<KillRes
 
 async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
   const killed: number[] = [];
-  const { targets, protectedPids } = ownTree(options);
+  const { targets, protectedPids } = await ownTree(options);
   const enumerationError = processTableError();
   // Sin tabla no se puede calcular el árbol ni comprobar supervivientes: se
   // informa en vez de matar a ciegas o de fingir que no quedó nada.
   if (enumerationError !== null && targets.length === 0) {
     return { killed, survivors: [], enumerationError };
   }
-  const table = processTable();
+  const table = await processTable();
   const depthOf = (pid: number): number => ancestorsOf(table, pid).length;
   const ordered = targets
     .filter((pid) => pid !== process.pid && !protectedPids.includes(pid))
@@ -545,8 +620,8 @@ async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
 }
 
 /** Error de limpieza con la lista de sobrevivientes (para fallar el test). */
-export function describeSurvivors(survivors: number[]): string {
-  const table = processTable();
+export async function describeSurvivors(survivors: number[]): Promise<string> {
+  const table = await processTable();
   const detail = survivors
     .map((pid) => {
       const row = table.find((entry) => entry.pid === pid);
@@ -557,10 +632,8 @@ export function describeSurvivors(survivors: number[]): string {
 }
 
 /** Pids hijos directos (diagnóstico). */
-export function directChildren(pid: number): number[] {
-  return processTable()
-    .filter((row) => row.ppid === pid)
-    .map((row) => row.pid);
+export async function directChildren(pid: number): Promise<number[]> {
+  return (await processTable()).filter((row) => row.ppid === pid).map((row) => row.pid);
 }
 
 export { killProcessTree };

@@ -40,7 +40,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 
 import { openDatabase } from "../../src/db/database.ts";
 import { upsertClip } from "../../src/db/clips.ts";
@@ -53,10 +53,13 @@ import {
   spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
 
-// Lista blanca ANTES de cualquier test: ningún pid previo (ni la instalación
-// real del usuario) se toca por aparecer en la tabla de procesos.
-captureBaseline();
 spyOnChildProcess();
+// Lista blanca ANTES de cualquier test: ningún pid previo (ni la instalación
+// real del usuario) se toca por aparecer en la tabla de procesos. Se toma de
+// forma ASÍNCRONA (la consulta ya no bloquea el bucle de eventos).
+beforeAll(async () => {
+  await captureBaseline();
+});
 
 /**
  * Cada test deja rastro de lo creado: los `ChildProcess` del arnés. El `finally`
@@ -332,7 +335,7 @@ afterEach(async () => {
   const roots_ = created.splice(0).map((child) => child.pid).filter((pid): pid is number => typeof pid === "number");
   const result = await killOwnTree({ roots: roots_ });
   expect(result.enumerationError, "la enumeración de procesos falló; no se puede afirmar que no quedó nada vivo").toBeNull();
-  expect(result.survivors, describeSurvivors(result.survivors)).toEqual([]);
+  expect(result.survivors, await describeSurvivors(result.survivors)).toEqual([]);
   cleanup();
 });
 

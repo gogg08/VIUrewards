@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterAll, afterEach, beforeEach, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
 
 import {
   captureBaseline,
@@ -43,10 +43,13 @@ const IS_WINDOWS = process.platform === "win32";
 const testPids = new Set<number>();
 const harnesses: ReturnType<typeof spawn>[] = [];
 
+spyOnChildProcess();
 // Lista blanca ANTES de cualquier test: la instalación real del usuario y los
 // shells del sistema nunca se tocan, aunque aparezcan en la tabla de procesos.
-captureBaseline();
-spyOnChildProcess();
+// Se toma de forma ASÍNCRONA (la consulta ya no bloquea el bucle de eventos).
+beforeAll(async () => {
+  await captureBaseline();
+});
 
 afterAll(() => {
   // Solo los pids que ESTE archivo anotó (el nieto rebelde y el arnés). Nunca
@@ -243,7 +246,7 @@ afterEach(async () => {
   const result = await killOwnTree({ roots: [...harnessPids, ...testPids] });
   testPids.clear();
   expect(result.enumerationError, "la enumeración de procesos falló; no se puede afirmar que no quedó nada vivo").toBeNull();
-  expect(result.survivors, describeSurvivors(result.survivors)).toEqual([]);
+  expect(result.survivors, await describeSurvivors(result.survivors)).toEqual([]);
   cleanup();
 });
 
