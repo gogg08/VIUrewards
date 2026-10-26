@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { createProcessSupervisor, killProcessTree } from "./run-process.ts";
+import { createProcessSupervisor, killProcessTree, setTaskkillCommand } from "./run-process.ts";
 
 const node = process.execPath;
 
@@ -151,5 +151,66 @@ describe("supervisor de procesos: cancelación real", () => {
 
   it("killProcessTree no falla con un pid inexistente", async () => {
     await expect(killProcessTree(999_999, process.platform)).resolves.toBeUndefined();
+  });
+
+  /**
+   * El plazo de `killProcessTree` (que la limpieza e2e usa con 5 s).
+   *
+   * `taskkill` es de sistema y no se puede hacer que se cuelgue de forma
+   * reproducible, así que el comando auxiliar se inyecta (`setTaskkillCommand`,
+   * solo para tests) apuntando a un proceso **real** que duerme: se ejercita el
+   * spawn, la espera, el vencimiento y la terminación del auxiliar, no un mock
+   * de la promesa.
+   */
+  describe("killProcessTree con plazo", () => {
+    /** Hace que el auxiliar sea un Node que no termina; devuelve el restaurador. */
+    function hangingHelper(): { restore: () => void } {
+      const restore = setTaskkillCommand({
+        file: node,
+        args: () => ["-e", "setTimeout(() => {}, 60000)"],
+      });
+      return { restore };
+    }
+
+    it("un auxiliar trabado vence el plazo y rechaza con TASKKILL_TIMEOUT", async () => {
+      const helper = hangingHelper();
+      const started = Date.now();
+      try {
+        await expect(killProcessTree(999_998, "win32", { timeoutMs: 300 })).rejects.toMatchObject({
+          code: "TASKKILL_TIMEOUT",
+        });
+        const elapsed = Date.now() - started;
+        // Vence el plazo; no resuelve antes (si no, no probaría nada).
+        expect(elapsed).toBeGreaterThanOrEqual(250);
+        expect(elapsed).toBeLessThan(5_000);
+      } finally {
+        helper.restore();
+      }
+    }, 15_000);
+
+    it("el auxiliar se termina tras el plazo (no queda vivo)", async () => {
+      const { spyOnChildProcess } = await import("../../tests/e2e/helpers/proc-tree.ts");
+      const spy = spyOnChildProcess();
+      const helper = hangingHelper();
+      try {
+        await expect(killProcessTree(999_997, "win32", { timeoutMs: 300 })).rejects.toMatchObject({
+          code: "TASKKILL_TIMEOUT",
+        });
+        const auxiliaries: number[] = spy.spawned();
+        expect(auxiliaries.length, "no se encontró el auxiliar lanzado").toBeGreaterThan(0);
+        // Al vencer el plazo el auxiliar tiene que morir (es NUESTRO hijo).
+        await sleep(1_000);
+        const stillAlive = auxiliaries.filter((pid) => alive(pid));
+        expect(stillAlive, "el auxiliar quedó vivo tras el plazo").toEqual([]);
+      } finally {
+        helper.restore();
+        spy.restore();
+      }
+    }, 15_000);
+
+    it("sin timeoutMs se conserva el comportamiento anterior (espera, no rechaza)", async () => {
+      // Contrato de siempre: los llamadores de producción no pasan plazo.
+      await expect(killProcessTree(999_996, "win32")).resolves.toBeUndefined();
+    });
   });
 });

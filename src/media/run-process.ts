@@ -136,24 +136,130 @@ export interface ProcessSupervisor {
 }
 
 /**
+ * Opciones de `killProcessTree`.
+ *
+ * `timeoutMs` acota la ESPERA del `taskkill` auxiliar. Sin él se conserva el
+ * comportamiento de siempre (esperar a `close`/`error`), que es lo que necesitan
+ * los llamadores de producción: ahí un `taskkill` lento no debe abortarse.
+ */
+export interface KillProcessTreeOptions {
+  /**
+   * Plazo para que el `taskkill` auxiliar termine. Al vencer:
+   *
+   * - se termina **ESE** proceso auxiliar (nunca el pid objetivo, nunca otro);
+   * - la promesa rechaza con un error identificable (`code === "TASKKILL_TIMEOUT"`).
+   *
+   * Rechaza en vez de resolver porque "pasó el plazo" no es "el árbol murió".
+   */
+  timeoutMs?: number;
+}
+
+/** Error de `killProcessTree` cuando el plazo venció. */
+export interface KillProcessTreeTimeoutError extends Error {
+  code: "TASKKILL_TIMEOUT";
+}
+
+/**
+ * Comando auxiliar que termina el árbol en Windows (`taskkill`).
+ *
+ * Es inyectable SOLO para los tests: con el `taskkill` real no hay forma
+ * reproducible de que el auxiliar se cuelgue, y el plazo que se quiere
+ * verificar es justamente el de un auxiliar que no responde. La producción no
+ * lo toca (`setTaskkillCommand` no se llama nunca fuera de los tests).
+ */
+export interface TaskkillCommand {
+  file: string;
+  args(pid: number): string[];
+}
+
+const defaultTaskkill: TaskkillCommand = {
+  file: "taskkill",
+  args: (pid) => ["/PID", String(pid), "/T", "/F"],
+};
+
+let taskkillCommand: TaskkillCommand = defaultTaskkill;
+
+/**
+ * Reemplaza el comando auxiliar de Windows (solo tests). Devuelve el restaurador.
+ *
+ * Los argumentos por defecto son los reales; un test puede apuntar el comando a
+ * un proceso propio que se cuelgue para ejercitar el plazo.
+ */
+export function setTaskkillCommand(next: TaskkillCommand | null): () => void {
+  const previous = taskkillCommand;
+  taskkillCommand = next ?? defaultTaskkill;
+  return () => {
+    taskkillCommand = previous;
+  };
+}
+
+function taskkillTimeoutError(timeoutMs: number): KillProcessTreeTimeoutError {
+  const error = new Error(`taskkill no terminó en ${timeoutMs} ms`) as KillProcessTreeTimeoutError;
+  error.code = "TASKKILL_TIMEOUT";
+  return error;
+}
+
+/**
  * Termina el árbol de procesos de `pid`.
  *
  * - En Windows usa `taskkill /PID <pid> /T /F` (spawn sin shell). Si el proceso
  *   ya no existe, `taskkill` falla y se sigue igual.
  * - En Unix manda `SIGKILL` al grupo (`-pid`); si el grupo ya no existe, al pid.
+ *
+ * Con `options.timeoutMs`, la espera del auxiliar queda acotada: al vencer se
+ * mata el `taskkill` (por su propio pid, verificado con el hijo que devolvió
+ * `spawn`) y se rechaza con `TASKKILL_TIMEOUT`. Sin la opción no hay plazo.
  */
-export function killProcessTree(pid: number, platform: NodeJS.Platform = process.platform): Promise<void> {
+export function killProcessTree(
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+  options: KillProcessTreeOptions = {},
+): Promise<void> {
   if (platform === "win32") {
-    return new Promise<void>((resolve) => {
-      const killer = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+    return new Promise<void>((resolve, reject) => {
+      const command = taskkillCommand;
+      const killer = spawn(command.file, command.args(pid), {
         shell: false,
         windowsHide: true,
         // El hijo del taskkill no debe depender del proceso que estamos matando.
         detached: false,
       });
-      const done = (): void => resolve();
-      killer.on("error", done);
-      killer.on("close", done);
+      // El auxiliar es NUESTRO hijo: se guarda su pid para poder terminarlo en el
+      // vencimiento sin tocar jamás el pid objetivo ni un proceso ajeno.
+      const helperPid = killer.pid;
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
+
+      const finish = (action: () => void): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        timer = null;
+        action();
+      };
+
+      killer.on("error", () => finish(resolve));
+      killer.on("close", () => finish(resolve));
+
+      if (options.timeoutMs !== undefined) {
+        const timeoutMs = options.timeoutMs;
+        timer = setTimeout(() => {
+          finish(() => {
+            // Se termina SOLO el auxiliar que creamos (su pid es el que devolvió
+            // `spawn`, no uno reconstruido ni buscado por nombre).
+            if (helperPid !== undefined) {
+              try {
+                killer.kill("SIGKILL");
+              } catch {
+                // Ya había terminado: el plazo se cumplió igual.
+              }
+            }
+            reject(taskkillTimeoutError(timeoutMs));
+          });
+        }, timeoutMs);
+        // No debe mantener vivo el proceso de test por sí solo.
+        timer.unref?.();
+      }
     });
   }
 

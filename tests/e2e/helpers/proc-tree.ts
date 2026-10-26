@@ -58,6 +58,20 @@ export const FORCE_WAIT_MS = 10_000;
 export const PROCESS_TABLE_TIMEOUT_MS = 15_000;
 
 /**
+ * Plazo de UNA operación `killProcessTree` dentro de la limpieza.
+ *
+ * Antes se esperaba a que `taskkill` cerrara sin plazo alguno: si el auxiliar no
+ * terminaba, la promesa quedaba pendiente para siempre y el `afterEach` nunca
+ * acababa (síntoma del cuelgue del paso de CI, con las consultas CIM ya
+ * completadas).
+ *
+ * Medido: `taskkill /PID <inexistente> /T /F` cierra en ~57 ms. 5 s es ~90
+ * veces ese valor y sigue muy por debajo del plazo de un test e2e (90 s), así
+ * que un `taskkill` trabado produce un fallo explícito del test.
+ */
+export const KILL_PROCESS_TREE_TIMEOUT_MS = 5_000;
+
+/**
  * Enumerador de procesos, inyectable en tests.
  *
  * Resuelve con la salida cruda del comando (CSV en Windows, texto en Unix).
@@ -583,21 +597,46 @@ export async function killOwnTree(options: OwnTreeOptions = {}): Promise<KillRes
   return result;
 }
 
+/*
+ * Cada fase de la limpieza tiene su propio aviso `[ci-diag]` (solo con `CI`) y
+ * va ANTES de la operación que puede quedarse esperando: un mensaje posterior a
+ * un cuelgue no sirve para localizarlo.
+ *
+ * Las fases son: objetivos (incluye las dos consultas de procesos), señal,
+ * espera, escala (el `killProcessTree`), supervivientes y fin.
+ */
 async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
+  const cleanupStartedAt = Date.now();
   const killed: number[] = [];
+  const survivors: number[] = [];
+  let phaseStartedAt = Date.now();
+  const beginPhase = (phase: string): number => {
+    if (CI_DIAGNOSTICS) diagStart(`cleanup·${phase} | ${currentTest}`);
+    return Date.now();
+  };
+  const endPhase = (phase: string, startedAt: number, detail: string): void => {
+    if (CI_DIAGNOSTICS) diagEnd(`cleanup·${phase} | ${currentTest}`, startedAt, detail);
+  };
+
+  phaseStartedAt = beginPhase("objetivos");
   const { targets, protectedPids } = await ownTree(options);
   const enumerationError = processTableError();
+  endPhase("objetivos", phaseStartedAt, `candidatos=${targets.length}`);
   // Sin tabla no se puede calcular el árbol ni comprobar supervivientes: se
   // informa en vez de matar a ciegas o de fingir que no quedó nada.
   if (enumerationError !== null && targets.length === 0) {
     return { killed, survivors: [], enumerationError };
   }
+
+  phaseStartedAt = beginPhase("orden");
   const table = await processTable();
   const depthOf = (pid: number): number => ancestorsOf(table, pid).length;
   const ordered = targets
     .filter((pid) => pid !== process.pid && !protectedPids.includes(pid))
     .sort((a, b) => depthOf(b) - depthOf(a));
+  endPhase("orden", phaseStartedAt, `objetivos=${ordered.length}`);
 
+  phaseStartedAt = beginPhase("señal");
   for (const pid of ordered) {
     if (!isAlive(pid)) continue;
     try {
@@ -607,16 +646,58 @@ async function runCleanup(options: OwnTreeOptions): Promise<KillResult> {
       // Ya murió o no se puede señalizar: se decide por `isAlive` más abajo.
     }
   }
+  endPhase("señal", phaseStartedAt, `señalados=${killed.length}`);
 
-  const survivors: number[] = [];
+  // `escala`/`escala-fin` se emiten DENTRO del bucle y por objetivo, porque el
+  // `killProcessTree` es justamente la operación que puede quedarse pendiente:
+  // se necesita saber que llegó a empezar y no que terminó.
   for (const pid of ordered) {
-    if (await waitGone(pid, KILL_WAIT_MS)) continue;
-    // No murió: se escala al mecanismo del supervisor SOLO para este pid.
-    await killProcessTree(pid);
-    if (await waitGone(pid, FORCE_WAIT_MS)) continue;
+    phaseStartedAt = beginPhase("espera");
+    const gone = await waitGone(pid, KILL_WAIT_MS);
+    endPhase("espera", phaseStartedAt, gone ? "salio" : "sigue-vivo");
+    if (gone) continue;
+
+    // No murió: se escala al mecanismo del supervisor SOLO para este pid, con
+    // plazo. Sin plazo, un `taskkill` que no cierra dejaba la limpieza colgada.
+    phaseStartedAt = beginPhase("escala");
+    let escalationError: string | null = null;
+    try {
+      await killProcessTree(pid, process.platform, { timeoutMs: KILL_PROCESS_TREE_TIMEOUT_MS });
+    } catch (error) {
+      // Un plazo vencido NO es "el árbol murió": se anota y se decide abajo con
+      // `isAlive`. Nunca se convierte en un éxito silencioso.
+      escalationError = error instanceof Error ? error.message : String(error);
+    }
+    endPhase(
+      "escala-fin",
+      phaseStartedAt,
+      escalationError === null ? "completado" : `timeout=${JSON.stringify(escalationError)}`,
+    );
+
+    phaseStartedAt = beginPhase("espera-final");
+    const goneAfter = await waitGone(pid, FORCE_WAIT_MS);
+    endPhase("espera-final", phaseStartedAt, goneAfter ? "salio" : "sigue-vivo");
+    if (goneAfter) continue;
     survivors.push(pid);
   }
-  return { killed, survivors, enumerationError };
+
+  phaseStartedAt = beginPhase("supervivientes");
+  // Comprobación independiente de las esperas: se vuelve a preguntar al SO. Un
+  // error de enumeración aquí también hace fallar la limpieza: sin tabla no se
+  // puede afirmar que no quedó nada vivo.
+  await processTable();
+  const survivorEnumerationError = processTableError();
+  for (const pid of killed) {
+    if (!survivors.includes(pid) && isAlive(pid)) survivors.push(pid);
+  }
+  endPhase("supervivientes", phaseStartedAt, `vivos=${survivors.length}`);
+
+  if (CI_DIAGNOSTICS) diagEnd(`cleanup·fin | ${currentTest}`, cleanupStartedAt, `vivos=${survivors.length}`);
+  return {
+    killed,
+    survivors,
+    enumerationError: enumerationError ?? survivorEnumerationError,
+  };
 }
 
 /** Error de limpieza con la lista de sobrevivientes (para fallar el test). */

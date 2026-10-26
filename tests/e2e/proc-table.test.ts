@@ -7,27 +7,50 @@
  * NO se confunda con "no queda nada vivo".
  */
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
 
 import {
   IS_WINDOWS,
+  KILL_PROCESS_TREE_TIMEOUT_MS,
   PROCESS_TABLE_TIMEOUT_MS,
+  captureBaseline,
+  describeSurvivors,
   directChildren,
   isAlive,
   killOwnTree,
   noteTest,
+  ownTree,
   parseCsv,
   processTable,
   processTableError,
   rowsFromWindowsCsv,
   setProcessEnumerator,
+  spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
+
+/*
+ * Espía y lista blanca a nivel de ARCHIVO, como en los demás e2e: las pruebas de
+ * limpieza necesitan saber qué lanzó ESTE proceso de test y qué existía antes.
+ * Sin esto, un hijo propio solo se encontraba por enumeración de descendientes y
+ * bajo carga podía no estar todavía en la tabla: el pid quedaba fuera de
+ * `targets` y la limpieza no lo mataba (test intermitente, reproducido).
+ */
+const spy = spyOnChildProcess();
 
 // Diagnóstico (solo con `CI`): los avisos de la consulta de procesos identifican
 // el test en curso, así un cuelgue de `processTable()` deja ver cuál era.
 beforeEach((context) => {
   noteTest(context.task.name);
+});
+
+/*
+ * La lista blanca se toma UNA vez por archivo (no por test): `captureBaseline()`
+ * consulta la tabla de procesos, y repetirlo en cada prueba multiplicaría las
+ * llamadas a WMI sin aportar nada. Es el mismo criterio que `shutdown.test.ts`.
+ */
+beforeAll(async () => {
+  await captureBaseline();
 });
 
 describe("parseCsv", () => {
@@ -298,4 +321,137 @@ describe.runIf(IS_WINDOWS)("terminación del enumerador", () => {
       }
     }
   });
+});
+
+/**
+ * Plazo de UNA operación `killProcessTree` dentro de la limpieza.
+ *
+ * Es independiente del plazo de la consulta (`PROCESS_TABLE_TIMEOUT_MS`) y del
+ * plazo del test: acota solo la espera del `taskkill` auxiliar, que era la única
+ * operación de `runCleanup()` sin límite.
+ */
+describe("plazo de la escalada a killProcessTree", () => {
+  it("es corto y no se confunde con el plazo de la consulta ni con el del test", () => {
+    // Medido: `taskkill` cierra en ~57 ms con un pid inexistente.
+    expect(KILL_PROCESS_TREE_TIMEOUT_MS).toBe(5_000);
+    expect(KILL_PROCESS_TREE_TIMEOUT_MS).toBeLessThan(PROCESS_TABLE_TIMEOUT_MS);
+    expect(KILL_PROCESS_TREE_TIMEOUT_MS).toBeLessThan(90_000);
+  });
+});
+
+/**
+ * Limpieza con procesos PROPIOS de verdad.
+ *
+ * Determinismo: el hijo se identifica por el `ChildProcess` que devolvió
+ * `spawn` (con el espía y la lista blanca ya instaladas a nivel de archivo), no
+ * por la enumeración de descendientes. Antes solo se encontraba por parentesco,
+ * y bajo carga la tabla podía no tenerlo todavía con el `ParentProcessId`
+ * correcto: el pid quedaba fuera de `targets` y la limpieza “no lo mataba”.
+ *
+ * Nunca se señaliza nada ajeno: el pid sale de un proceso creado en este mismo
+ * test y la lista blanca protege la línea de padres del proceso de test.
+ */
+describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  /** Lanza un Node que no termina; devuelve el pid tal como lo dio `spawn`. */
+  function ownSleeper(): number {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    const pid = child.pid;
+    expect(typeof pid, "no se pudo lanzar el proceso de prueba").toBe("number");
+    expect(isAlive(pid as number), "el proceso de prueba no arrancó").toBe(true);
+    return pid as number;
+  }
+
+  /** Espera a que el pid muera; devuelve si lo logró. */
+  async function waitDead(pid: number, ms: number): Promise<boolean> {
+    const deadline = Date.now() + ms;
+    while (Date.now() < deadline) {
+      if (!isAlive(pid)) return true;
+      await sleep(50);
+    }
+    return !isAlive(pid);
+  }
+
+  /** Termina el proceso propio (si quedó vivo) y comprueba que se fue. */
+  async function disposeOwn(pid: number): Promise<void> {
+    if (isAlive(pid)) {
+      try {
+        process.kill(pid);
+      } catch {
+        // Ya murió.
+      }
+    }
+    await waitDead(pid, 2_000);
+  }
+
+  it("el espía identifica el proceso creado por esta prueba", async () => {
+    // Requisito de determinismo: el pid que se va a limpiar es uno que el espía
+    // vio lanzar a ESTE proceso de test.
+    const pid = ownSleeper();
+    try {
+      expect(spy.spawned(), "el espía no registró el proceso lanzado").toContain(pid);
+    } finally {
+      await disposeOwn(pid);
+    }
+  }, 60_000);
+
+  it("termina el proceso propio y no informa de supervivientes", async () => {
+    const pid = ownSleeper();
+    try {
+      const result = await killOwnTree({ roots: [pid] });
+      expect(result.enumerationError, "la enumeración falló; no se puede afirmar la limpieza").toBeNull();
+      expect(result.survivors, await describeSurvivors(result.survivors)).toEqual([]);
+      expect(await waitDead(pid, 3_000), "el proceso limpio quedó vivo").toBe(true);
+    } finally {
+      await disposeOwn(pid);
+    }
+  }, 60_000);
+
+  it("la limpieza se dirige solo a procesos del test", async () => {
+    // Control negativo: el proceso del propio test y su línea de padres nunca
+    // son objetivo de la limpieza, aunque corran en la misma máquina.
+    const pid = ownSleeper();
+    try {
+      const tree = await ownTree({ roots: [pid] });
+      expect(tree.targets).toContain(pid);
+      expect(tree.targets, "el proceso de test se incluyó como objetivo").not.toContain(process.pid);
+      for (const protectedPid of tree.protectedPids) {
+        expect(tree.targets, "un padre del test se incluyó como objetivo").not.toContain(protectedPid);
+      }
+    } finally {
+      await disposeOwn(pid);
+    }
+  }, 60_000);
+
+  it("un fallo de enumeración NO se declara como limpieza satisfactoria", async () => {
+    // Sin tabla no se sabe qué quedó vivo: se informa el error en vez de
+    // devolver `survivors: []` (que el test leería como éxito).
+    const restore = setProcessEnumerator(() => Promise.reject(new Error("WMI no responde")));
+    try {
+      const result = await killOwnTree({ roots: [] });
+      expect(result.enumerationError).toContain("WMI no responde");
+    } finally {
+      restore();
+    }
+  });
+
+  it("con raíces explícitas se limpian aunque falle la enumeración, pero el error queda informado", async () => {
+    // Semántica real: un pid pasado como `roots` lo nombró el test, así que se
+    // señaliza aunque no se pueda enumerar. Lo que NO ocurre es silenciar el
+    // fallo: `enumerationError` viene puesto y el test que lo comprueba falla.
+    const pid = ownSleeper();
+    const restore = setProcessEnumerator(() => Promise.reject(new Error("CIM agotó el plazo")));
+    try {
+      const result = await killOwnTree({ roots: [pid] });
+      expect(result.enumerationError).toContain("CIM agotó el plazo");
+      expect(await waitDead(pid, 3_000), "la raíz explícita del test quedó viva").toBe(true);
+    } finally {
+      restore();
+      await disposeOwn(pid);
+    }
+  }, 60_000);
 });
