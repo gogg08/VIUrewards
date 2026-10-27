@@ -236,6 +236,13 @@ namespace DiagJob
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern uint ResumeThread(IntPtr hThread);
 
+        // Codigo de salida leido DIRECTO del handle del proceso. No se usa
+        // Process.ExitCode de .NET para esto: en el run 40598221877 devolvio
+        // vacio (el .exit.txt quedo como "exit="). Aqui el fallo de la API se
+        // detecta por su valor de retorno y se registra.
+        [DllImport("kernel32.dll", SetLastError = true)]
+        public static extern bool GetExitCodeProcess(IntPtr hProcess, out uint lpExitCode);
+
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool TerminateProcess(IntPtr hProcess, uint uExitCode);
 
@@ -557,6 +564,13 @@ try {
     # Ahora `$process` solo se usa para consultar WorkingSet64 y HasExited.
     $process = [System.Diagnostics.Process]::GetProcessById($rootPid)
 
+    # Codigo de salida del proceso raiz. Se obtiene por el handle NATIVO con
+    # GetExitCodeProcess, no por Process.ExitCode. Si no se puede leer, no se
+    # escribe un `exit=` vacio: se registra el error y el supervisor termina
+    # con codigo distinto de cero.
+    $exitCodeRead = $false
+    $exitCodeValue = $null
+
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $lastHeartbeatSec = 0
     $lastSnapshotSec = 0
@@ -572,9 +586,21 @@ try {
         $exited = $process.WaitForExit($waitMs)
 
         if ($exited) {
-            $exitCode = $process.ExitCode
-            Write-Diag ("proceso termino code=" + $exitCode + " elapsed_s=" + [int]$sw.Elapsed.TotalSeconds)
-            Write-Marker ("exited code=" + $exitCode)
+            $nativeExitCode = [uint32]0
+            if ([DiagJob.Native]::GetExitCodeProcess($procHandle, [ref]$nativeExitCode)) {
+                $exitCodeRead = $true
+                $exitCodeValue = [int]$nativeExitCode
+                Write-Diag ("proceso termino code=" + $exitCodeValue + " elapsed_s=" + [int]$sw.Elapsed.TotalSeconds)
+                Write-Marker ("exited code=" + $exitCodeValue)
+            }
+            else {
+                $exitErr = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+                Write-Diag ("FALLO: GetExitCodeProcess error=" + $exitErr + " (no se pudo leer el codigo de salida)")
+                Write-Marker ("exited-read-failed error=" + $exitErr)
+                $exitReason = "exit-code-unavailable"
+                [System.IO.File]::AppendAllText($exitPath, "exit-read-failed error=" + $exitErr + [System.Environment]::NewLine)
+                throw "exit-code-unavailable"
+            }
             $exitReason = "exit"
             break
         }
@@ -666,7 +692,12 @@ try {
         Write-Marker "hard-limit"
     }
     else {
-        [System.IO.File]::AppendAllText($exitPath, "exit=" + $process.ExitCode + [System.Environment]::NewLine)
+        # Solo se escribe el codigo NUMERICO leido por GetExitCodeProcess. Si no
+        # se pudo leer, el flujo ya salio antes por el throw de la rama de salida.
+        if (-not $exitCodeRead) {
+            throw "exit-code-unavailable"
+        }
+        [System.IO.File]::AppendAllText($exitPath, "exit=" + $exitCodeValue + [System.Environment]::NewLine)
     }
 }
 catch {
