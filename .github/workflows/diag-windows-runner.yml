@@ -23,6 +23,12 @@ name: Diagnóstico del runner (Windows)
 
 on:
   workflow_dispatch:
+  # Temporal, SOLO para investigar el cuelgue del paso 11 de
+  # package-windows.yml (anotación: "hosted runner lost communication with the
+  # server"). Se quita al cerrar el diagnóstico.
+  push:
+    branches:
+      - wip/ci-hang-diag
 
 permissions:
   contents: read
@@ -89,7 +95,7 @@ jobs:
     timeout-minutes: 4
     steps:
       - name: Deshabilitado a propósito
-        run: Write-Host "[ci-diag] kill-dry-run deshabilitado: la guarda de PID no está aprobada."
+        run: 'Write-Host "[ci-diag] kill-dry-run deshabilitado: la guarda de PID no está aprobada."'
 
   # ───────────────────────────────────────────────────────────────────────────
   # c. E2E · tabla de procesos, observado por el watchdog.
