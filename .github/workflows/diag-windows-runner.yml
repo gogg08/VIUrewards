@@ -144,14 +144,15 @@ jobs:
           # El resultado de Vitest NO se pierde: el watchdog informa el código
           # del proceso de prueba en su archivo .exit.txt. Se falla el paso para
           # que el job quede marcado; el artefacto se sube igual (`always()`).
-          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "proc-table-*.exit.txt" -ErrorAction SilentlyContinue |
+          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "proc-table*.exit.txt" -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if ($null -ne $exitFile) {
-            $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
-            Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
-            if ($recorded -ne "exit=0") {
-              throw "El proceso de prueba terminó con '$recorded'."
-            }
+          if ($null -eq $exitFile) {
+            throw "El watchdog no dejó archivo .exit.txt: no hay evidencia de cómo terminó el proceso de prueba."
+          }
+          $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
+          Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
+          if ($recorded -ne "exit=0") {
+            throw "El proceso de prueba terminó con '$recorded'."
           }
 
       - name: Subir los registros del E2E
@@ -205,14 +206,15 @@ jobs:
           Write-Host "[ci-diag] watchdog exit=$code"
           if ($code -eq 2) { throw "El watchdog alcanzó el límite duro sin que el proceso de prueba terminara." }
           if ($code -ne 0) { throw "No se pudo lanzar el watchdog (código $code)." }
-          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "shutdown-*.exit.txt" -ErrorAction SilentlyContinue |
+          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "shutdown*.exit.txt" -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
-          if ($null -ne $exitFile) {
-            $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
-            Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
-            if ($recorded -ne "exit=0") {
-              throw "El proceso de prueba terminó con '$recorded'."
-            }
+          if ($null -eq $exitFile) {
+            throw "El watchdog no dejó archivo .exit.txt: no hay evidencia de cómo terminó el proceso de prueba."
+          }
+          $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
+          Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
+          if ($recorded -ne "exit=0") {
+            throw "El proceso de prueba terminó con '$recorded'."
           }
 
       - name: Subir los registros del E2E
