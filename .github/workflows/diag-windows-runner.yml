@@ -787,7 +787,7 @@ jobs:
               $remainingSec = [int][math]::Floor($windowSec - ((Get-Date).ToUniversalTime() - $cycleStart).TotalSeconds)
               $hardLimitSec = $remainingSec - $safetyMarginSec
               if ($remainingSec -lt 60 -or $hardLimitSec -le 0) {
-                Write-Host "[ci-soak] ventana agotada antes de $testFile: restan $remainingSec s (limite asignable $hardLimitSec s)."
+                Write-Host "[ci-soak] ventana agotada antes de ${testFile}: restan $remainingSec s (limite asignable $hardLimitSec s)."
                 [void](Write-Summary @{ event = "window-complete"; stage = "window"; attempts = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; remaining_sec = $remainingSec; safety_margin_sec = $safetyMarginSec; hard_limit_sec = $hardLimitSec })
                 break 2
               }
