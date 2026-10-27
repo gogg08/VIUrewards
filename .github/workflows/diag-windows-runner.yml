@@ -227,3 +227,167 @@ jobs:
           if-no-files-found: warn
           retention-days: 3
           compression-level: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # e. REPRODUCCIÓN del cuelgue original de `package-windows.yml`.
+  #
+  # Por qué existe: los jobs c/d corren el E2E en un entorno que NO es el de
+  # producción (sin `choco install ffmpeg`, con Node "24" genérico, sin el
+  # `npm ci` completo previo). Los runs históricos 40252989076 y 40347730549 se
+  # bloquearon en `E2E · cierre ordenado` con anotación de GitHub "hosted runner
+  # lost communication with the server", y no quedaron logs (BlobNotFound).
+  #
+  # Qué reproduce del paso real (`package-windows.yml` @ 312f42eb):
+  #   - Node de la versión FIJADA, leída de `scripts/dist/config.ts`, igual que
+  #     el paso "Leer las versiones fijadas" de producción.
+  #   - `npm ci --no-audit --no-fund`.
+  #   - `choco install ffmpeg -y --no-progress` + verificación de ffmpeg/ffprobe.
+  #   - El MISMO archivo y el MISMO comando: `npx vitest run --config
+  #     vitest.e2e.config.ts tests/e2e/shutdown.test.ts`.
+  #   - El MISMO shell del paso: producción declara `defaults.run.shell: pwsh`.
+  #     La acción `pwsh` de GitHub escribe el bloque `run:` en un archivo
+  #     temporal `.ps1` y ejecuta `pwsh -command ". '<ruta>'"`; el supervisor
+  #     hace lo mismo con el comando autorizado (no con `cmd.exe /c`).
+  #     DIFERENCIAS CONOCIDAS: el supervisor agrega `-NoProfile` y
+  #     `-NonInteractive`, y su proceso padre es el propio supervisor, no el
+  #     agente del runner. No se afirma fidelidad exacta del entorno.
+  #
+  # Diferencia deliberada: el proceso queda dentro de un Windows Job Object con
+  # `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`.github/scripts/diag-job-watchdog.ps1`),
+  # lanzado SUSPENDIDO y asignado antes de reanudarlo. Esto es una EXCEPCION
+  # autorizada a la política "no terminar procesos por PID": al cerrar el handle
+  # del job, el SO termina los procesos que contiene. NO se usa `taskkill`,
+  # `Stop-Process` ni terminación manual por PID, y NO se identifica ningún
+  # proceso a mano: el job contiene el árbol por construcción.
+  #
+  # Ventana: el watchdog tiene un límite duro de 55 min (3300 s), por encima de
+  # los 41-49 min en que se bloquearon los runs históricos. Al alcanzarlo,
+  # escribe PRIMERO la instantánea (root + descendientes por PPID, sin
+  # `CommandLine`) y el motivo, y RECIÉN DESPUÉS cierra el job. Si el proceso
+  # termina solo, deja `exit=<codigo>` en el `.exit.txt`.
+  #
+  # Presupuesto de tiempo (el comentario NO puede prometer lo que no cabe):
+  #   checkout 1 + versiones 1 + setup-node 2 + npm ci 4 + choco 5 = 13
+  #   ejecución 55 + holgura del paso 10 = 65 (timeout del paso)
+  #   13 + 65 + subida 1 = 79 -> el job lleva 85 min para dejar 6 de margen.
+  #   Queda 65-55 = 10 min de holgura DENTRO del paso para que el watchdog
+  #   cierre el job, escriba la instantánea y el paso termine por sí solo.
+  #
+  # LIMITACIONES (no se promete más):
+  #   1. Si el AGENTE del runner pierde comunicación con GitHub, no se ejecuta
+  #      ni el límite duro, ni el cierre del job, ni la subida del artefacto. Es
+  #      el mismo modo de fallo que en producción y este experimento NO lo cubre.
+  #   2. Si `AssignProcessToJobObject` falla (jobs anidados del runner), el
+  #      supervisor sale con código 3 SIN ejecutar la prueba: no se degrada a
+  #      ejecutarla fuera del job.
+  #   3. El experimento no reproduce el resto del workflow (typecheck, unitarios,
+  #      los otros E2E ni el empaquetado): aísla solo el paso de cierre ordenado.
+  # ───────────────────────────────────────────────────────────────────────────
+  shutdown-repro:
+    name: Reproducción · E2E cierre ordenado (contexto de producción)
+    runs-on: windows-latest
+    timeout-minutes: 85
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Igual que producción: la versión de Node se lee del único lugar que la
+      # fija. `better-sqlite3` se liga a un ABI concreto y el E2E de cierre
+      # arranca el servidor real, así que una versión distinta cambia el entorno.
+      - name: Leer las versiones fijadas
+        id: versions
+        timeout-minutes: 1
+        run: |
+          $config = Get-Content -Raw -LiteralPath "scripts/dist/config.ts"
+          $match = [regex]::Match($config, 'NODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $match.Success) {
+            throw "No se pudo leer NODE_VERSION de scripts/dist/config.ts"
+          }
+          $node = $match.Groups[1].Value
+          Write-Output "node=$node" >> $env:GITHUB_OUTPUT
+          Write-Host "Node fijado: $node"
+
+      - name: Preparar Node.js fijado
+        timeout-minutes: 2
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+
+      - name: Instalar dependencias
+        timeout-minutes: 4
+        run: npm ci --no-audit --no-fund
+
+      # Reproduce el paso 10 de producción, que es el que precede al E2E en
+      # todos los runs que se colgaron. Si falla, el paso FALLA (no se omite).
+      - name: Herramientas de medios (como producción)
+        timeout-minutes: 5
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      # Mismo archivo y mismo comando que producción (`npx vitest ...`), bajo el
+      # shell `pwsh` del paso real, pero dentro de un Job Object. El supervisor
+      # recibe el comando EXACTO; no compone un argv distinto.
+      #
+      # Códigos del supervisor: 0 = la prueba terminó (su código queda en
+      # `.exit.txt`), 2 = límite duro (instantánea + cierre del job), 3 = no se
+      # pudo crear/asignar el job o lanzar el proceso (la prueba NO se ejecutó).
+      - name: E2E observado · cierre ordenado (reproducción)
+        timeout-minutes: 65
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "diag-e2e-repro"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          & ".github/scripts/diag-job-watchdog.ps1" `
+            -TestFile "tests/e2e/shutdown.test.ts" `
+            -CommandLine "npx vitest run --config vitest.e2e.config.ts tests/e2e/shutdown.test.ts" `
+            -LogDir $logDir `
+            -HardLimitSec 3300 `
+            -HeartbeatSec 10 `
+            -SnapshotEverySec 60
+          $code = $LASTEXITCODE
+          Write-Host "[ci-diag] supervisor exit=$code"
+          if ($code -eq 2) {
+            throw "Se alcanzó el límite duro de 55 min: la instantánea y el cierre del job quedaron en el artefacto."
+          }
+          if ($code -ne 0) {
+            throw "No se pudo lanzar la prueba bajo el Job Object (código $code); la prueba no se ejecutó."
+          }
+          # Un 0 del supervisor solo significa "la prueba terminó": el resultado
+          # real de Vitest está en el .exit.txt y se comprueba acá para no
+          # reintroducir el falso verde.
+          # El nombre real lo produce el supervisor con
+          # `GetFileNameWithoutExtension($TestFile) + "-job-" + $stamp`:
+          # `GetFileNameWithoutExtension("tests/e2e/shutdown.test.ts")` es
+          # `shutdown.test`, asi que el archivo es
+          # `shutdown.test-job-<stamp>.exit.txt`.
+          # Por eso el patron es `shutdown*.exit.txt`: el comodin cubre
+          # `.test-job-<stamp>` y no depende de cuantos puntos tenga el nombre.
+          # Un patron con `.job-` literal NO coincide (el separador real es
+          # `.test` antes de `-job-`).
+          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "shutdown*.exit.txt" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $exitFile) {
+            throw "El supervisor no dejó archivo .exit.txt: no hay evidencia de cómo terminó el proceso de prueba."
+          }
+          $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
+          Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
+          if ($recorded -ne "exit=0") {
+            throw "El proceso de prueba terminó con '$recorded'."
+          }
+
+      - name: Subir los registros de la reproducción
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-shutdown-repro-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-e2e-repro/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
