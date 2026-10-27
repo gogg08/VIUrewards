@@ -1488,7 +1488,15 @@ export interface CleanupResult {
   exitUnconfirmed: number[];
   /** Entradas cuyo proceso no llegó a crearse (`spawn-failed` / sin crear). */
   deadBeforeIdentity: number[];
-  /** Entradas con creación pendiente al vencer el plazo de espera. */
+  /**
+   * Entradas cuya espera de creación no se cerró dentro del plazo: el hecho de
+   * la espera, con independencia de lo que se sepa después.
+   *
+   * Es un agregado **aditivo**: un desenlace posterior (`spawn` tardío o `error`
+   * tardío que deje la entrada en `spawn-failed`) no borra el vencimiento. El
+   * desenlace vive en `deadBeforeIdentity` (`spawn-failed`) o en
+   * `survivorLateSpawn` (`spawned` después del plazo).
+   */
   creationPending: number[];
   /**
    * Entradas cuya espera de creación terminó en `timed-out`, sin importar qué
@@ -1631,16 +1639,20 @@ export async function cleanupCaptured(ctx: CleanupContext): Promise<CleanupResul
  * Cada hecho se conserva aunque la entrada ya figure en otro agregado. Una misma
  * entrada puede aparecer en varios agregados compatibles y ninguno la reemplaza:
  *
- * - `timed-out` + `spawn-failed`: `deadBeforeIdentity` (el proceso no existió),
- *   `creationPending` (la espera no cerró a tiempo) y `creationTimedOut` (el
- *   plazo venció).
+ * - `timed-out` + `spawn-failed`: `deadBeforeIdentity` (el desenlace: el proceso
+ *   no existió), `creationPending` (el hecho histórico: la espera no cerró a
+ *   tiempo) y `creationTimedOut` (el plazo venció).
  * - `timed-out` + `spawned`: `creationPending`, `creationTimedOut` y
  *   `survivorLateSpawn` (el proceso existe y no se termina).
  * - `pending` + `spawned`: `creationPending` (sin decisión de espera), más la
  *   dimensión de terminación según sus eventos.
  *
- * `creationPending` conserva su condición original para no cambiar ningún
- * veredicto de `cleanupSucceeded()`; `creationTimedOut` es diagnóstico.
+ * `creationPending` solo mira la espera (`creationWait`), nunca el desenlace de
+ * creación: un `spawn-failed` posterior confirma que el proceso no existió
+ * (`deadBeforeIdentity`), pero no borra que la espera venció su plazo. El
+ * veredicto de `cleanupSucceeded()` no depende de esta separación, porque
+ * `spawn-failed` ya lo hace fallar por `deadBeforeIdentity`; el reparto solo
+ * evita que un desenlace tardío oculte el hecho de la espera.
  */
 export function classifyAll(
   entries: CapturedEntry[],
@@ -1667,9 +1679,11 @@ export function classifyAll(
 
     // Dimensión creación (independiente de la espera y de la terminación).
     if (entry.creationState === "spawn-failed") push(deadBeforeIdentity, pid);
-    if (entry.creationState !== "spawn-failed" && entry.creationWait !== "settled-in-time") {
-      // Creación sin resultado (pendiente, o `spawn` observado sin la espera
-      // hecha): es una incertidumbre de creación y no puede darse por éxito.
+    if (entry.creationWait !== "settled-in-time") {
+      // La espera de creación no se cerró dentro del plazo (pendiente, o el
+      // plazo venció con `spawn` o con `error` tardío). El hecho NO se borra
+      // por el desenlace posterior: eso vive en `deadBeforeIdentity` o en
+      // `survivorLateSpawn`.
       push(creationPending, pid);
     }
 
@@ -1737,8 +1751,14 @@ export function describeCleanup(result: CleanupResult, enumerationError: string 
   if (result.survivorLateSpawn.length > 0) {
     parts.push(`supervivientes tardíos: ${formatPids(result.survivorLateSpawn)}`);
   }
-  if (result.creationPending.length > 0) {
-    parts.push(`creación pendiente: ${formatPids(result.creationPending)}`);
+  // `deadBeforeIdentity` y `survivorLateSpawn` describen el desenlace de la
+  // creación; `creationPending` es el hecho de la espera. Cuando una entrada
+  // está en ambos, el mensaje la nombra UNA vez, priorizando el desenlace.
+  const pendingOnly = result.creationPending.filter(
+    (pid) => !result.deadBeforeIdentity.includes(pid) && !result.survivorLateSpawn.includes(pid),
+  );
+  if (pendingOnly.length > 0) {
+    parts.push(`creación pendiente: ${formatPids(pendingOnly)}`);
   }
   if (result.creationTimedOut.length > 0) {
     parts.push(`espera de creación vencida: ${formatPids(result.creationTimedOut)}`);
