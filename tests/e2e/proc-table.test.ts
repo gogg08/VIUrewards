@@ -550,7 +550,21 @@ describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
     // capturó en ESTE test (con su objeto `ChildProcess`).
     const { child, pid } = ownSleeper();
     try {
-      expect(spy.spawned(), "el espía no registró el proceso lanzado").toContain(pid);
+      // Diagnóstico: distinguir «sin entradas», «entrada con pid=null» y
+      // «entrada con otro pid» sin debilitar la comprobación principal.
+      const entries = spy.entries();
+      const detail = entries
+        .map(
+          (entry) =>
+            `pid=${String(entry.pid)} state=${entry.creationState} wait=${entry.creationWait}` +
+            ` firstEvent=${String(entry.firstEvent)}`,
+        )
+        .join(" | ");
+      expect(
+        spy.spawned(),
+        `el espía no registró el proceso lanzado: entradas=${entries.length}` +
+          ` esperado=${pid} detalle=[${detail}]`,
+      ).toContain(pid);
     } finally {
       await disposeOwn(child, pid);
     }
