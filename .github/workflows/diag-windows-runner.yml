@@ -1,0 +1,221 @@
+# Diagnóstico del runner de Windows para los E2E de procesos.
+#
+# Por qué existe: cuatro ejecuciones del workflow de empaquetado se quedaron
+# `in_progress` en el paso "E2E · tabla de procesos", algunas sin logs ni
+# artefactos. Este workflow NO empaqueta ni publica nada: sirve para separar
+# "el entorno del runner se agota o pierde comunicación" de "el helper de
+# limpieza toca procesos que no debe".
+#
+# Qué produce: por cada job, un artefacto con logs escritos incrementalmente
+# (`if: always()`), para que sobreviva algo aunque el job falle.
+#
+# Qué NO hace:
+#   - NO termina procesos: ni `taskkill`, ni `/T`, ni `Stop-Process`, ni señales
+#     por PID. El watchdog solo OBSERVA.
+#   - NO toca el workflow de empaquetado ni sus condiciones.
+#   - NO crea tags ni releases, y solo lee el repositorio.
+#
+# LIMITACIÓN CENTRAL: si el agente de GitHub Actions deja de funcionar (que es
+# una de las hipótesis del incidente), ningún timeout dentro del runner se
+# aplica ni se sube el artefacto. Esos límites ayudan cuando el agente sigue
+# vivo; no garantizan la recuperación cuando no lo está.
+name: Diagnóstico del runner (Windows)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diag-windows-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # a. Entorno: sin tests, sin `npm ci`. Solo lee datos del sistema.
+  # ───────────────────────────────────────────────────────────────────────────
+  env:
+    name: Diagnóstico · entorno
+    runs-on: windows-latest
+    # Presupuesto: checkout 1 + script 2 + subida 1 = 4 + 1 de margen.
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      # No necesita dependencias: el script solo usa cmdlets del sistema.
+      - name: Recoger datos del entorno
+        timeout-minutes: 2
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "diag-env"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          & ".github/scripts/diag-env.ps1" -LogDir $logDir
+          if ($LASTEXITCODE -ne 0) { throw "diag-env.ps1 termino con codigo $LASTEXITCODE" }
+
+      - name: Subir los registros del entorno
+        if: always()
+        timeout-minutes: 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-env-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-env/
+          if-no-files-found: warn
+          retention-days: 3
+          compression-level: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # b. Dry-run de la limpieza: DESHABILITADO a propósito.
+  #
+  # El helper de limpieza todavía no expone un modo de solo cálculo de
+  # objetivos (`tests/e2e/helpers/dry-run.ts` no existe). Habilitar una
+  # simulación de limpieza antes de que la guarda esté revisada y aprobada
+  # sería peor que no tenerla. Cuando exista, este job solo imprimirá la lista
+  # de objetivos y fallará si incluye al proceso actual, a un ancestro o a un
+  # proceso del runner.
+  # ───────────────────────────────────────────────────────────────────────────
+  kill-dry-run:
+    name: Diagnóstico · dry-run de limpieza (deshabilitado)
+    if: false
+    runs-on: windows-latest
+    timeout-minutes: 4
+    steps:
+      - name: Deshabilitado a propósito
+        run: Write-Host "[ci-diag] kill-dry-run deshabilitado: la guarda de PID no está aprobada."
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # c. E2E · tabla de procesos, observado por el watchdog.
+  # ───────────────────────────────────────────────────────────────────────────
+  proc-table-staged:
+    name: Diagnóstico · E2E tabla de procesos
+    runs-on: windows-latest
+    # Presupuesto: checkout 1 + setup-node 1 + npm ci 3 + watchdog 5 + subida 1
+    # = 11 + 1 de margen.
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Preparar Node.js
+        timeout-minutes: 1
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Instalar dependencias
+        timeout-minutes: 3
+        run: npm ci --no-audit --no-fund
+
+      # El paso dura MENOS que el job: el watchdog se corta a los 220 s y el
+      # paso a 280 s, así quedan ~1 minuto para subir el artefacto.
+      - name: E2E observado · tabla de procesos
+        timeout-minutes: 5
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "diag-e2e"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          & ".github/scripts/diag-e2e-watchdog.ps1" `
+            -TestFile "tests/e2e/proc-table.test.ts" `
+            -LogDir $logDir `
+            -HardLimitSec 220 `
+            -HeartbeatSec 10
+          $code = $LASTEXITCODE
+          Write-Host "[ci-diag] watchdog exit=$code"
+          if ($code -eq 2) { throw "El watchdog alcanzó el límite duro sin que el proceso de prueba terminara." }
+          if ($code -ne 0) { throw "No se pudo lanzar el watchdog (código $code)." }
+          # El resultado de Vitest NO se pierde: el watchdog informa el código
+          # del proceso de prueba en su archivo .exit.txt. Se falla el paso para
+          # que el job quede marcado; el artefacto se sube igual (`always()`).
+          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "proc-table-*.exit.txt" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -ne $exitFile) {
+            $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
+            Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
+            if ($recorded -ne "exit=0") {
+              throw "El proceso de prueba terminó con '$recorded'."
+            }
+          }
+
+      - name: Subir los registros del E2E
+        if: always()
+        timeout-minutes: 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-proc-table-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-e2e/
+          if-no-files-found: warn
+          retention-days: 3
+          compression-level: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # d. E2E · cierre ordenado, observado por el watchdog.
+  # ───────────────────────────────────────────────────────────────────────────
+  shutdown-staged:
+    name: Diagnóstico · E2E cierre ordenado
+    runs-on: windows-latest
+    timeout-minutes: 12
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Preparar Node.js
+        timeout-minutes: 1
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Instalar dependencias
+        timeout-minutes: 3
+        run: npm ci --no-audit --no-fund
+
+      - name: E2E observado · cierre ordenado
+        timeout-minutes: 5
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "diag-e2e"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          & ".github/scripts/diag-e2e-watchdog.ps1" `
+            -TestFile "tests/e2e/shutdown.test.ts" `
+            -LogDir $logDir `
+            -HardLimitSec 220 `
+            -HeartbeatSec 10
+          $code = $LASTEXITCODE
+          Write-Host "[ci-diag] watchdog exit=$code"
+          if ($code -eq 2) { throw "El watchdog alcanzó el límite duro sin que el proceso de prueba terminara." }
+          if ($code -ne 0) { throw "No se pudo lanzar el watchdog (código $code)." }
+          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "shutdown-*.exit.txt" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -ne $exitFile) {
+            $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
+            Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
+            if ($recorded -ne "exit=0") {
+              throw "El proceso de prueba terminó con '$recorded'."
+            }
+          }
+
+      - name: Subir los registros del E2E
+        if: always()
+        timeout-minutes: 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-shutdown-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-e2e/
+          if-no-files-found: warn
+          retention-days: 3
+          compression-level: 0

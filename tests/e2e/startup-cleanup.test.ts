@@ -53,7 +53,7 @@ import {
   spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
 
-spyOnChildProcess();
+const spy = spyOnChildProcess();
 // Lista blanca ANTES de cualquier test: ningún pid previo (ni la instalación
 // real del usuario) se toca por aparecer en la tabla de procesos. Se toma de
 // forma ASÍNCRONA (la consulta ya no bloquea el bucle de eventos).
@@ -322,6 +322,9 @@ function cleanup(): void {
 // los avisos de la limpieza identifiquen la prueba aunque el proceso se cuelgue.
 beforeEach((context) => {
   noteTest(context.task.name);
+  // El registro de procesos capturados es POR TEST: nada del test anterior se
+  // convierte en objetivo del siguiente.
+  spy.clear();
 });
 
 /**
@@ -335,7 +338,11 @@ afterEach(async () => {
   const roots_ = created.splice(0).map((child) => child.pid).filter((pid): pid is number => typeof pid === "number");
   const result = await killOwnTree({ roots: roots_ });
   expect(result.enumerationError, "la enumeración de procesos falló; no se puede afirmar que no quedó nada vivo").toBeNull();
+  // Solo se declara limpio lo que tiene `exit`/`close` confirmado: `ok` es
+  // `false` ante cualquier superviviente tardío o creación pendiente.
+  expect(result.ok, result.detail).toBe(true);
   expect(result.survivors, await describeSurvivors(result.survivors)).toEqual([]);
+  spy.clear();
   cleanup();
 });
 

@@ -47,7 +47,7 @@ import {
   spyOnChildProcess,
 } from "./helpers/proc-tree.ts";
 
-spyOnChildProcess();
+const spy = spyOnChildProcess();
 // La línea base se toma ASÍNCRONA: la consulta de procesos ya no bloquea el
 // bucle de eventos, así que hay que esperarla antes del primer test.
 beforeAll(async () => {
@@ -164,6 +164,10 @@ function cleanupRoots(): void {
 // limpieza, para saber cuál estaba corriendo si el proceso se cuelga.
 beforeEach((context) => {
   noteTest(context.task.name);
+  // El registro de procesos capturados es POR TEST: ninguna entrada (ni su pid)
+  // sobrevive al test anterior. Los objetos `spawn`-eados antes del `beforeEach`
+  // pertenecen al archivo y se terminan por su propio objeto en `afterEach`.
+  spy.clear();
 });
 
 afterEach(async () => {
@@ -173,7 +177,12 @@ afterEach(async () => {
     .filter((pid): pid is number => typeof pid === "number");
   const result = await killOwnTree({ roots: pids });
   expect(result.enumerationError, "la enumeración de procesos falló; no se puede afirmar que no quedó nada vivo").toBeNull();
+  // La limpieza solo termina procesos por su objeto `ChildProcess` y confirma la
+  // salida con `exit`/`close`; `ok` cubre supervivientes tardíos, creación
+  // pendiente y entradas sin identidad demostrada.
+  expect(result.ok, result.detail).toBe(true);
   expect(result.survivors, await describeSurvivors(result.survivors)).toEqual([]);
+  spy.clear();
   cleanupRoots();
 });
 

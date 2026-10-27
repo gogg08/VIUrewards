@@ -44,6 +44,10 @@ const spy = spyOnChildProcess();
 // el test en curso, así un cuelgue de `processTable()` deja ver cuál era.
 beforeEach((context) => {
   noteTest(context.task.name);
+  // El registro de procesos capturados es POR TEST: un `ChildProcess` del test
+  // anterior no puede convertirse en objetivo del siguiente. Ninguna entrada
+  // se hereda entre pruebas.
+  spy.clear();
 });
 
 /*
@@ -100,13 +104,20 @@ describe("rowsFromWindowsCsv", () => {
     expect(rowsFromWindowsCsv(csv)).toEqual([{ pid: 7, ppid: 1, cmd: "ok" }]);
   });
 
-  it("trata un ppid no numérico como 0 en vez de NaN", () => {
-    expect(rowsFromWindowsCsv('"pid","ppid","cmd"\r\n"9","","x"')).toEqual([{ pid: 9, ppid: 0, cmd: "x" }]);
+  it("trata un ppid no numérico como el centinela -1, nunca 0", () => {
+    // `Number("")` vale 0: si se normalizara, la fila colgaría de la raíz 0
+    // (Idle) y parecería una relación real. El parser usa `-1`, que ningún
+    // proceso tiene como padre.
+    expect(rowsFromWindowsCsv('"pid","ppid","cmd"\r\n"9","","x"')).toEqual([{ pid: 9, ppid: -1, cmd: "x" }]);
   });
 
   it("ignora filas incompletas y no lanza", () => {
-    expect(() => rowsFromWindowsCsv('"pid"\r\n"5"\r\n\r\n')).not.toThrow();
-    expect(rowsFromWindowsCsv('"pid"\r\n"5"\r\n\r\n')).toEqual([]);
+    // Encabezado VÁLIDO: lo que se prueba es la fila, no el encabezado. Cada fila
+    // necesita las tres celdas (`pid`, `ppid`, `cmd`); con menos se descarta.
+    const csv = ['"pid","ppid","cmd"', '"5","1"', '"","",""', '"6","1",""', ""].join("\r\n");
+    expect(() => rowsFromWindowsCsv(csv)).not.toThrow();
+    // La fila corta y la de PID inválido se van; la tercera celda vacía es válida.
+    expect(rowsFromWindowsCsv(csv)).toEqual([{ pid: 6, ppid: 1, cmd: "" }]);
   });
 });
 
@@ -201,11 +212,20 @@ describe("enumerador simulado", () => {
 
   it("el bucle de eventos sigue libre mientras la consulta está pendiente", async () => {
     // Antes, con `execFileSync`, este timer NO llegaba a dispararse (medido).
+    // La tabla inyectada representa una del sistema: tiene que incluir el proceso
+    // actual, o `readProcessSnapshot()` la rechazaría por otro motivo.
+    //
+    // PID auxiliar distinto de 4 y de `process.pid`: dos filas con el mismo PID
+    // formarían una tabla malformada sin que este test lo pretenda.
+    const otherPid = process.pid === 4 ? 5 : 4;
     let ticked = false;
     const restore = setProcessEnumerator(
       () =>
         new Promise<string>((resolve) => {
-          setTimeout(() => resolve('"pid","ppid","cmd"\r\n"4","0",""'), 300);
+          setTimeout(
+            () => resolve(`"pid","ppid","cmd"\r\n"${otherPid}","0",""\r\n"${process.pid}","${otherPid}","node.exe vitest"`),
+            300,
+          );
         }),
     );
     try {
@@ -214,7 +234,8 @@ describe("enumerador simulado", () => {
       ticked = true;
       expect(ticked, "el timer se ejecutó mientras la consulta estaba pendiente").toBe(true);
       const table = await pending;
-      expect(table).toEqual([{ pid: 4, ppid: 0, cmd: "" }]);
+      expect(table).toContainEqual({ pid: otherPid, ppid: 0, cmd: "" });
+      expect(table.some((row) => row.pid === process.pid)).toBe(true);
       expect(processTableError()).toBeNull();
     } finally {
       restore();
@@ -252,13 +273,49 @@ describe("enumerador simulado", () => {
   });
 
   it("una consulta correcta deja el error en null", async () => {
+    // Tabla válida del sistema: debe contener el proceso actual.
+    // PIDs sintéticos distintos entre sí y de `process.pid`: no se asume que un
+    // número fijo nunca coincida con el del proceso de test.
+    const rootPid = process.pid === 4 ? 5 : 4;
+    const childPid = process.pid === 140 ? 141 : 140;
+    expect(rootPid).not.toBe(process.pid);
+    expect(childPid).not.toBe(process.pid);
+    expect(childPid).not.toBe(rootPid);
     const restore = setProcessEnumerator(() =>
-      Promise.resolve('"pid","ppid","cmd"\r\n"4","0",""\r\n"140","4","node.exe"'),
+      Promise.resolve(
+        `"pid","ppid","cmd"\r\n"${rootPid}","0",""\r\n"${childPid}","${rootPid}","node.exe"\r\n"${process.pid}","${rootPid}","node.exe vitest"`,
+      ),
     );
     try {
       const table = await processTable();
-      expect(table).toHaveLength(2);
+      expect(table).toHaveLength(3);
+      expect(table.some((row) => row.pid === process.pid)).toBe(true);
       expect(processTableError()).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it("una tabla válida SIN el proceso actual es un error duro de enumeración", async () => {
+    // El formato es correcto; lo que falta es la prueba de que la tabla describe
+    // ESTA máquina. Sin el proceso propio no se puede afirmar nada sobre lo que
+    // quedó vivo, así que `processTable()` no devuelve filas y sí informa.
+    //
+    // Dos PID distintos entre sí y de `process.pid`: la tabla es válida y no
+    // tiene duplicados; lo único que falta es el proceso actual.
+    const rootPid = process.pid === 4 ? 5 : 4;
+    const childPid = process.pid === 6 ? 7 : 6;
+    expect(rootPid).not.toBe(process.pid);
+    expect(childPid).not.toBe(process.pid);
+    expect(childPid).not.toBe(rootPid);
+    const restore = setProcessEnumerator(() =>
+      Promise.resolve(
+        `"pid","ppid","cmd"\r\n"${rootPid}","0",""\r\n"${childPid}","${rootPid}","node.exe ajeno"`,
+      ),
+    );
+    try {
+      expect(await processTable()).toEqual([]);
+      expect(processTableError()).toContain("proceso actual");
     } finally {
       restore();
     }
@@ -323,8 +380,8 @@ describe("consultas de procesos por operación", () => {
   });
 
   it("una limpieza hace UNA consulta en total (antes hacía tres)", async () => {
-    // Sin raíces ni descendientes propios: se ejecuta el camino completo que
-    // antes encadenaba objetivos (1) + orden (1) + supervivientes (1).
+    // Sin procesos propios: el camino completo (cadena de ancestros + limpieza)
+    // hacía antes objetivos + orden + supervivientes = 3 consultas CIM.
     const fake = countingEnumerator();
     try {
       const result = await killOwnTree({ roots: [] });
@@ -372,8 +429,9 @@ describe("la limpieza no se declara satisfactoria sin enumeración", () => {
 
 describe.runIf(IS_WINDOWS)("terminación del enumerador", () => {
   it("un proceso que no termina en el plazo muere y no queda vivo", async () => {
+    /** El hijo del EXPERIMENTO: se termina por su objeto, nunca por su pid. */
+    const holder: { child?: ReturnType<typeof spawn> } = {};
     let spawnError: Error | null = null;
-    const pidHolder: { pid?: number } = {};
     const restore = setProcessEnumerator(
       () =>
         new Promise<string>((resolve, reject) => {
@@ -383,14 +441,13 @@ describe.runIf(IS_WINDOWS)("terminación del enumerador", () => {
             ["-e", "setInterval(() => {}, 1000)"],
             { stdio: "ignore", windowsHide: true },
           );
-          pidHolder.pid = child.pid;
+          holder.child = child;
           child.on("error", reject);
           const expiry = setTimeout(() => {
             spawnError = new Error("la consulta de procesos superó el plazo de 500 ms y se terminó");
             reject(spawnError);
           }, 500);
           child.on("close", () => clearTimeout(expiry));
-          // Aseguramos que tras el rechazo el hijo se termina de verdad.
           void resolve;
         }),
     );
@@ -401,30 +458,30 @@ describe.runIf(IS_WINDOWS)("terminación del enumerador", () => {
       expect(spawnError).not.toBeNull();
     } finally {
       restore();
-      // El hijo del experimento se termina aquí (es NUESTRO proceso, no ajeno).
-      const pid = pidHolder.pid;
-      if (pid !== undefined) {
-        try {
-          process.kill(pid);
-        } catch {
-          // Ya murió.
-        }
-        // Se le da un instante al SO para registrar la salida.
-        for (let i = 0; i < 20 && isAlive(pid); i++) {
-          await new Promise((resolve) => setTimeout(resolve, 50));
-        }
-        expect(isAlive(pid), "el proceso del experimento quedó vivo").toBe(false);
+      // El hijo del experimento se termina por SU OBJETO (es nuestro proceso, no
+      // ajeno) y se confirma por `exit`: no se reconstruye ningún pid.
+      const child = holder.child;
+      if (child !== undefined) {
+        const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+        child.kill();
+        const gone = await Promise.race([
+          exited.then(() => true),
+          new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 5_000)),
+        ]);
+        expect(gone, "el proceso del experimento quedó vivo").toBe(true);
       }
     }
-  });
+  }, 30_000);
 });
 
 /**
- * Plazo de UNA operación `killProcessTree` dentro de la limpieza.
+ * Plazo de UNA operación `killProcessTree`.
  *
- * Es independiente del plazo de la consulta (`PROCESS_TABLE_TIMEOUT_MS`) y del
- * plazo del test: acota solo la espera del `taskkill` auxiliar, que era la única
- * operación de `runCleanup()` sin límite.
+ * La limpieza de los E2E **ya no** escala a `killProcessTree` (termina procesos
+ * por PID con `/T` y el diseño conservador lo prohíbe). El plazo sigue existiendo
+ * para el supervisor de producción y se verifica en
+ * `src/media/run-process.test.ts`; aquí solo se comprueba la relación entre las
+ * constantes que usa el helper.
  */
 describe("plazo de la escalada a killProcessTree", () => {
   it("es corto y no se confunde con el plazo de la consulta ni con el del test", () => {
@@ -450,8 +507,13 @@ describe("plazo de la escalada a killProcessTree", () => {
 describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-  /** Lanza un Node que no termina; devuelve el pid tal como lo dio `spawn`. */
-  function ownSleeper(): number {
+  /**
+   * Lanza un Node que no termina; devuelve el OBJETO y el pid que dio `spawn`.
+   *
+   * El objeto es con lo que se termina (nunca el pid); el pid solo se usa para
+   * comprobar que murió.
+   */
+  function ownSleeper(): { child: ReturnType<typeof spawn>; pid: number } {
     const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       stdio: "ignore",
       windowsHide: true,
@@ -459,7 +521,7 @@ describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
     const pid = child.pid;
     expect(typeof pid, "no se pudo lanzar el proceso de prueba").toBe("number");
     expect(isAlive(pid as number), "el proceso de prueba no arrancó").toBe(true);
-    return pid as number;
+    return { child, pid: pid as number };
   }
 
   /** Espera a que el pid muera; devuelve si lo logró. */
@@ -472,45 +534,48 @@ describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
     return !isAlive(pid);
   }
 
-  /** Termina el proceso propio (si quedó vivo) y comprueba que se fue. */
-  async function disposeOwn(pid: number): Promise<void> {
-    if (isAlive(pid)) {
-      try {
-        process.kill(pid);
-      } catch {
-        // Ya murió.
-      }
-    }
-    await waitDead(pid, 2_000);
+  /** Termina el proceso propio (si quedó vivo) por SU OBJETO y espera `exit`. */
+  async function disposeOwn(child: ReturnType<typeof spawn>, pid: number): Promise<void> {
+    if (!isAlive(pid)) return;
+    const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+    child.kill();
+    await Promise.race([
+      exited,
+      new Promise<void>((resolve) => setTimeout(resolve, 5_000)),
+    ]);
   }
 
   it("el espía identifica el proceso creado por esta prueba", async () => {
     // Requisito de determinismo: el pid que se va a limpiar es uno que el espía
-    // vio lanzar a ESTE proceso de test.
-    const pid = ownSleeper();
+    // capturó en ESTE test (con su objeto `ChildProcess`).
+    const { child, pid } = ownSleeper();
     try {
       expect(spy.spawned(), "el espía no registró el proceso lanzado").toContain(pid);
     } finally {
-      await disposeOwn(pid);
+      await disposeOwn(child, pid);
     }
   }, 60_000);
 
   it("termina el proceso propio y no informa de supervivientes", async () => {
-    const pid = ownSleeper();
+    const { child, pid } = ownSleeper();
     try {
       const result = await killOwnTree({ roots: [pid] });
       expect(result.enumerationError, "la enumeración falló; no se puede afirmar la limpieza").toBeNull();
+      // Se termina por el objeto `ChildProcess` y se confirma con `exit`/`close`:
+      // `ok` es la única señal de éxito, no la ausencia de supervivientes.
+      expect(result.ok, result.detail).toBe(true);
+      expect(result.cleanup.exitConfirmed).toContain(pid);
       expect(result.survivors, await describeSurvivors(result.survivors)).toEqual([]);
       expect(await waitDead(pid, 3_000), "el proceso limpio quedó vivo").toBe(true);
     } finally {
-      await disposeOwn(pid);
+      await disposeOwn(child, pid);
     }
   }, 60_000);
 
   it("la limpieza se dirige solo a procesos del test", async () => {
     // Control negativo: el proceso del propio test y su línea de padres nunca
     // son objetivo de la limpieza, aunque corran en la misma máquina.
-    const pid = ownSleeper();
+    const { child, pid } = ownSleeper();
     try {
       const tree = await ownTree({ roots: [pid] });
       expect(tree.targets).toContain(pid);
@@ -519,7 +584,7 @@ describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
         expect(tree.targets, "un padre del test se incluyó como objetivo").not.toContain(protectedPid);
       }
     } finally {
-      await disposeOwn(pid);
+      await disposeOwn(child, pid);
     }
   }, 60_000);
 
@@ -535,19 +600,20 @@ describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
     }
   });
 
-  it("con raíces explícitas se limpian aunque falle la enumeración, pero el error queda informado", async () => {
-    // Semántica real: un pid pasado como `roots` lo nombró el test, así que se
-    // señaliza aunque no se pueda enumerar. Lo que NO ocurre es silenciar el
-    // fallo: `enumerationError` viene puesto y el test que lo comprueba falla.
-    const pid = ownSleeper();
+  it("con raíces explícitas se limpia el proceso propio aunque falle la enumeración, pero el error queda informado", async () => {
+    // Semántica real: el pid está captureado por el espía de ESTE test (el
+    // objeto `ChildProcess` existe), así que se termina por su objeto aunque no
+    // se pueda enumerar. Lo que NO ocurre es silenciar el fallo:
+    // `enumerationError` viene puesto y el test que lo comprueba falla.
+    const { child, pid } = ownSleeper();
     const restore = setProcessEnumerator(() => Promise.reject(new Error("CIM agotó el plazo")));
     try {
       const result = await killOwnTree({ roots: [pid] });
       expect(result.enumerationError).toContain("CIM agotó el plazo");
-      expect(await waitDead(pid, 3_000), "la raíz explícita del test quedó viva").toBe(true);
+      expect(await waitDead(pid, 3_000), "el proceso propio capturado quedó vivo").toBe(true);
     } finally {
       restore();
-      await disposeOwn(pid);
+      await disposeOwn(child, pid);
     }
   }, 60_000);
 });
