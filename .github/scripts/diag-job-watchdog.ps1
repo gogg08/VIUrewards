@@ -117,6 +117,8 @@ function Write-Marker {
 $nativeType = @"
 using System;
 using System.Runtime.InteropServices;
+// StringBuilder, para el buffer mutable de lpCommandLine en CreateProcessW.
+using System.Text;
 
 namespace DiagJob
 {
@@ -219,8 +221,14 @@ namespace DiagJob
         [DllImport("kernel32.dll", SetLastError = true)]
         public static extern bool AssignProcessToJobObject(IntPtr hJob, IntPtr hProcess);
 
-        [DllImport("kernel32.dll", SetLastError = true)]
-        public static extern bool CreateProcess(string lpApplicationName, string lpCommandLine,
+        // CreateProcessW explicito, en Unicode. Sin `CharSet` el marshalling de
+        // `string` queda ambiguo; aqui se elimina esa ambiguedad: el nombre de
+        // la aplicacion se pasa como puntero nativo (IntPtr.Zero = NULL), y la
+        // linea de comandos como buffer mutable (StringBuilder), que es lo que
+        // el contrato de CreateProcessW espera, porque puede modificar el
+        // bloque que recibe.
+        [DllImport("kernel32.dll", EntryPoint = "CreateProcessW", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool CreateProcessW(IntPtr lpApplicationName, StringBuilder lpCommandLine,
             IntPtr lpProcessAttributes, IntPtr lpThreadAttributes, bool bInheritHandles,
             uint dwCreationFlags, IntPtr lpEnvironment, string lpCurrentDirectory,
             ref STARTUPINFO lpStartupInfo, out PROCESS_INFORMATION lpProcessInformation);
@@ -480,10 +488,17 @@ try {
 
     $creationFlags = [DiagJob.Native]::CREATE_SUSPENDED -bor [DiagJob.Native]::CREATE_UNICODE_ENVIRONMENT
 
+    # Buffer MUTABLE para lpCommandLine: CreateProcessW puede modificar el
+    # bloque. El primer argumento va como IntPtr.Zero, que es NULL real y NO
+    # una cadena vacia: asi la API resuelve el ejecutable desde el primer token
+    # de la linea de comandos (que ya viene entrecomillado porque la ruta de
+    # pwsh.exe tiene espacios).
+    $commandLineBuffer = New-Object System.Text.StringBuilder($commandLineForCreate)
+
     Write-Marker "create-suspended"
-    $launched = [DiagJob.Native]::CreateProcess(
-        $null,
-        $commandLineForCreate,
+    $launched = [DiagJob.Native]::CreateProcessW(
+        [IntPtr]::Zero,
+        $commandLineBuffer,
         [IntPtr]::Zero,
         [IntPtr]::Zero,
         $true,
@@ -495,7 +510,7 @@ try {
 
     if (-not $launched) {
         $err = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        Write-Diag ("FALLO: CreateProcess error=" + $err + " (el proceso NO se ejecuto)")
+        Write-Diag ("FALLO: CreateProcessW error=" + $err + " (el proceso NO se ejecuto)")
         $exitReason = "create-process-failed"
         [System.IO.File]::AppendAllText($exitPath, "launch-failed" + [System.Environment]::NewLine)
         throw "create-process-failed"
