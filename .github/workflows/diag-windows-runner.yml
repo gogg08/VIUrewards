@@ -391,3 +391,173 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           compression-level: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # f. Secuencia completa de producción, con el E2E de cierre ordenado AL FINAL
+  #    y bajo el Job Object.
+  #
+  # Qué agrega sobre `shutdown-repro` (que queda intacto como CONTROL): allí el
+  # E2E corría en un runner recién preparado, con `npm ci` y FFmpeg y nada más.
+  # Aquí se ejecutan, en el mismo runner y en el orden histórico de
+  # `package-windows.yml`, TODOS los pasos que en producción preceden al E2E
+  # bloqueado. La pregunta que responde: ¿el cuelgue de 41-49 min depende del
+  # estado acumulado del runner (typecheck, unitarios, y sobre todo los E2E de
+  # procesos previos) o no?
+  #
+  # La secuencia se copió de `package-windows.yml` en el commit `312f42e` (el
+  # que originó los runs colgados; idéntico al actual). Se conservan nombres de
+  # paso, comandos y `timeout-minutes` ORIGINALES. Lo único que cambia es el
+  # último paso: donde producción ejecuta `npx vitest ... shutdown.test.ts`
+  # directo, aquí va el supervisor con el MISMO comando dentro.
+  #
+  # Se OMITEN los pasos POSTERIORES al E2E bloqueado (los otros cinco E2E, el
+  # empaquetado, `test:dist` y la subida del ZIP): no forman parte del estado
+  # previo y añadirían minutos sin aportar a la pregunta.
+  #
+  # PRESUPUESTO (a diferencia de `shutdown-repro`, 85 min ya NO alcanzan):
+  #   checkout 1 + versiones 1 + plataforma 1 + setup-node 2 + verificar 1
+  #   + npm ci 4 + typecheck 3 + unitarios 6 + FFmpeg 5
+  #   + E2E tabla de procesos 5 (límite histórico; ~2 min reales)
+  #   = 29 min de secuencia previa
+  #   + 65 min del paso supervisado (55 de límite duro + 10 de holgura para
+  #     instantánea y cierre del Job Object)
+  #   + 2 de subida de artefactos
+  #   = 96 -> el job lleva 100 min, con 4 de margen.
+  #
+  # LIMITACIONES (las mismas de `shutdown-repro`, no se promete más):
+  #   1. Si el AGENTE del runner pierde comunicación, no se ejecuta ni el límite
+  #      duro, ni el cierre del job, ni la subida del artefacto.
+  #   2. Una ejecución que termine bien NO descarta un cuelgue que solo aparezca
+  #      en otro runner, con otra carga o en una exposición más larga.
+  #   3. No se ejecuta `test:dist` ni el empaquetado: en la secuencia histórica
+  #      van DESPUÉS del E2E bloqueado.
+  # ───────────────────────────────────────────────────────────────────────────
+  shutdown-repro-sequence:
+    name: Reproducción · secuencia completa de producción + cierre ordenado
+    runs-on: windows-latest
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Clonar el repositorio
+        timeout-minutes: 2
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Copiado de producción: la versión de Node sale del único lugar que la
+      # fija, porque better-sqlite3 se liga a un ABI concreto.
+      - name: Leer las versiones fijadas
+        id: versions
+        timeout-minutes: 1
+        run: |
+          $config = Get-Content -Raw -LiteralPath "scripts/dist/config.ts"
+          $match = [regex]::Match($config, 'NODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $match.Success) {
+            throw "No se pudo leer NODE_VERSION de scripts/dist/config.ts"
+          }
+          $node = $match.Groups[1].Value
+          Write-Output "node=$node" >> $env:GITHUB_OUTPUT
+          Write-Host "[ci-diag] Node fijado: $node"
+
+      - name: Comprobar plataforma x64
+        timeout-minutes: 1
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Este paquete es para Windows x64 y el runner informa $env:PROCESSOR_ARCHITECTURE."
+          }
+
+      - name: Preparar Node.js fijado
+        timeout-minutes: 2
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          cache: npm
+
+      - name: Verificar la versión de Node del build
+        timeout-minutes: 1
+        run: |
+          $expected = "${{ steps.versions.outputs.node }}"
+          $actual = (node --version).TrimStart("v")
+          if ($actual -ne $expected) {
+            throw "El build exige Node $expected (la versión fijada) y hay $actual."
+          }
+          Write-Host "[ci-diag] Node $actual listo."
+
+      - name: Instalar dependencias de desarrollo
+        timeout-minutes: 4
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        timeout-minutes: 3
+        run: npm run typecheck
+
+      - name: Pruebas unitarias
+        timeout-minutes: 6
+        run: npm test
+
+      # Copiado de producción: los E2E necesitan ffmpeg/ffprobe reales en el
+      # PATH. Si la instalación falla, el paso FALLA (no se omite).
+      - name: Herramientas de medios para las pruebas e2e
+        timeout-minutes: 5
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      # PRIMER E2E de la secuencia histórica. Se ejecuta SIN supervisor, igual
+      # que en producción: el objetivo es acumular el mismo estado que el runner
+      # real, no protegerlo. Aquí es donde históricamente se colgó el run.
+      - name: E2E · tabla de procesos
+        timeout-minutes: 5
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/proc-table.test.ts
+
+      # El paso bloqueado en producción, con SU MISMO comando, bajo el Job
+      # Object. Códigos del supervisor: 0 = la prueba terminó (su código queda
+      # en `.exit.txt`), 2 = límite duro (instantánea + cierre del job),
+      # 3 = no se pudo crear/asignar el job o lanzar el proceso.
+      - name: E2E · cierre ordenado (bajo el Job Object)
+        timeout-minutes: 65
+        run: |
+          $logDir = Join-Path $env:RUNNER_TEMP "diag-e2e-seq"
+          New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+          & ".github/scripts/diag-job-watchdog.ps1" `
+            -TestFile "tests/e2e/shutdown.test.ts" `
+            -CommandLine "npx vitest run --config vitest.e2e.config.ts tests/e2e/shutdown.test.ts" `
+            -LogDir $logDir `
+            -HardLimitSec 3300 `
+            -HeartbeatSec 10 `
+            -SnapshotEverySec 60
+          $code = $LASTEXITCODE
+          Write-Host "[ci-diag] supervisor exit=$code"
+          if ($code -eq 2) {
+            throw "Se alcanzó el límite duro de 55 min: la instantánea y el cierre del job quedaron en el artefacto."
+          }
+          if ($code -ne 0) {
+            throw "No se pudo lanzar la prueba bajo el Job Object (código $code); la prueba no se ejecutó."
+          }
+          # El nombre real del archivo lo produce el supervisor con
+          # `GetFileNameWithoutExtension($TestFile) + "-job-" + $stamp`
+          # (`shutdown.test-job-<stamp>`), por eso el patrón es `shutdown*.exit.txt`.
+          $exitFile = Get-ChildItem -LiteralPath $logDir -Filter "shutdown*.exit.txt" -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if ($null -eq $exitFile) {
+            throw "El supervisor no dejó archivo .exit.txt: no hay evidencia de cómo terminó el proceso de prueba."
+          }
+          $recorded = (Get-Content -LiteralPath $exitFile.FullName -Raw).Trim()
+          Write-Host "[ci-diag] resultado del proceso de prueba: $recorded"
+          if ($recorded -ne "exit=0") {
+            throw "El proceso de prueba terminó con '$recorded'."
+          }
+
+      - name: Subir los registros de la secuencia
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-sequence-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-e2e-seq/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
