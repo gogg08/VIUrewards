@@ -545,11 +545,42 @@ describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
     ]);
   }
 
+  /**
+   * Resuelve cuando el `ChildProcess` emitió `spawn`; rechaza si emitió `error`
+   * antes. El listener se registra en la misma llamada que crea el proceso para
+   * no perder un evento que ocurra antes de esperarlo.
+   */
+  function waitSpawned(child: ReturnType<typeof spawn>): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      // `once()` retira su listener cuando ocurre SU evento, no el otro: se
+      // limpian ambos a mano para no dejar un listener pendiente en el objeto.
+      const cleanup = () => {
+        child.removeListener("spawn", onSpawn);
+        child.removeListener("error", onError);
+      };
+      const onSpawn = () => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        reject(error);
+      };
+      child.once("spawn", onSpawn);
+      child.once("error", onError);
+    });
+  }
+
   it("el espía identifica el proceso creado por esta prueba", async () => {
     // Requisito de determinismo: el pid que se va a limpiar es uno que el espía
     // capturó en ESTE test (con su objeto `ChildProcess`).
     const { child, pid } = ownSleeper();
+    const spawned = waitSpawned(child);
     try {
+      // El espía completa `entry.pid` en su listener de `spawn`: consultar antes
+      // de este evento da una entrada válida con `pid === null` (carrera real
+      // observada en CI: `entradas=1 pid=null state=pending`).
+      await spawned;
       // Diagnóstico: distinguir «sin entradas», «entrada con pid=null» y
       // «entrada con otro pid» sin debilitar la comprobación principal.
       const entries = spy.entries();
@@ -565,6 +596,7 @@ describe.runIf(IS_WINDOWS)("limpieza de procesos propios", () => {
         `el espía no registró el proceso lanzado: entradas=${entries.length}` +
           ` esperado=${pid} detalle=[${detail}]`,
       ).toContain(pid);
+      expect(isAlive(pid), "el proceso de prueba ya no estaba vivo").toBe(true);
     } finally {
       await disposeOwn(child, pid);
     }
