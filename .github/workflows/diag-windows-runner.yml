@@ -561,3 +561,456 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           compression-level: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # f. SOAK: exposición prolongada (55 min) de los DOS E2E sobre el mismo runner.
+  #
+  # Por qué existe: el run 40601458462 (`d266e3f`) pasó todo con el E2E de cierre
+  # ordenado en ~3 s y `exit=0`, igual que el control aislado. Los runs históricos
+  # se bloqueaban tras 41–49 min, así que una sola pasada corta no puede ver ese
+  # fallo: hace falta mantener el runner bajo la misma carga durante una ventana
+  # comparable a la del incidente.
+  #
+  # QUÉ ES: una prueba de RESISTENCIA DIAGNÓSTICA, no una reproducción exacta del
+  # workflow original. Diferencias conocidas y deliberadas:
+  #   - `proc-table.test.ts` corre TAMBIÉN bajo el Job Object. En producción se
+  #     invocaba sin supervisor (paso histórico 11, donde se colgó el run).
+  #     Elegir la supervisión es un compromiso: garantiza el confinamiento y la
+  #     limpieza del árbol, pero cambia el entorno de ese archivo.
+  #   - Las invocaciones se repiten en bucle; producción hacía una sola pasada.
+  #   - El contexto acumulado se renueva en cada iteración en vez de crecer entre
+  #     pasos distintos.
+  #
+  # QUÉ OBSERVA: si una invocación se bloquea, quedan el archivo en curso, el
+  # tiempo transcurrido del ciclo, el último latido, la instantánea y el cierre
+  # del job, cada uno en su propio directorio de logs.
+  #
+  # LIMITACIÓN CENTRAL (heredada de todo el workflow): si el agente pierde
+  # comunicación con GitHub, el supervisor puede no alcanzar su límite duro ni
+  # subir los artefactos. Un ciclo de 55 min que termina en verde solo significa
+  # que la secuencia repetida sobrevivió a esa exposición; NO demuestra que el
+  # cuelgue histórico esté resuelto ni identifica su causa.
+  # ───────────────────────────────────────────────────────────────────────────
+  shutdown-soak:
+    name: Resistencia · exposición prolongada de los E2E (55 min)
+    runs-on: windows-latest
+    # Presupuesto: preparación 1+1+1+2+1+4+3+6+5 = 24 min (límites de sus pasos)
+    # + 65 min del paso supervisado + 2 de subida = 91, con ~9 de margen.
+    timeout-minutes: 100
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Clonar el repositorio
+        timeout-minutes: 1
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Igual que producción: la versión de Node sale de `scripts/dist/config.ts`.
+      - name: Leer las versiones fijadas
+        id: versions
+        timeout-minutes: 1
+        run: |
+          $config = Get-Content -Raw -LiteralPath "scripts/dist/config.ts"
+          $match = [regex]::Match($config, 'NODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $match.Success) {
+            throw "No se pudo leer NODE_VERSION de scripts/dist/config.ts"
+          }
+          $node = $match.Groups[1].Value
+          Write-Output "node=$node" >> $env:GITHUB_OUTPUT
+          Write-Host "[ci-soak] Node fijado: $node"
+
+      - name: Comprobar plataforma x64
+        timeout-minutes: 1
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Este paquete es para Windows x64 y el runner informa $env:PROCESSOR_ARCHITECTURE."
+          }
+
+      - name: Preparar Node.js fijado
+        timeout-minutes: 2
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          cache: npm
+
+      - name: Verificar la versión de Node del build
+        timeout-minutes: 1
+        run: |
+          $expected = "${{ steps.versions.outputs.node }}"
+          $actual = (node --version).TrimStart("v")
+          if ($actual -ne $expected) {
+            throw "El build exige Node $expected (la versión fijada) y hay $actual."
+          }
+          Write-Host "[ci-soak] Node $actual listo."
+
+      - name: Instalar dependencias de desarrollo
+        timeout-minutes: 4
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        timeout-minutes: 3
+        run: npm run typecheck
+
+      - name: Pruebas unitarias
+        timeout-minutes: 6
+        run: npm test
+
+      # Copiado de producción: los E2E necesitan ffmpeg/ffprobe reales en el
+      # PATH. Si la instalación falla, el paso FALLA (no se omite).
+      - name: Herramientas de medios para las pruebas e2e
+        timeout-minutes: 5
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      # PREPARACIÓN DEL SOAK: fija la ventana de 55 min y escribe un resumen
+      # incremental (una línea JSON por invocación) que sobrevive a un cuelgue.
+      - name: Preparar la ventana de exposición
+        id: soak
+        timeout-minutes: 1
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "diag-e2e-soak"
+          Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $cycleStartUtc = (Get-Date).ToUniversalTime().ToString("o")
+          Set-Content -LiteralPath (Join-Path $root "cycle-start.txt") -Value $cycleStartUtc
+          Write-Output "root=$root" >> $env:GITHUB_OUTPUT
+          Write-Output "cycle_start_utc=$cycleStartUtc" >> $env:GITHUB_OUTPUT
+          Write-Host "[ci-soak] ventana desde $cycleStartUtc; registros en $root"
+
+      # BUCLE SUPERVISADO. Cada invocación corre bajo el MISMO supervisor con Job
+      # Object, con un `-LogDir` propio: así ningún `.exit.txt` de una iteración
+      # anterior puede confundirse con el resultado actual (el supervisor nombra
+      # los archivos `<test>.test-job-<stamp>`, con resolución de un segundo; dos
+      # iteraciones en la misma carpeta podrían colisionar).
+      #
+      # Códigos del supervisor: 0 = la prueba terminó (su código real está en el
+      # `.exit.txt`), 2 = límite duro (instantánea + cierre del job), 3 = no se
+      # pudo crear/asignar el job o lanzar el proceso.
+      #
+      # Ventana total: 55 min desde `cycleStart`. Antes de cada invocacion se
+      # calculan `remainingSec` (lo que queda de la ventana) y `hardLimitSec`
+      # (= `remainingSec - safetyMarginSec`), y al supervisor se le pasa
+      # `hardLimitSec`, NO `remainingSec`.
+      #
+      # POR QUE LA RESERVA (`safetyMarginSec` = 30 s): el cronometro del
+      # supervisor arranca DESPUES de parte de su inicializacion (resolucion del
+      # script, `Add-Type`, creacion del Job Object, validacion de handles,
+      # `CreateProcessW` suspendido, asignacion y reanudacion) y, al vencer el
+      # limite, todavia necesita consultar la instantanea (hasta 5 s), escribir
+      # el resultado y cerrar el Job Object. La reserva descuenta ese tiempo para
+      # que la ventana de 55 min no se exceda en el caso normal.
+      #
+      # NO ES UNA GARANTIA ABSOLUTA: un retraso extraordinario del runner o la
+      # perdida de comunicacion con GitHub pueden hacer que el supervisor no
+      # alcance su limite, ni tome la instantanea, ni suba los artefactos. La
+      # reserva reduce el riesgo medido (inicializacion + finalizacion), no lo
+      # elimina.
+      #
+      # El bucle se corta sin lanzar otra invocacion si quedan menos de 60 s de
+      # ventana o si `hardLimitSec` no es positivo (no alcanza para arrancar).
+      - name: Ciclo supervisado de los dos E2E
+        timeout-minutes: 65
+        env:
+          SOAK_ROOT: ${{ steps.soak.outputs.root }}
+          SOAK_CYCLE_START_UTC: ${{ steps.soak.outputs.cycle_start_utc }}
+          SOAK_WINDOW_SEC: "3300"
+          SOAK_SAFETY_MARGIN_SEC: "30"
+        run: |
+          $root = $env:SOAK_ROOT
+          $windowSec = [int]$env:SOAK_WINDOW_SEC
+          $safetyMarginSec = [int]$env:SOAK_SAFETY_MARGIN_SEC
+          $cycleStart = [datetime]::Parse($env:SOAK_CYCLE_START_UTC, $null, [System.Globalization.DateTimeStyles]::RoundtripKind)
+          $summaryPath = Join-Path $root "soak-summary.log"
+          $files = @("tests/e2e/proc-table.test.ts", "tests/e2e/shutdown.test.ts")
+          # CONTADORES: definiciones y que eventos los usan.
+          #   $prepFailures  = intentos que NO llegaron a invocar al supervisor (fallo
+          #                    al crear el directorio de la iteracion, o un error de
+          #                    PowerShell ANTES de ejecutar la invocacion).
+          #   $started       = invocaciones del supervisor INICIADAS desde el flujo de
+          #                    PowerShell. Se incrementa INMEDIATAMENTE ANTES de la
+          #                    invocacion, asi una invocacion que no devuelve codigo
+          #                    (por error o por excepcion) sigue siendo una ejecucion
+          #                    iniciada y no una invocacion inexistente.
+          #   $succeeded     = invocaciones iniciadas que terminaron con exito.
+          #   $failed        = invocaciones iniciadas que fallaron o cuyo resultado no
+          #                    se pudo obtener (motivo en `stop`).
+          #   $attempts      = numero de intento (preparacion o invocacion). Solo
+          #                    identifica el intento en el JSONL; NO es un conteo de
+          #                    invocaciones y por eso no se publica como tal.
+          #
+          # INVARIANTE: en cada punto donde se publica un evento,
+          # $started = $succeeded + $failed, porque una invocacion iniciada y aun
+          # sin resultado se reparte en el MISMO punto donde se detecta el fallo
+          # (rama `stop` o `catch`). Durante la ejecucion del supervisor la
+          # invocacion esta iniciada y todavia sin repartir; eso se ve en su
+          # `attempt-start` (`started` ya la cuenta, `succeeded`/`failed` no).
+          # Los fallos anteriores a la invocacion se cuentan aparte, en
+          # $prepFailures, porque la prueba nunca llego a iniciarse.
+          $attempts = 0
+          $started = 0
+          $succeeded = 0
+          $failed = 0
+          $prepFailures = 0
+
+          # Escritura del resumen. Devuelve $true solo si la linea quedo persistida:
+          # sus llamadores NO dan por registrado un evento que fallo al escribirse.
+          function Write-Summary {
+            param([hashtable]$Record)
+            try {
+              $line = ($Record | ConvertTo-Json -Compress -Depth 3)
+              [System.IO.File]::AppendAllText($summaryPath, $line + [System.Environment]::NewLine)
+              Write-Host "[ci-soak] $line"
+              return $true
+            }
+            catch {
+              Write-Host "[ci-soak] FALLO al escribir el resumen: $($_.Exception.GetType().Name): $($_.Exception.Message) registro=$($Record.event)"
+              return $false
+            }
+          }
+
+          Write-Host "[ci-soak] ciclo desde $($cycleStart.ToString('o')) ventana=$windowSec s reserva=$safetyMarginSec s archivos=$($files -join ', ')"
+
+          while ($true) {
+            $remainingSec = [int][math]::Floor($windowSec - ((Get-Date).ToUniversalTime() - $cycleStart).TotalSeconds)
+            $hardLimitSec = $remainingSec - $safetyMarginSec
+            if ($remainingSec -lt 60 -or $hardLimitSec -le 0) {
+              Write-Host "[ci-soak] ventana agotada: restan $remainingSec s (limite asignable $hardLimitSec s), no se lanza otro intento."
+              [void](Write-Summary @{ event = "window-complete"; stage = "window"; attempts = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; remaining_sec = $remainingSec; safety_margin_sec = $safetyMarginSec; hard_limit_sec = $hardLimitSec })
+              break
+            }
+
+            foreach ($testFile in $files) {
+              $remainingSec = [int][math]::Floor($windowSec - ((Get-Date).ToUniversalTime() - $cycleStart).TotalSeconds)
+              $hardLimitSec = $remainingSec - $safetyMarginSec
+              if ($remainingSec -lt 60 -or $hardLimitSec -le 0) {
+                Write-Host "[ci-soak] ventana agotada antes de $testFile: restan $remainingSec s (limite asignable $hardLimitSec s)."
+                [void](Write-Summary @{ event = "window-complete"; stage = "window"; attempts = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; remaining_sec = $remainingSec; safety_margin_sec = $safetyMarginSec; hard_limit_sec = $hardLimitSec })
+                break 2
+              }
+
+              # Se decide ejecutar: este es un INTENTO. Solo se cuenta como
+              # invocacion (`started`) cuando el supervisor se invoca de verdad;
+              # un fallo anterior queda en `prepFailures`.
+              $attempts++
+              $stem = [System.IO.Path]::GetFileNameWithoutExtension($testFile)
+              $iterDir = Join-Path $root ("iter-{0:D3}-{1}" -f $attempts, $stem)
+              $startedEpoch = [int][math]::Floor(((Get-Date).ToUniversalTime() - $cycleStart).TotalSeconds)
+
+              # `stage` permite saber en que punto se corto el intento si el
+              # registro se interrumpe: preflight, launch, supervise, collect.
+              # `invoked` distingue si el supervisor llego a ejecutarse: es lo que
+              # separa un fallo de preparacion de una ejecucion iniciada.
+              $stage = "preflight"
+              $invoked = $false
+              $supervisorCode = $null
+              $recorded = $null
+              $testExit = $null
+              $durationSec = $null
+              $failureRecorded = $false
+
+              try {
+                Write-Host "[ci-soak] === intento $attempts archivo=$testFile inicio_s=$startedEpoch remaining_s=$remainingSec reserva_s=$safetyMarginSec limite_s=$hardLimitSec ==="
+                # INICIO DEL INTENTO: se persiste ANTES de la preparacion, con la
+                # etapa en la que esta. Marca que el flujo de PowerShell decidio
+                # ejecutar el archivo; NO implica que el supervisor se haya
+                # invocado (eso lo marca `supervisor-invocation`). Si el runner
+                # muere durante la preparacion, la ultima linea es este evento con
+                # `stage=preflight` y no hay invocacion asociada.
+                [void](Write-Summary @{
+                  event             = "attempt-start"
+                  stage             = $stage
+                  attempt           = $attempts
+                  started           = $started
+                  file              = $testFile
+                  started_s         = $startedEpoch
+                  remaining_sec     = $remainingSec
+                  safety_margin_sec = $safetyMarginSec
+                  hard_limit_sec    = $hardLimitSec
+                  log_dir           = $iterDir
+                })
+
+                New-Item -ItemType Directory -Force -Path $iterDir -ErrorAction Stop | Out-Null
+                $stage = "launch"
+
+                # El codigo de salida NO se hereda: se elimina antes de invocar y
+                # solo se acepta si existe despues. Asignar 0 de antemano
+                # convertiria una invocacion que no corrio en un falso exito.
+                Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+                $commandLine = "npx vitest run --config vitest.e2e.config.ts $testFile"
+                # A PARTIR DE AQUI LA INVOCACION SE DA POR INICIADA: el contador
+                # crece justo antes de ejecutarla, asi cualquier fallo posterior
+                # (incluida una invocacion que no deja codigo) se reparte como
+                # ejecucion iniciada y no como fallo de preparacion.
+                $invoked = $true
+                $started++
+                # SUPERVISOR-INVOCATION: se persiste ENTRE el incremento del contador
+                # y la ejecucion del supervisor. Si el runner se pierde despues de
+                # esta linea y antes de `attempt-end`, el JSONL identifica la ultima
+                # invocacion INTENTADA sin inventar un resultado (no hay `outcome`).
+                #
+                # LIMITACION: marca que el flujo de PowerShell llego al punto de
+                # invocacion, NO que el supervisor haya creado un proceso. Entre
+                # esta linea y el arranque real del supervisor (resolucion del
+                # script, `Add-Type`, Job Object, `CreateProcessW`) queda una
+                # ventana que ningun registro de este lado del limite puede
+                # eliminar: lo que paso despues se deduce de los logs propios del
+                # supervisor dentro de `log_dir`, no de este evento.
+                [void](Write-Summary @{
+                  event             = "supervisor-invocation"
+                  stage             = $stage
+                  attempt           = $attempts
+                  started           = $started
+                  succeeded         = $succeeded
+                  failed            = $failed
+                  prep_failures     = $prepFailures
+                  file              = $testFile
+                  started_s         = $startedEpoch
+                  hard_limit_sec    = $hardLimitSec
+                  log_dir           = $iterDir
+                })
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                & ".github/scripts/diag-job-watchdog.ps1" `
+                  -TestFile $testFile `
+                  -CommandLine $commandLine `
+                  -LogDir $iterDir `
+                  -HardLimitSec $hardLimitSec `
+                  -HeartbeatSec 10 `
+                  -SnapshotEverySec 60
+                $invocationSw = $sw
+                $invocationSw.Stop()
+                $durationSec = [int]$invocationSw.Elapsed.TotalSeconds
+                $stage = "supervise"
+
+                $hasExitCode = Test-Path -LiteralPath variable:\LASTEXITCODE
+                if ($hasExitCode) { $supervisorCode = [int]$LASTEXITCODE }
+
+                if (-not $hasExitCode) {
+                  # La invocacion no produjo codigo: se contabiliza como ejecucion
+                  # INICIADA y FAILIDA, nunca como exito ni como intento de
+                  # preparacion.
+                  $failed++
+                  $failureRecorded = $true
+                  $reason = "intento $attempts ($testFile): el supervisor se invoco (etapa $stage) pero no dejo un codigo de salida; no hay evidencia de como termino la prueba."
+                  [void](Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "no-exit-code"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $null; recorded = $null; log_dir = $iterDir })
+                  [void](Write-Summary @{ event = "stop"; stage = $stage; attempt = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; file = $testFile; duration_s = $durationSec; reason = $reason })
+                  throw $reason
+                }
+
+                Write-Host "[ci-soak] supervisor exit=$supervisorCode ($durationSec s)"
+                $stage = "collect"
+
+                # El `.exit.txt` se busca SOLO en el directorio de esta iteracion.
+                $exitFiles = @(Get-ChildItem -LiteralPath $iterDir -Filter "*.exit.txt" -ErrorAction SilentlyContinue |
+                  Sort-Object LastWriteTime -Descending)
+                $exitFile = if ($exitFiles.Count -gt 0) { $exitFiles[0] } else { $null }
+                $recorded = if ($null -ne $exitFile) { (Get-Content -LiteralPath $exitFile.FullName -Raw -ErrorAction Stop).Trim() } else { $null }
+                if ($recorded -match '^exit=(-?\d+)$') { $testExit = [int]$Matches[1] }
+
+                # Un resultado ausente NO se da por bueno. Cada rama cuenta la
+                # invocacion como FALLIDA (iniciada, no exitosa) antes de abortar.
+                if ($null -eq $exitFile) {
+                  $failed++
+                  $failureRecorded = $true
+                  $reason = "intento $attempts ($testFile, inicio_s=$startedEpoch): el supervisor no dejo archivo .exit.txt; no hay evidencia de como termino la prueba."
+                  [void](Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "failed"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $supervisorCode; recorded = $recorded; log_dir = $iterDir })
+                  [void](Write-Summary @{ event = "stop"; stage = $stage; attempt = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; file = $testFile; supervisor = $supervisorCode; reason = $reason })
+                  throw $reason
+                }
+                if ($null -eq $testExit) {
+                  $failed++
+                  $failureRecorded = $true
+                  $reason = "intento $attempts ($testFile, inicio_s=$startedEpoch): el resultado registrado no contiene un codigo numerico ('$recorded')."
+                  [void](Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "failed"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $supervisorCode; recorded = $recorded; log_dir = $iterDir })
+                  [void](Write-Summary @{ event = "stop"; stage = $stage; attempt = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; file = $testFile; supervisor = $supervisorCode; reason = $reason })
+                  throw $reason
+                }
+                if ($supervisorCode -eq 2) {
+                  $failed++
+                  $failureRecorded = $true
+                  $reason = "intento $attempts ($testFile, inicio_s=$startedEpoch): se alcanzo el limite duro del supervisor ($hardLimitSec s asignados) tras $durationSec s; la instantanea y el cierre del job quedaron en el artefacto."
+                  [void](Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "hard-limit"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $supervisorCode; recorded = $recorded; remaining_sec = $remainingSec; hard_limit_sec = $hardLimitSec; log_dir = $iterDir })
+                  [void](Write-Summary @{ event = "stop"; stage = $stage; attempt = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; file = $testFile; supervisor = $supervisorCode; reason = $reason })
+                  throw $reason
+                }
+                if ($supervisorCode -ne 0) {
+                  $failed++
+                  $failureRecorded = $true
+                  $reason = "intento $attempts ($testFile, inicio_s=$startedEpoch): el supervisor salio con codigo $supervisorCode (no se pudo lanzar la prueba bajo el Job Object o fallo su supervision)."
+                  [void](Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "failed"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $supervisorCode; recorded = $recorded; log_dir = $iterDir })
+                  [void](Write-Summary @{ event = "stop"; stage = $stage; attempt = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; file = $testFile; supervisor = $supervisorCode; reason = $reason })
+                  throw $reason
+                }
+                if ($testExit -ne 0) {
+                  $failed++
+                  $failureRecorded = $true
+                  $reason = "intento $attempts ($testFile, inicio_s=$startedEpoch): la prueba termino con '$recorded'."
+                  [void](Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "failed"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $supervisorCode; recorded = $recorded; log_dir = $iterDir })
+                  [void](Write-Summary @{ event = "stop"; stage = $stage; attempt = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; file = $testFile; supervisor = $supervisorCode; reason = $reason })
+                  throw $reason
+                }
+
+                # Llego aca solo si todo lo anterior se cumplio.
+                $succeeded++
+                [void](Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "succeeded"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $supervisorCode; recorded = $recorded; log_dir = $iterDir })
+              }
+              catch {
+                # Error INESPERADO (New-Item, invocacion, lectura, o cualquier
+                # excepcion fuera de las ramas anteriores). Si el fallo YA se
+                # contabilizo y registro en su rama, aqui no se vuelve a contar
+                # (asi no se incrementa dos veces). Si no, se reparte segun
+                # `$invoked`: antes de invocar es fallo de preparacion; durante o
+                # despues de la invocacion es una ejecucion iniciada y fallida.
+                if (-not $failureRecorded) {
+                  if ($invoked) {
+                    $failed++
+                  }
+                  else {
+                    $prepFailures++
+                  }
+                  $reason = "intento $attempts ($testFile): error inesperado en la etapa '$stage': $($_.Exception.GetType().Name): $($_.Exception.Message)"
+                  if ($invoked) {
+                    $recordedEnd = Write-Summary @{ event = "attempt-end"; stage = $stage; attempt = $attempts; file = $testFile; outcome = "failed"; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; duration_s = $durationSec; supervisor = $supervisorCode; recorded = $recorded; log_dir = $iterDir }
+                  }
+                  else {
+                    $recordedEnd = $true
+                  }
+                  $recordedStop = Write-Summary @{ event = "stop"; stage = $stage; attempt = $attempts; invoked = $invoked; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; file = $testFile; supervisor = $supervisorCode; duration_s = $durationSec; reason = $reason }
+                  # Si el propio registro fallo, se informa abiertamente: esos
+                  # eventos NO quedaron persistidos y el error original se
+                  # propaga igual.
+                  if (-not $recordedEnd -or -not $recordedStop) {
+                    Write-Host "[ci-soak] ADVERTENCIA: el intento $attempts termino con un error y alguno de sus eventos (attempt-end/stop) no se pudo persistir; solo queda esta linea en el log del paso."
+                  }
+                  throw $reason
+                }
+                throw
+              }
+            }
+          }
+
+          $done = @(Get-ChildItem -LiteralPath (Join-Path $root "iter-*") -Directory -ErrorAction SilentlyContinue)
+          $endRemainingSec = [int][math]::Floor($windowSec - ((Get-Date).ToUniversalTime() - $cycleStart).TotalSeconds)
+          # `started` = invocaciones del supervisor iniciadas; `succeeded` y
+          # `failed` su reparto (en este punto `failed` siempre vale 0, porque
+          # cualquier fallo aborta el ciclo por `throw`). `prep_failures` cuenta
+          # aparte los intentos que nunca llegaron a invocar al supervisor.
+          # Eventos por intento, en orden: `attempt-start` (se decidio ejecutar) ->
+          # `supervisor-invocation` (se llego a invocar) -> `attempt-end` (hay
+          # resultado), con `stop` como corte en cualquier punto.
+          Write-Host "[ci-soak] ciclo terminado: $attempts intentos, $started invocaciones iniciadas ($succeeded correctas, $failed fallidas), $prepFailures fallos de preparacion, $($done.Count) carpetas, restaban $endRemainingSec s."
+          [void](Write-Summary @{ event = "cycle-end"; stage = "cycle"; invoked = $false; attempts = $attempts; started = $started; succeeded = $succeeded; failed = $failed; prep_failures = $prepFailures; dirs = $done.Count; remaining_sec = $endRemainingSec; safety_margin_sec = $safetyMarginSec })
+
+      - name: Subir los registros del soak
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: diag-soak-${{ github.run_id }}
+          path: ${{ runner.temp }}/diag-e2e-soak/
+          if-no-files-found: warn
+          retention-days: 7
+          compression-level: 0
