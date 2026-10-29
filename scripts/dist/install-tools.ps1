@@ -314,9 +314,27 @@ function Get-RunningInstancePid {
 # Descarga y verificacion
 # ------------------------------------------------------------------------------
 
+# Se calcula con `System.Security.Cryptography.SHA256` sobre un `FileStream` en
+# lugar de `Get-FileHash`: ese cmdlet viene de `Microsoft.PowerShell.Utility`, y
+# si el proceso hereda un `PSModulePath` con la version 7.0.0.0 de PowerShell 7
+# el 5.1 resuelve ese modulo (que NO tiene el cmdlet) y el comando no existe.
+# La API .NET no depende de modulos ni de la configuracion del perfil.
 function Get-Sha256 {
   param([string]$Path)
-  return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $hash = $sha.ComputeHash($stream)
+    } finally {
+      $sha.Dispose()
+    }
+  } finally {
+    $stream.Dispose()
+  }
+  # Hex en minusculas, como devolvia `.Hash.ToLowerInvariant()` de `Get-FileHash`.
+  return ([System.BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
 }
 
 function Save-Download {
