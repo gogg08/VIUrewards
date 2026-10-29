@@ -25,6 +25,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -142,7 +143,13 @@ export async function waitUntil(
 
 /** Extrae el ZIP a una ruta temporal con espacios y devuelve la carpeta raíz. */
 export async function extractPackage(zipPath: string): Promise<{ root: string; packageDir: string }> {
-  const root = mkdtempSync(join(tmpdir(), "VIU tests distribucion con espacios-"));
+  // `root` es la base de TODAS las rutas que comparan los tests de `launcher`
+  // (`appDir`, `packageDir`, `report.appRoot`), y el launcher normaliza con
+  // `GetFullPath` / `Get-NormalizedPath` (`scripts/dist/launcher-gui.ps1:125-128`),
+  // que devuelve la forma LARGA. Si `%TEMP%` viene en 8.3 (`C:\Users\RUNNER~1\…`,
+  // como en los runners de GitHub), comparar contra la forma corta falla aunque
+  // el producto sea correcto.
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "VIU tests distribucion con espacios-")));
   const extractDir = join(root, "paquete extraido");
   // `Expand-Archive` falla con las entradas que usan `\` como separador (el ZIP
   // se genera en Windows) y, peor, termina con código 0 dejando la carpeta sin

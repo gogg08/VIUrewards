@@ -105,6 +105,46 @@ function extractJson(text: string): Record<string, unknown> | null {
   return null;
 }
 
+/**
+ * Captura de SOLO DIAGNÓSTICO del entorno de PowerShell que ejecuta el
+ * instalador, activa únicamente con `CI` definido.
+ *
+ * El instalador falló en los runners con "The term 'Get-FileHash' is not
+ * recognized", así que se registra QUÉ PowerShell y QUÉ módulos ve un proceso
+ * lanzado con el MISMO ejecutable y el MISMO entorno que usan los tests
+ * (`runInstaller`). No cambia ninguna lógica: no decide, no omite ni arregla.
+ */
+const PS_ENVIRONMENT_DIAGNOSTIC = [
+  "Write-Output '--- diag: PSVersionTable ---'",
+  "$PSVersionTable.PSVersion | Out-String | Write-Output",
+  "Write-Output '--- diag: PSModulePath ---'",
+  "$env:PSModulePath | Write-Output",
+  "Write-Output '--- diag: Get-Command Get-FileHash ---'",
+  "(Get-Command Get-FileHash -ErrorAction SilentlyContinue | Out-String) | Write-Output",
+  "Write-Output '--- diag: Microsoft.PowerShell.Utility ---'",
+  "(Get-Module -ListAvailable Microsoft.PowerShell.Utility | Select-Object Name,Version,Path | Out-String) | Write-Output",
+].join("\r\n");
+
+let psDiagnosticCaptured = false;
+
+/** Captura el entorno de PowerShell una sola vez por archivo, y solo con `CI`. */
+async function capturePowerShellEnvironment(): Promise<void> {
+  if (psDiagnosticCaptured) return;
+  if (process.env.CI === undefined) return;
+  psDiagnosticCaptured = true;
+  // Mismo ejecutable y mismos argumentos base que `runInstaller`; sin
+  // `-File install-tools.ps1` porque acá solo se consulta el entorno.
+  const result = await run(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", PS_ENVIRONMENT_DIAGNOSTIC],
+    { timeoutMs: 120_000 },
+  );
+  console.log(
+    `[dist-diag] entorno de PowerShell del instalador (code=${String(result.code)})\n` +
+      `${result.stdout}${result.stderr}`,
+  );
+}
+
 /** Corre el instalador (PowerShell 5.1, sin perfil) y parsea su JSON. */
 async function runInstaller(
   args: string[],
@@ -325,6 +365,7 @@ const toolFiles = MANAGED_TOOLS.map((tool) => tool.asset.file);
 
 beforeAll(async () => {
   if (!CAN_RUN_DIST) return;
+  await capturePowerShellEnvironment();
   // Sin red cuando la caché ya está sembrada; si falta algo, se descarga UNA vez
   // y se verifica (un hash incorrecto hace fallar toda la suite).
   for (const tool of MANAGED_TOOLS) {
