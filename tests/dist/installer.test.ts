@@ -60,7 +60,10 @@ function tempDir(label: string): string {
 
 afterEach(() => {
   for (const dir of created.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
+    // Windows puede negar el borrado (EPERM/EBUSY) un instante despues de que
+    // corre el `node.exe` del runtime instalado: se reintenta sin silenciar el
+    // error final.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 });
 
