@@ -11,9 +11,17 @@
 #   - `package`: typecheck, pruebas unitarias, armado del ZIP, smoke, pruebas de
 #     distribución y subida del artefacto. NO ejecuta ningún E2E. Es el único
 #     del que depende la entrega.
-#   - `e2e`: los seis archivos E2E de Windows, en paralelo y sin `needs`. Corre
+#   - `e2e`: los seis archivos E2E de Windows, en paralelo y sin `needs`. Es
+#     **OPT-IN**: solo corre con `run_e2e = true` (por defecto, apagado). Corre
 #     con `continue-on-error: true`: un cuelgue o un fallo del árbol de procesos
 #     ya no retrasa ni bloquea la generación del ZIP.
+#
+# Por qué `e2e` está apagado por defecto: con el helper de E2E de `main` el job
+# se colgó en "E2E · tabla de procesos" hasta agotar su `timeout-minutes` de 25
+# (run 40989668862: el job terminó `cancelled`, el paso no disparó su límite de
+# 3 min y el log no se recuperó). El `timeout` del JOB sí se aplica, pero cierra
+# la ejecución como `cancelled`; la causa del cuelgue no está demostrada. Se
+# vuelve a encender cuando el helper reescrito esté en `main`.
 #
 # Ningún paso de publicación depende de `e2e`. El resultado de `e2e` sigue
 # visible en la ejecución (queda marcado como fallo sin romper el workflow),
@@ -46,6 +54,10 @@ on:
         type: choice
         options: ["1", "3", "7"]
         default: "3"
+      run_e2e:
+        description: "Ejecutar también los E2E de procesos: puede colgar el runner y no bloquea el ZIP"
+        type: boolean
+        default: false
 
 # Permisos mínimos: el build solo lee el repositorio.
 permissions:
@@ -198,7 +210,15 @@ jobs:
           compression-level: 0
 
   # ───────────────────────────────────────────────────────────────────────────
-  # E2E de procesos: FUERA de la ruta de la entrega.
+  # E2E de procesos: FUERA de la ruta de la entrega y OPT-IN.
+  #
+  # No corre salvo que se pida con `run_e2e = true`. Por qué: con el helper de
+  # E2E de `main` este job se colgó en "E2E · tabla de procesos" hasta agotar su
+  # propio `timeout-minutes` de 25 (run 40989668862: el job terminó `cancelled`
+  # con la anotación "The job has exceeded the maximum execution time of 25m0s",
+  # el paso no disparó su límite de 3 min y el log no se recuperó). La causa no
+  # está demostrada, así que el job queda apagado por defecto hasta incorporar el
+  # helper reescrito.
   #
   # Sin `needs`: arranca en paralelo con `package`. `continue-on-error` a nivel
   # job: si un E2E falla o se cuelga, el job queda marcado como fallido (visible
@@ -220,6 +240,9 @@ jobs:
   e2e:
     name: E2E de procesos (no bloquea el paquete)
     runs-on: windows-latest
+    # Opt-in: ver el comentario del job. Sin este `if`, un cuelgue que agote el
+    # `timeout-minutes` del job deja la ejecución en `cancelled`.
+    if: ${{ inputs.run_e2e }}
     continue-on-error: true
     # Presupuesto: 1 checkout + 1 setup-node + 3 npm ci + el paso de
     # choco/ffmpeg, más los seis pasos E2E con 3 minutos cada uno (18 en el peor
