@@ -26,6 +26,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -49,7 +50,10 @@ const created: string[] = [];
 
 function tempDir(label: string): string {
   // Espacios en la ruta a propósito: el instalador nunca debe suponer "sin espacios".
-  const dir = mkdtempSync(join(tmpdir(), `VIU instalador ${label} `));
+  // `%TEMP%` viene en 8.3 en los runners (`C:\Users\RUNNER~1\…`) y el producto
+  // devuelve la forma LARGA (`GetFullPath`) en `dataDir`; se normaliza para que
+  // las expectativas comparen la misma forma.
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), `VIU instalador ${label} `)));
   created.push(dir);
   return dir;
 }
