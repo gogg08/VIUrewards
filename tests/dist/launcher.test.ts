@@ -740,7 +740,7 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
       `if ($start${round}.ok) {`,
       `  $stopCtx${round} = [pscustomobject]@{ Process = $ctx${round}.Process; ProcessHandle = $ctx${round}.ProcessHandle; Exchange = $exchange${round}; ControlId = $control${round}; TimeoutSeconds = 45 }`,
       `  $stop${round} = Invoke-ViuServerStop -Context $stopCtx${round}`,
-      `  $report.rounds += [ordered]@{ started = $true; closed = $stop${round}.ok; exitCode = $stop${round}.exitCode; reason = $stop${round}.reason; message = $stop${round}.message; forced = $stop${round}.forced; log = @($stop${round}.log) }`,
+      `  $report.rounds += [ordered]@{ started = $true; closed = $stop${round}.ok; exitCode = $stop${round}.exitCode; reason = $stop${round}.reason; message = $stop${round}.message; forced = $stop${round}.forced; sawFinished = $stop${round}.sawFinished; vanished = $stop${round}.vanished; eofBreak = $stop${round}.eofBreak; log = @($stop${round}.log) }`,
       `} else {`,
       `  $report.rounds += [ordered]@{ started = $false; closed = $false; reason = $start${round}.reason }`,
       "}",
@@ -783,6 +783,9 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
         reason?: string;
         message?: string;
         forced?: boolean;
+        sawFinished?: boolean;
+        vanished?: boolean;
+        eofBreak?: boolean;
         log?: string[];
       }>;
       pids: Array<number | null>;
@@ -791,11 +794,12 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
     };
     for (const pid of report.pids) if (typeof pid === "number") createdPids.add(pid);
     expect(report.rounds).toHaveLength(2);
-    for (const round of report.rounds) {
+    for (const [index, round] of report.rounds.entries()) {
       // La ronda entera viaja en el mensaje: si falla, el log del CI dice si se
-      // forzó la terminación, si el canal no respondió o si el código no era 0.
-      expect(round.started, `motivo de arranque: ${round.reason ?? "(sin motivo)"}`).toBe(true);
-      expect(round.closed, JSON.stringify(round)).toBe(true);
+      // forzo la terminacion, si el canal no respondio o si el codigo no era 0.
+      // `sawFinished`, `vanished` y `eofBreak` dicen QUE factor de `ok` fallo.
+      expect(round.started, `ronda ${index + 1}: motivo de arranque: ${round.reason ?? "(sin motivo)"}`).toBe(true);
+      expect(round.closed, `ronda ${index + 1}: ${JSON.stringify(round)}`).toBe(true);
       expect(round.exitCode).toBe(0);
     }
     // Cada ronda usó un proceso propio y ninguno quedó vivo.

@@ -723,6 +723,9 @@ function Invoke-ViuServerStop {
   $result = [ordered]@{
     ok = $false; reason = "unknown"; message = ""; exitCode = $null
     closed = $false; forced = $false; log = $log
+    # Diagnostico (solo lectura): que factor de `ok` fallo. Se inicializan aca
+    # porque StrictMode 2.0 rechaza leer una variable sin definir.
+    sawFinished = $false; vanished = $false; eofBreak = $false
   }
 
   $serverProcess = $Context.Process
@@ -752,7 +755,7 @@ function Invoke-ViuServerStop {
         while ((Get-Date) -lt $deadline) {
           $line = [ViuLauncherPipe]::ReadLine()
           if ($null -eq $line) {
-            if ($serverProcess.HasExited) { break }
+            if ($serverProcess.HasExited) { $result.eofBreak = $true; break }
             Start-Sleep -Milliseconds 50
             continue
           }
@@ -812,6 +815,8 @@ function Invoke-ViuServerStop {
     }
     # Solo hay cierre ordenado si el canal confirmo `finished` con codigo 0 y el
     # proceso salio de verdad (su cerrojo lo libero el propio servidor).
+    $result.sawFinished = $sawFinished
+    $result.vanished = $vanished
     $result.ok = $sawFinished -and (-not $result.forced) -and ($result.closed -or ($null -ne $result.exitCode -and $result.exitCode -eq 0)) -and $vanished
     if ($result.ok -and $null -eq $result.exitCode) { $result.exitCode = 0 }
     if ($result.ok) {
