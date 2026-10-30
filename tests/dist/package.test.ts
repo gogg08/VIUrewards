@@ -40,7 +40,17 @@
  * Se corre con: `npm run test:dist` (lento: requiere el ZIP ya construido).
  */
 
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -110,7 +120,10 @@ let manifest: Manifest;
 const dataRoots: string[] = [];
 
 function tempDataDir(label: string): string {
-  const rootDir = mkdtempSync(join(tmpdir(), `VIU datos ${label} con espacios-`));
+  // Ruta LARGA: el servidor resuelve el directorio de datos con `resolve()`
+  // (`src/server/paths.ts`) y en un runner con `%TEMP%` en 8.3 (`RUNNER~1`) la
+  // forma corta no coincidiría con la que informa el proceso.
+  const rootDir = realpathSync.native(mkdtempSync(join(tmpdir(), `VIU datos ${label} con espacios-`)));
   dataRoots.push(rootDir);
   const dataDir = join(rootDir, "datos del streamer");
   return dataDir;
