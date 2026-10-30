@@ -515,10 +515,15 @@ Node del runner (que ya es la versión fijada), así que en CI no hay red extra.
 
 - runner `windows-latest`, permisos `contents: read`;
 - Node del runner = `NODE_VERSION` de `config.ts` (lo lee del archivo);
-- corre `typecheck`, `npm test`, `npm run test:e2e` (instala ffmpeg con
-  Chocolatey; si falla, el paso falla) y `npm run test:dist` sobre el ZIP recién
-  construido;
-- construye con `--smoke`;
+- **dos jobs independientes**, sin `needs` entre ellos:
+  - **`package`** (timeout 30 min): `typecheck`, `npm test`, build con
+    `--smoke` y `npm run test:dist` sobre el ZIP recién construido. **No**
+    ejecuta ningún E2E y es el único del que depende la entrega;
+  - **`e2e`** (timeout 25 min, `continue-on-error: true`): instala ffmpeg con
+    Chocolatey (si falla, **ese** paso falla) y corre los seis archivos E2E en
+    pasos separados de 3 min cada uno;
+- **test:dist y el ZIP no dependen de `e2e`**: un fallo o un cuelgue de los E2E
+  no bloquea ni demora la subida del paquete;
 - sube el ZIP, el `.sha256` y el `manifest.json` extraído **del propio ZIP**;
 - **No** crea tags, **no** publica releases y **no** escribe en el repositorio.
 
