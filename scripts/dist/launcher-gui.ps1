@@ -906,6 +906,14 @@ function Invoke-ViuToolInstall {
 
   $process = Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+  # El handle se captura ANTES de esperar: despues .NET lo libera y
+  # `Process.ExitCode` queda vacio con la salida redirigida (el mismo defecto
+  # que resuelve `Invoke-ViuServerStop`). Esa funcion corre desde el script
+  # principal; esta corre en un runspace nuevo, asi que el tipo no tiene por
+  # que estar cargado ahi: se registra si falta y, si no se puede, se cae a
+  # `Process.ExitCode`.
+  $exitCodeHandle = $null
+  try { $exitCodeHandle = $process.Handle } catch { $exitCodeHandle = $null }
   $exited = $process.WaitForExit($timeoutSeconds * 1000)
   if (-not $exited) {
     $null = & taskkill /PID $process.Id /T /F 2>&1
@@ -914,7 +922,20 @@ function Invoke-ViuToolInstall {
     return [pscustomobject]$result
   }
   $null = $process.WaitForExit()
-  $result.exitCode = $process.ExitCode
+  $installExitCode = $null
+  if ($null -ne $exitCodeHandle) {
+    try {
+      if (-not ("ViuLauncherExitCode" -as [type])) { Initialize-ExitCodeReader }
+      $read = [ViuLauncherExitCode]::Read($exitCodeHandle)
+      if ($read -ge 0) { $installExitCode = $read }
+    } catch {
+      $installExitCode = $null
+    }
+  }
+  if ($null -eq $installExitCode) {
+    try { $installExitCode = $process.ExitCode } catch { $installExitCode = $null }
+  }
+  $result.exitCode = $installExitCode
 
   # Salida del instalador: se muestran los pasos utiles (ya sin secretos: el
   # instalador no maneja el token) y el motivo final lo da su JSON.
