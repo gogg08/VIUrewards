@@ -1014,6 +1014,108 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
 
     expect(results).toEqual(cases.map((item) => expect.objectContaining({ case: item.code, ok: item.ok, reason: item.reason, exitCode: item.exitCode })));
   });
+
+  /**
+   * El instalador real imprime su JSON con `ConvertTo-Json -Depth 6`, que es
+   * MULTILINEA, y puede dejar texto despues. Este test fija que el launcher
+   * recupere el `message` de ese JSON (y no el generico de la funcion).
+   */
+  it("recupera el message del JSON multilinea del instalador", async () => {
+    const tmp = tempDir("json-instalador");
+    const dataDir = join(tmp, "datos con espacios");
+    mkdirSync(dataDir, { recursive: true });
+    const installer = join(tmp, "instalador json", "install-tools.ps1");
+    mkdirSync(join(tmp, "instalador json"), { recursive: true });
+
+    // Codigos 1 y 2 con un message propio; el de codigo 1 ademas imprime texto
+    // DESPUES del JSON, como el instalador real ("Fin.").
+    writeFileSync(
+      installer,
+      [
+        "param([string]$DataDir)",
+        "$code = [int]$env:VIU_TEST_INSTALL_CODE",
+        "$raro = if ($code -eq 2) { 'ruta {con llaves} y \"comillas\"' } else { 'Salio mal a proposito' }",
+        "$object = [ordered]@{",
+        "  status = 'failed'",
+        "  reason = 'falso'",
+        "  message = $raro",
+        "  dataDir = $DataDir",
+        "  contractVersion = 1",
+        "  tools = @(",
+        "    [ordered]@{ id = 'node'; version = '24.22.1'; installed = $true; files = @('C:\datos con espacios\runtime\node.exe') },",
+        "    [ordered]@{ id = 'yt-dlp'; version = '2026.10.21'; installed = $true; files = @() }",
+        "  )",
+        "}",
+        "$object | ConvertTo-Json -Depth 6",
+        "Write-Output 'Fin.'",
+        "exit $code",
+      ].join("\r\n"),
+      "utf8",
+    );
+
+    // Instalador falso SIN JSON: solo texto, para el mensaje generico.
+    const silentInstaller = join(tmp, "instalador mudo", "install-tools.ps1");
+    mkdirSync(join(tmp, "instalador mudo"), { recursive: true });
+    writeFileSync(
+      silentInstaller,
+      ["param([string]$DataDir)", "Write-Output 'solo texto, sin JSON'", "exit 1"].join("\r\n"),
+      "utf8",
+    );
+
+    type Case = { label: string; code: number; installer: string; expectedMessage: string };
+    const cases: Case[] = [
+      { label: "uno", code: 1, installer, expectedMessage: "Salio mal a proposito" },
+      { label: "dos", code: 2, installer, expectedMessage: 'ruta {con llaves} y "comillas"' },
+      { label: "mudo", code: 1, installer: silentInstaller, expectedMessage: "La instalacion de herramientas fallo (codigo 1)." },
+    ];
+
+    const seen: Array<{ case: number; reason: string; message: string }> = [];
+    for (const item of cases) {
+      const outFile = join(tmp, `json-${item.label}.json`);
+      const action = [
+        "Initialize-ExitCodeReader",
+        "$installCtx = [pscustomobject]@{",
+        "  Installer = $env:VIU_TEST_INSTALLER",
+        "  DataDir = $env:VIU_TEST_DATA",
+        "  OutputFile = (Join-Path $tmp 'inst.out')",
+        "  ErrorFile = (Join-Path $tmp 'inst.err')",
+        "  TimeoutSeconds = 60",
+        "}",
+        "$install = Invoke-ViuToolInstall -Context $installCtx",
+        "$report = [ordered]@{",
+        "  case = [int]$env:VIU_TEST_INSTALL_CODE",
+        "  ok = $install.ok; reason = $install.reason; message = $install.message",
+        "  exitCode = $install.exitCode",
+        "}",
+        "$report | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $env:VIU_TEST_OUT -Encoding UTF8",
+        "exit 0",
+      ].join("\r\n");
+      const script = join(tmp, `json-${item.label}.ps1`);
+      writeFileSync(script, functionScript(action), "utf8");
+      const result = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], {
+        timeoutMs: 120_000,
+        env: {
+          VIU_TEST_LAUNCHER: launcherPath,
+          VIU_TEST_DATA: dataDir,
+          VIU_TEST_APP: appDir,
+          VIU_TEST_TMP: tmp,
+          VIU_TEST_OUT: outFile,
+          VIU_TEST_INSTALLER: item.installer,
+          VIU_TEST_INSTALL_CODE: String(item.code),
+          KICK_CLIENT_ID: "",
+          KICK_CLIENT_SECRET: "",
+        },
+      });
+      expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+      seen.push(readReport(outFile));
+    }
+
+    // Codigo 1 y 2: el message sale del JSON, no el generico ni el fijo.
+    expect(seen[0]?.message, JSON.stringify(seen)).toBe(cases[0]?.expectedMessage);
+    expect(seen[1]?.message, JSON.stringify(seen)).toBe(cases[1]?.expectedMessage);
+    // Sin JSON valido: mensaje generico con el codigo.
+    expect(seen[2]?.message, JSON.stringify(seen)).toBe(cases[2]?.expectedMessage);
+  });
 });
 
 describeLauncher("launcher: recuperación de un servidor huérfano", () => {

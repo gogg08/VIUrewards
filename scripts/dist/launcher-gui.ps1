@@ -977,15 +977,31 @@ function Invoke-ViuToolInstall {
     & $addLog ([regex]::Replace($line, '--Exchange=\S+', '--Exchange=***').TrimEnd())
   }
 
+  # El instalador imprime su JSON con `ConvertTo-Json -Depth 6`, que es
+  # MULTILINEA: una linea con "{" sola no parsea. El bloque empieza en la
+  # primera linea que, sin CR final, es exactamente "{" y termina en la
+  # primera linea que es exactamente "}" SIN sangria (ConvertTo-Json indenta
+  # los objetos anidados y escapa los saltos de linea dentro de los textos,
+  # asi que no hace falta contar llaves). Lo que venga despues se ignora.
   $detail = $null
-  foreach ($line in ($tail -split "`r?`n")) {
-    $trimmed = $line.Trim()
-    if (-not $trimmed.StartsWith("{")) { continue }
+  $jsonLines = @($tail -split "`r?`n")
+  $jsonStart = -1
+  for ($i = 0; $i -lt $jsonLines.Count; $i++) {
+    if ($jsonLines[$i].TrimEnd("`r") -eq "{") { $jsonStart = $i; break }
+  }
+  $jsonEnd = -1
+  if ($jsonStart -ge 0) {
+    for ($i = $jsonStart + 1; $i -lt $jsonLines.Count; $i++) {
+      if ($jsonLines[$i] -eq "}") { $jsonEnd = $i; break }
+    }
+  }
+  if ($jsonStart -ge 0 -and $jsonEnd -gt $jsonStart) {
+    $block = ($jsonLines[$jsonStart..$jsonEnd] -join "`n")
     try {
-      $parsed = $trimmed | ConvertFrom-Json
+      $parsed = $block | ConvertFrom-Json
       if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties["status"]) { $detail = $parsed }
     } catch {
-      # No es el JSON final: se ignora.
+      # No era el JSON final: se deja $detail en nulo.
     }
   }
   if ($null -ne $detail -and -not [string]::IsNullOrWhiteSpace($detail.message)) {
