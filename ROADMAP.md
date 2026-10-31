@@ -117,3 +117,71 @@ Es el mayor riesgo del proyecto. Se resuelve antes de escribir código.
 2. Tests junto con el código en cola, validación y reglas.
 3. Commit después de cada tarea que funcione.
 4. Fase 0 y diseño de arquitectura con un modelo más fuerte en chat si es posible; DeepSeek en el agente para implementar.
+
+## Experiencia de instalación objetivo
+
+Decisión del usuario sobre cómo debería instalarse VIUrewards. **Salvo lo marcado como hecho,
+esto es plan, no está implementado.**
+
+### Instalación con un comando (plan)
+
+Un comando en PowerShell, pensado para que lo pegue una persona no técnica:
+
+```powershell
+irm <url> | iex
+```
+
+Ese comando descarga y ejecuta un **bootstrap** `install.ps1`. **Hoy ese archivo no existe.**
+
+El bootstrap debe:
+
+1. Descargar la aplicación desde los **releases de GitHub** de este proyecto, verificando el
+   **SHA-256**.
+2. Instalarla en el directorio de datos (ver `docs/managed-tools.md` y `docs/dashboard.md`).
+3. Ejecutar `scripts/dist/install-tools.ps1`, que descarga **Node, yt-dlp y FFmpeg directo de
+   sus proveedores** con hash fijado. **No usa Chocolatey**: Chocolatey se usa solo en CI, en el
+   job `e2e` de `.github/workflows/package-windows.yml`.
+4. Al final, **abrir el launcher** (`launcher-gui.ps1` vía `VIUrewards.cmd`).
+
+### Acceso directo en el menú Inicio (plan)
+
+Se crea un acceso directo en el menú Inicio **del usuario actual**, **sin administrador**, para
+poder abrir VIUrewards como cualquier otra aplicación.
+
+El usuario mencionó `%APPDATA%\Microsoft\Windows\Start Menu\`; lo habitual es la subcarpeta
+`Programs` (`%APPDATA%\Microsoft\Windows\Start Menu\Programs`). **Confirmar al implementarlo.**
+
+Sin ícono por ahora; el `.ico` se agrega después como propiedad del acceso directo.
+
+### Salida del instalador más clara (plan)
+
+La salida está pensada hoy para depurar, no para una persona:
+
+- **Conservar el JSON** (con `contractVersion`) por ahora: falta verificar si
+  `launcher-gui.ps1` lo lee. Si no lo lee, se puede revisar más adelante.
+- **Quitar** la línea "Arranca VIUrewards con VIUREWARDS_DATA_DIR=..." cuando el bootstrap abra
+  el launcher él mismo.
+
+### Estado verificado
+
+- `scripts/dist/install-tools.ps1` ya instala **Node 24.22.1, yt-dlp 2026.10.21 y FFmpeg 9.0.2**
+  en una carpeta de datos nueva, con verificación de SHA-256. Probado en la PC del desarrollador
+  (2026-10-30, Windows PowerShell 5.1); reportado por el usuario.
+- El paquete portable (`package-windows.yml`) se construye sin redistribuir binarios de terceros,
+  y el instalador de herramientas los descarga desde cada proveedor.
+
+### Pendientes y bloqueos
+
+- **Repo privado vs. `irm`.** Hay que decidir si el repositorio pasa a ser público o si las
+  releases viven en un repositorio aparte, porque `irm` necesita una URL accesible sin
+  autenticación.
+- **Licencia GPLv3 de FFmpeg.** Las obligaciones de la compilación estática siguen abiertas
+  (`docs/distribution.md` §4).
+- **Probar en un Windows 11 limpio** (VM con snapshot) y con **Smart App Control** activo.
+- **Confirmar las huellas GPG de Node** por un segundo canal
+  (`docs/node-release-verification.md`).
+- **Canal de actualizaciones** de la app (hoy solo se actualiza yt-dlp desde el dashboard).
+- **Reincorporar el helper de E2E reescrito** de `wip/ci-hang-diag`, separando diagnóstico de
+  lógica, y **volver a encender** el job `e2e` (hoy es opt-in con `run_e2e`).
+- **F3**: el test "arranque y parada repetidos" de `launcher.test.ts` es intermitente; **sin
+  causa demostrada**.
