@@ -3,7 +3,7 @@
  * carpeta temporal (nunca `data/instance.lock` del usuario).
  */
 
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -104,15 +104,29 @@ describe("exclusividad de instancia", () => {
   });
 
   it("un cerrojo ilegible reciente se respeta y uno viejo se libera", () => {
+    // El contenido ilegible caduca por el `mtime` del archivo, no por lo que
+    // traiga escrito. Se fija el `mtime` a mano para no depender del reloj real
+    // (en Windows la granularidad del sistema de archivos hacía que un cerrojo
+    // recién escrito quedara por delante de `Date.now()` y nunca venciera).
     const dbPath = tempDbPath();
     writeLock(dbPath, "no es json");
+
     // Reciente: no se puede asegurar que nadie lo esté usando.
-    expect(acquireInstanceLock(dbPath, { isAlive: () => false }).acquired).toBe(false);
+    const recent = Date.now();
+    utimesSync(lockPath(dbPath), new Date(recent), new Date(recent));
+    expect(
+      acquireInstanceLock(dbPath, { isAlive: () => false, now: () => recent + 60_000, maxAgeMs: DEFAULT_LOCK_MAX_AGE_MS })
+        .acquired,
+    ).toBe(false);
 
     // Viejo: un cerrojo que nunca se liberó no debe bloquear para siempre.
+    // Antigüedad = `now()` - mtime; se pide justo por encima del umbral.
+    const old = Date.now() - DEFAULT_LOCK_MAX_AGE_MS - 60_000;
+    utimesSync(lockPath(dbPath), new Date(old), new Date(old));
     const lock = acquireInstanceLock(dbPath, {
       isAlive: () => false,
-      now: () => Date.now() + DEFAULT_LOCK_MAX_AGE_MS + 1,
+      now: () => old + DEFAULT_LOCK_MAX_AGE_MS + 60_000,
+      maxAgeMs: DEFAULT_LOCK_MAX_AGE_MS,
     });
     try {
       expect(lock.acquired).toBe(true);
