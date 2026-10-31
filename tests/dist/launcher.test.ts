@@ -1012,7 +1012,7 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
       results.push(readReport(outFile));
     }
 
-    expect(results).toEqual(cases.map((item) => expect.objectContaining({ code: item.code, ok: item.ok, reason: item.reason, exitCode: item.exitCode })));
+    expect(results).toEqual(cases.map((item) => expect.objectContaining({ case: item.code, ok: item.ok, reason: item.reason, exitCode: item.exitCode })));
   });
 });
 
