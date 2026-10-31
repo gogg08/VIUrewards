@@ -726,6 +726,10 @@ function Invoke-ViuServerStop {
     # Diagnostico (solo lectura): que factor de `ok` fallo. Se inicializan aca
     # porque StrictMode 2.0 rechaza leer una variable sin definir.
     sawFinished = $false; vanished = $false; eofBreak = $false
+    # Como se decidio `vanished` (diagnostico): "immediate" si el primer sondeo
+    # ya no vio el proceso, "poll" si desaparecio durante la espera, "hasexited"
+    # si se acepto `HasExited` al agotar la espera, "none" si no desaparecio.
+    vanishedBy = "none"; vanishedPolls = 0; vanishedMs = 0
   }
 
   $serverProcess = $Context.Process
@@ -808,7 +812,33 @@ function Invoke-ViuServerStop {
       if ($read -ge 0) { $handleExitCode = $read }
     }
     $vanished = $false
-    try { $vanished = (-not (Get-Process -Id $serverProcess.Id -ErrorAction Stop)) } catch { $vanished = $true }
+    # Espera acotada en vez de un unico chequeo. Motivo: `Get-Process -Id` puede
+    # no encontrar el proceso justo despues de `WaitForExit` (Windows sigue
+    # liberando el objeto) o, al reves, encontrarlo un instante mas. Se sondea
+    # cada 100 ms hasta 3 s; si al agotarse sigue apareciendo, se acepta
+    # `HasExited`. Esto MITIGA el falso negativo, no demuestra la causa.
+    $vanishedBy = "none"
+    $vanishedPolls = 0
+    $vanishedWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($true) {
+      $vanishedPolls++
+      $stillThere = $false
+      try { $stillThere = [bool](Get-Process -Id $serverProcess.Id -ErrorAction Stop) } catch { $stillThere = $false }
+      if (-not $stillThere) {
+        $vanished = $true
+        if ($vanishedPolls -eq 1) { $vanishedBy = "immediate" } else { $vanishedBy = "poll" }
+        break
+      }
+      if ($vanishedWatch.ElapsedMilliseconds -ge 3000) {
+        $hasExited = $false
+        try { $hasExited = [bool]$serverProcess.HasExited } catch { $hasExited = $false }
+        if ($hasExited) { $vanished = $true; $vanishedBy = "hasexited" } else { $vanished = $false; $vanishedBy = "none" }
+        break
+      }
+      Start-Sleep -Milliseconds 100
+    }
+    $vanishedWatch.Stop()
+    $result.vanishedMs = [int]$vanishedWatch.ElapsedMilliseconds
     $result.exitCode = $handleExitCode
     if ($null -eq $result.exitCode -and -not $vanished) {
       try { $result.exitCode = $serverProcess.ExitCode } catch { $result.exitCode = $null }
@@ -817,6 +847,8 @@ function Invoke-ViuServerStop {
     # proceso salio de verdad (su cerrojo lo libero el propio servidor).
     $result.sawFinished = $sawFinished
     $result.vanished = $vanished
+    $result.vanishedBy = $vanishedBy
+    $result.vanishedPolls = $vanishedPolls
     $result.ok = $sawFinished -and (-not $result.forced) -and ($result.closed -or ($null -ne $result.exitCode -and $result.exitCode -eq 0)) -and $vanished
     if ($result.ok -and $null -eq $result.exitCode) { $result.exitCode = 0 }
     if ($result.ok) {

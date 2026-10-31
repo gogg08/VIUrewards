@@ -740,7 +740,7 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
       `if ($start${round}.ok) {`,
       `  $stopCtx${round} = [pscustomobject]@{ Process = $ctx${round}.Process; ProcessHandle = $ctx${round}.ProcessHandle; Exchange = $exchange${round}; ControlId = $control${round}; TimeoutSeconds = 45 }`,
       `  $stop${round} = Invoke-ViuServerStop -Context $stopCtx${round}`,
-      `  $report.rounds += [ordered]@{ started = $true; closed = $stop${round}.ok; exitCode = $stop${round}.exitCode; reason = $stop${round}.reason; message = $stop${round}.message; forced = $stop${round}.forced; sawFinished = $stop${round}.sawFinished; vanished = $stop${round}.vanished; eofBreak = $stop${round}.eofBreak; log = @($stop${round}.log) }`,
+      `  $report.rounds += [ordered]@{ started = $true; closed = $stop${round}.ok; exitCode = $stop${round}.exitCode; reason = $stop${round}.reason; message = $stop${round}.message; forced = $stop${round}.forced; sawFinished = $stop${round}.sawFinished; vanished = $stop${round}.vanished; eofBreak = $stop${round}.eofBreak; vanishedBy = $stop${round}.vanishedBy; vanishedPolls = $stop${round}.vanishedPolls; vanishedMs = $stop${round}.vanishedMs; log = @($stop${round}.log) }`,
       `} else {`,
       `  $report.rounds += [ordered]@{ started = $false; closed = $false; reason = $start${round}.reason }`,
       "}",
@@ -786,6 +786,9 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
         sawFinished?: boolean;
         vanished?: boolean;
         eofBreak?: boolean;
+        vanishedBy?: string;
+        vanishedPolls?: number;
+        vanishedMs?: number;
         log?: string[];
       }>;
       pids: Array<number | null>;
@@ -798,6 +801,8 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
       // La ronda entera viaja en el mensaje: si falla, el log del CI dice si se
       // forzo la terminacion, si el canal no respondio o si el codigo no era 0.
       // `sawFinished`, `vanished` y `eofBreak` dicen QUE factor de `ok` fallo.
+      // `vanishedBy` dice como se decidio la desaparicion (ver el launcher).
+      console.log(`[launcher-stop] ronda ${index + 1} vanishedBy=${round.vanishedBy ?? "?"} polls=${round.vanishedPolls ?? "?"} ms=${round.vanishedMs ?? "?"}`);
       expect(round.started, `ronda ${index + 1}: motivo de arranque: ${round.reason ?? "(sin motivo)"}`).toBe(true);
       expect(round.closed, `ronda ${index + 1}: ${JSON.stringify(round)}`).toBe(true);
       expect(round.exitCode).toBe(0);
@@ -1127,7 +1132,7 @@ describeLauncher("launcher: recuperación de un servidor huérfano", () => {
     const action = [
       "Initialize-ControlPipe",
       "Initialize-ExitCodeReader",
-      "$report = [ordered]@{ adopted = $false; stopOk = $false; stopReason = $null; exitCode = $null; aliveAfter = $true; lockAfter = $true }",
+      "$report = [ordered]@{ adopted = $false; stopOk = $false; stopReason = $null; exitCode = $null; vanished = $null; vanishedBy = $null; vanishedPolls = $null; vanishedMs = $null; aliveAfter = $true; lockAfter = $true }",
       "$found = Invoke-ViuAdoptServer -Context ([pscustomobject]@{ DataRoot = $data; Entry = $entry })",
       "$report.adopted = ($null -ne $found)",
       "if ($null -ne $found) {",
@@ -1136,6 +1141,7 @@ describeLauncher("launcher: recuperación de un servidor huérfano", () => {
       "  $stopCtx = [pscustomobject]@{ Process = $found.Process; ProcessHandle = $null; Exchange = $found.Exchange; ControlId = $found.ControlId; TimeoutSeconds = 45 }",
       "  $stop = Invoke-ViuServerStop -Context $stopCtx",
       "  $report.stopOk = $stop.ok; $report.stopReason = $stop.reason; $report.exitCode = $stop.exitCode",
+      "  $report.vanished = $stop.vanished; $report.vanishedBy = $stop.vanishedBy; $report.vanishedPolls = $stop.vanishedPolls; $report.vanishedMs = $stop.vanishedMs",
       "}",
       "Start-Sleep -Milliseconds 500",
       "$report.aliveAfter = [bool](Get-Process -Id $env:VIU_TEST_ORPHAN_PID -ErrorAction SilentlyContinue)",
@@ -1165,9 +1171,16 @@ describeLauncher("launcher: recuperación de un servidor huérfano", () => {
       stopOk: boolean;
       stopReason: string | null;
       exitCode: number | null;
+      vanished: boolean | null;
+      vanishedBy: string | null;
+      vanishedPolls: number | null;
+      vanishedMs: number | null;
       aliveAfter: boolean;
       lockAfter: boolean;
     };
+    console.log(
+      `[launcher-stop] huerfano vanishedBy=${report.vanishedBy ?? "?"} polls=${report.vanishedPolls ?? "?"} ms=${report.vanishedMs ?? "?"}`,
+    );
     expect(report.adopted).toBe(true);
     // Cierre ORDENADO por el canal (no forzado) y con código 0. Antes de la
     // corrección, el código de salida de un proceso recuperado se leía de un
