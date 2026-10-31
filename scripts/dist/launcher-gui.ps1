@@ -889,23 +889,39 @@ function Invoke-ViuToolInstall {
     return [pscustomobject]$result
   }
 
-  # Ruta con espacios: SIEMPRE por `-File` y con el arreglo de argumentos de
-  # `Start-Process`, nunca una linea de comandos concatenada.
-  $arguments = @(
+  # Ruta con espacios: SIEMPRE por `-File` y con los argumentos en UN solo
+  # string entrecomillado (como el servidor en `Invoke-ViuServerStart`). Con un
+  # ARREGLO, `Start-Process` une y re-entrecomilla a su manera, parte la ruta y
+  # PowerShell no encuentra el script: el hijo termina con un codigo distinto de
+  # 0 (-196608) aunque `install-tools.ps1` nunca llegue a ejecutarse.
+  $quotedInstaller = [string]::Concat([string][char]34, $installer, [string][char]34)
+  $quotedDataDir = [string]::Concat([string][char]34, [string]$Context.DataDir, [string][char]34)
+  $argumentLine = [string]::Join(" ", @(
     "-NoProfile",
     "-NonInteractive",
-    "-ExecutionPolicy", "Bypass",
-    "-File", $installer,
-    "-DataDir", $Context.DataDir
-  )
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    $quotedInstaller,
+    "-DataDir",
+    $quotedDataDir
+  ))
   & $addLog "Preparando herramientas (Node.js, yt-dlp y FFmpeg)..."
   $stdout = $Context.OutputFile
   $stderr = $Context.ErrorFile
   $timeoutSeconds = [int]$Context.TimeoutSeconds
   if ($timeoutSeconds -le 0) { $timeoutSeconds = 1800 }
 
-  $process = Start-Process -FilePath "powershell.exe" -ArgumentList $arguments -PassThru -WindowStyle Hidden `
+  $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentLine -PassThru -WindowStyle Hidden `
     -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+  # El handle se captura ANTES de esperar: despues .NET lo libera y
+  # `Process.ExitCode` queda vacio con la salida redirigida (el mismo defecto
+  # que resuelve `Invoke-ViuServerStop`). Esa funcion corre desde el script
+  # principal; esta corre en un runspace nuevo, asi que el tipo no tiene por
+  # que estar cargado ahi: se registra si falta y, si no se puede, se cae a
+  # `Process.ExitCode`.
+  $exitCodeHandle = $null
+  try { $exitCodeHandle = $process.Handle } catch { $exitCodeHandle = $null }
   $exited = $process.WaitForExit($timeoutSeconds * 1000)
   if (-not $exited) {
     $null = & taskkill /PID $process.Id /T /F 2>&1
@@ -914,7 +930,20 @@ function Invoke-ViuToolInstall {
     return [pscustomobject]$result
   }
   $null = $process.WaitForExit()
-  $result.exitCode = $process.ExitCode
+  $installExitCode = $null
+  if ($null -ne $exitCodeHandle) {
+    try {
+      if (-not ("ViuLauncherExitCode" -as [type])) { Initialize-ExitCodeReader }
+      $read = [ViuLauncherExitCode]::Read($exitCodeHandle)
+      if ($read -ge 0) { $installExitCode = $read }
+    } catch {
+      $installExitCode = $null
+    }
+  }
+  if ($null -eq $installExitCode) {
+    try { $installExitCode = $process.ExitCode } catch { $installExitCode = $null }
+  }
+  $result.exitCode = $installExitCode
 
   # Salida del instalador: se muestran los pasos utiles (ya sin secretos: el
   # instalador no maneja el token) y el motivo final lo da su JSON.

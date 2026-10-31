@@ -935,6 +935,85 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
     expect(existsSync(join(dataDir, "app.db"))).toBe(false);
     expect(existsSync(join(appDir, "runtime"))).toBe(false);
   });
+
+  /**
+   * El codigo de salida del instalador tiene que llegar a `exitCode`.
+   *
+   * `Process.ExitCode` de .NET Framework devuelve vacio con la salida
+   * redirigida, asi que el launcher lee el codigo del handle capturado antes
+   * de esperar. El instalador es un FALSO local: no descarga nada.
+   */
+  it("traduce el codigo de salida del instalador al motivo correcto", async () => {
+    const tmp = tempDir("codigos");
+    const dataDir = join(tmp, "datos con espacios");
+    mkdirSync(dataDir, { recursive: true });
+
+    // Instalador falso: imprime el mismo JSON multilinea que el real
+    // (`ConvertTo-Json -Depth 6`) y sale con el codigo que se le pida.
+    const installer = join(tmp, "instalador falso con espacios", "install-tools.ps1");
+    mkdirSync(join(tmp, "instalador falso con espacios"), { recursive: true });
+    writeFileSync(
+      installer,
+      [
+        "param([string]$DataDir)",
+        "$code = [int]$env:VIU_TEST_INSTALL_CODE",
+        "$object = [ordered]@{ status = 'test'; reason = 'falso'; message = \"codigo \" + $code; dataDir = $DataDir; contractVersion = 1; tools = @() }",
+        "$object | ConvertTo-Json -Depth 6",
+        "exit $code",
+      ].join("\r\n"),
+      "utf8",
+    );
+
+    const cases: Array<{ code: number; ok: boolean; reason: string; exitCode: number }> = [
+      { code: 0, ok: true, reason: "installed", exitCode: 0 },
+      { code: 3, ok: false, reason: "data-in-use", exitCode: 3 },
+      { code: 2, ok: false, reason: "invalid-data-dir", exitCode: 2 },
+      { code: 1, ok: false, reason: "install-failed", exitCode: 1 },
+    ];
+    const results: Array<{ code: number; ok: boolean; reason: string; exitCode: unknown; message: string }> = [];
+
+    for (const item of cases) {
+      const outFile = join(tmp, `codigos-${item.code}.json`);
+      const action = [
+        "Initialize-ExitCodeReader",
+        "$installCtx = [pscustomobject]@{",
+        "  Installer = $env:VIU_TEST_INSTALLER",
+        "  DataDir = $env:VIU_TEST_DATA",
+        "  OutputFile = (Join-Path $tmp 'inst.out')",
+        "  ErrorFile = (Join-Path $tmp 'inst.err')",
+        "  TimeoutSeconds = 60",
+        "}",
+        "$install = Invoke-ViuToolInstall -Context $installCtx",
+        "$report = [ordered]@{",
+        "  case = [int]$env:VIU_TEST_INSTALL_CODE",
+        "  ok = $install.ok; reason = $install.reason; message = $install.message",
+        "  exitCode = $install.exitCode",
+        "}",
+        "$report | ConvertTo-Json -Depth 5 -Compress | Set-Content -LiteralPath $env:VIU_TEST_OUT -Encoding UTF8",
+        "exit 0",
+      ].join("\r\n");
+      const script = join(tmp, `codigos-${item.code}.ps1`);
+      writeFileSync(script, functionScript(action), "utf8");
+      const result = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], {
+        timeoutMs: 120_000,
+        env: {
+          VIU_TEST_LAUNCHER: launcherPath,
+          VIU_TEST_DATA: dataDir,
+          VIU_TEST_APP: appDir,
+          VIU_TEST_TMP: tmp,
+          VIU_TEST_OUT: outFile,
+          VIU_TEST_INSTALLER: installer,
+          VIU_TEST_INSTALL_CODE: String(item.code),
+          KICK_CLIENT_ID: "",
+          KICK_CLIENT_SECRET: "",
+        },
+      });
+      expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
+      results.push(readReport(outFile));
+    }
+
+    expect(results).toEqual(cases.map((item) => expect.objectContaining({ case: item.code, ok: item.ok, reason: item.reason, exitCode: item.exitCode })));
+  });
 });
 
 describeLauncher("launcher: recuperación de un servidor huérfano", () => {
