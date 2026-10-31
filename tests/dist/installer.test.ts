@@ -26,6 +26,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -49,14 +50,20 @@ const created: string[] = [];
 
 function tempDir(label: string): string {
   // Espacios en la ruta a propósito: el instalador nunca debe suponer "sin espacios".
-  const dir = mkdtempSync(join(tmpdir(), `VIU instalador ${label} `));
+  // `%TEMP%` viene en 8.3 en los runners (`C:\Users\RUNNER~1\…`) y el producto
+  // devuelve la forma LARGA (`GetFullPath`) en `dataDir`; se normaliza para que
+  // las expectativas comparen la misma forma.
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), `VIU instalador ${label} `)));
   created.push(dir);
   return dir;
 }
 
 afterEach(() => {
   for (const dir of created.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
+    // Windows puede negar el borrado (EPERM/EBUSY) un instante despues de que
+    // corre el `node.exe` del runtime instalado: se reintenta sin silenciar el
+    // error final.
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 });
   }
 });
 
@@ -180,6 +187,56 @@ async function treeFingerprint(root: string): Promise<Array<{ path: string; byte
   return entries;
 }
 
+const MAX_REDIRECTS = 5;
+
+/**
+ * Descarga `url` en `destination` siguiendo hasta `MAX_REDIRECTS` saltos.
+ *
+ * Los proveedores (GitHub Releases entre ellos) responden `302` hacia otro
+ * host, así que no seguirlas deja la descarga imposible. Solo se aceptan
+ * saltos a `https:`: un `http:` o un esquema exótico se rechaza con el motivo.
+ */
+function download(
+  url: string,
+  destination: string,
+  redirectsLeft = MAX_REDIRECTS,
+): Promise<void> {
+  return new Promise<void>((resolveDownload, rejectDownload) => {
+    const request = httpGet(url, { headers: { "user-agent": "VIUrewards-tests" } }, (response) => {
+      const status = response.statusCode ?? 0;
+      const location = response.headers.location;
+      if (status >= 300 && status < 400 && location) {
+        response.resume();
+        if (redirectsLeft <= 0) {
+          rejectDownload(new Error(`Demasiadas redirecciones al descargar ${url}`));
+          return;
+        }
+        let next: URL;
+        try {
+          next = new URL(location, url);
+        } catch {
+          rejectDownload(new Error(`Redirección con destino inválido al descargar ${url}: ${location}`));
+          return;
+        }
+        if (next.protocol !== "https:") {
+          rejectDownload(new Error(`Redirección no https (${next.protocol}) al descargar ${url}: ${next.toString()}`));
+          return;
+        }
+        download(next.toString(), destination, redirectsLeft - 1).then(resolveDownload, rejectDownload);
+        return;
+      }
+      if (status !== 200) {
+        response.resume();
+        rejectDownload(new Error(`La descarga de ${url} respondió HTTP ${status}`));
+        return;
+      }
+      pipeline(response, createWriteStream(destination)).then(() => resolveDownload(), rejectDownload);
+    });
+    request.once("error", rejectDownload);
+    request.setTimeout(180_000, () => request.destroy(new Error(`Timeout al descargar ${url}`)));
+  });
+}
+
 /** Descarga un artefacto fijado a la caché si falta (falla si no se puede). */
 async function ensureCachedAsset(file: string, url: string, expected: string): Promise<string> {
   mkdirSync(CACHE_DIR, { recursive: true });
@@ -189,25 +246,7 @@ async function ensureCachedAsset(file: string, url: string, expected: string): P
     rmSync(target, { force: true });
   }
   const partial = `${target}.part`;
-  await new Promise<void>((resolveDownload, rejectDownload) => {
-    const request = httpGet(url, { headers: { "user-agent": "VIUrewards-tests" } }, (response) => {
-      const status = response.statusCode ?? 0;
-      const location = response.headers.location;
-      if (status >= 300 && status < 400 && location) {
-        response.resume();
-        rejectDownload(new Error(`Redirección no seguida al descargar ${url}`));
-        return;
-      }
-      if (status !== 200) {
-        response.resume();
-        rejectDownload(new Error(`La descarga de ${url} respondió HTTP ${status}`));
-        return;
-      }
-      pipeline(response, createWriteStream(partial)).then(() => resolveDownload(), rejectDownload);
-    });
-    request.once("error", rejectDownload);
-    request.setTimeout(180_000, () => request.destroy(new Error(`Timeout al descargar ${url}`)));
-  }).catch((error: unknown) => {
+  await download(url, partial).catch((error: unknown) => {
     rmSync(partial, { force: true });
     throw new Error(
       `No se pudo descargar ${file} desde ${url}: ${error instanceof Error ? error.message : String(error)}. ` +

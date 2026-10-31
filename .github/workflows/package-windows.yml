@@ -6,10 +6,32 @@
 # EXTRAÍDO y sube el ZIP, su SHA-256 y el manifiesto como artefactos de la
 # ejecución.
 #
+# DOS JOBS INDEPENDIENTES (el ZIP no depende de los E2E de procesos):
+#
+#   - `package`: typecheck, pruebas unitarias, armado del ZIP, smoke, pruebas de
+#     distribución y subida del artefacto. NO ejecuta ningún E2E. Es el único
+#     del que depende la entrega.
+#   - `e2e`: los seis archivos E2E de Windows, en paralelo y sin `needs`. Es
+#     **OPT-IN**: solo corre con `run_e2e = true` (por defecto, apagado). Corre
+#     con `continue-on-error: true`: un cuelgue o un fallo del árbol de procesos
+#     ya no retrasa ni bloquea la generación del ZIP.
+#
+# Por qué `e2e` está apagado por defecto: con el helper de E2E de `main` el job
+# se colgó en "E2E · tabla de procesos" hasta agotar su `timeout-minutes` de 25
+# (run 40989668862: el job terminó `cancelled`, el paso no disparó su límite de
+# 3 min y el log no se recuperó). El `timeout` del JOB sí se aplica, pero cierra
+# la ejecución como `cancelled`; la causa del cuelgue no está demostrada. Se
+# vuelve a encender cuando el helper reescrito esté en `main`.
+#
+# Ningún paso de publicación depende de `e2e`. El resultado de `e2e` sigue
+# visible en la ejecución (queda marcado como fallo sin romper el workflow),
+# pero no es una compuerta de la entrega.
+#
 # El paquete NO contiene ejecutables de terceros (Node, yt-dlp, FFmpeg): el
 # instalador los descarga desde cada proveedor y los verifica contra los SHA-256
 # fijados en `scripts/dist/config.ts`. Por eso el build ya no descarga binarios
-# ni necesita `choco`: las pruebas e2e usan el ffmpeg del runner.
+# ni necesita `choco`: el job `e2e` instala ffmpeg con Chocolatey por su cuenta
+# (los E2E lo necesitan en el PATH; `package` no).
 #
 # Qué NO hace (a propósito, en esta etapa):
 #   - No crea tags, ni GitHub Releases, ni publica assets.
@@ -32,6 +54,10 @@ on:
         type: choice
         options: ["1", "3", "7"]
         default: "3"
+      run_e2e:
+        description: "Ejecutar también los E2E de procesos: puede colgar el runner y no bloquea el ZIP"
+        type: boolean
+        default: false
 
 # Permisos mínimos: el build solo lee el repositorio.
 permissions:
@@ -46,7 +72,12 @@ jobs:
   package:
     name: Construir y verificar el paquete
     runs-on: windows-latest
-    timeout-minutes: 60
+    # Presupuesto: checkout, setup-node con caché y npm ci dominan; después
+    # typecheck + unitarias + build/smoke + test:dist. Antes el job tenía 60
+    # minutos porque incluía ~45 de E2E; sin ellos, 30 deja margen amplio: el
+    # paso más lento es `test:dist` (extrae el ZIP y lanza procesos reales).
+    # Si un run real se acerca al límite, subirlo aquí (no en `e2e`).
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
@@ -104,50 +135,6 @@ jobs:
 
       - name: Pruebas unitarias
         run: npm test
-
-      # Las pruebas e2e necesitan ffmpeg/ffprobe reales en el PATH (NO se toman
-      # del paquete: el paquete no redistribuye ejecutables). Chocolatey ya viene
-      # en el runner; si la instalación falla, el paso FALLA (no se omite).
-      - name: Herramientas de medios para las pruebas e2e
-        run: |
-          choco install ffmpeg -y --no-progress
-          ffmpeg -version | Select-Object -First 1
-          ffprobe -version | Select-Object -First 1
-
-      # Cada archivo e2e corre en SU PROPIO paso, secuencial y con nombre
-      # propio. Un paso único de 45 minutos es opaco: si se cuelga, el fallo del
-      # runner no deja logs y no se sabe qué prueba lo causó. Con pasos separados,
-      # el paso que falla (o el último sin completar) identifica el archivo.
-      #
-      # LIMITACIÓN: `timeout-minutes` corta el paso solo si el runner está sano.
-      # Si el runner pierde comunicación con GitHub, el log se pierde igual; lo
-      # único que sobrevive es QUÉ PASO no llegó a completar.
-      #
-      # NO se corren en paralelo: Vitest ya usa workers y lanzar seis suites a la
-      # vez aumentaría la presión sobre un runner de 4 vCPU.
-      - name: E2E · tabla de procesos
-        timeout-minutes: 5
-        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/proc-table.test.ts
-
-      - name: E2E · cierre ordenado
-        timeout-minutes: 8
-        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/shutdown.test.ts
-
-      - name: E2E · limpieza y exclusividad al arrancar
-        timeout-minutes: 8
-        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/startup-cleanup.test.ts
-
-      - name: E2E · canal de control del launcher
-        timeout-minutes: 8
-        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/launcher-control.test.ts
-
-      - name: E2E · reconstrucción de la biblioteca
-        timeout-minutes: 8
-        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/reconcile-rebuild.test.ts
-
-      - name: E2E · herramientas de la biblioteca
-        timeout-minutes: 8
-        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/library-tools.test.ts
 
       # Construye el ZIP, comprueba que no haya ejecutables de terceros y corre
       # el smoke sobre el paquete extraído con el runtime fijado (si el smoke
@@ -221,3 +208,127 @@ jobs:
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
           compression-level: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # E2E de procesos: FUERA de la ruta de la entrega y OPT-IN.
+  #
+  # No corre salvo que se pida con `run_e2e = true`. Por qué: con el helper de
+  # E2E de `main` este job se colgó en "E2E · tabla de procesos" hasta agotar su
+  # propio `timeout-minutes` de 25 (run 40989668862: el job terminó `cancelled`
+  # con la anotación "The job has exceeded the maximum execution time of 25m0s",
+  # el paso no disparó su límite de 3 min y el log no se recuperó). La causa no
+  # está demostrada, así que el job queda apagado por defecto hasta incorporar el
+  # helper reescrito.
+  #
+  # Sin `needs`: arranca en paralelo con `package`. `continue-on-error` a nivel
+  # job: si un E2E falla o se cuelga, el job queda marcado como fallido (visible
+  # en la ejecución) pero no bloquea ni demora el ZIP, que ya se construye y se
+  # sube por su cuenta.
+  #
+  # Cada archivo corre en SU PROPIO paso, secuencial y con nombre propio: un paso
+  # único es opaco y, si se cuelga, no se sabría qué prueba lo causó. Con pasos
+  # separados, el paso que falla (o el último sin completar) identifica el
+  # archivo.
+  #
+  # LIMITACIÓN: `timeout-minutes` corta el paso solo si el runner está sano. Si
+  # el runner pierde comunicación con GitHub, el log se pierde igual; lo único
+  # que sobrevive es QUÉ PASO no llegó a completar.
+  #
+  # NO se corren en paralelo entre sí: Vitest ya usa workers y lanzar seis
+  # suites a la vez aumentaría la presión sobre un runner de 4 vCPU.
+  # ───────────────────────────────────────────────────────────────────────────
+  e2e:
+    name: E2E de procesos (no bloquea el paquete)
+    runs-on: windows-latest
+    # Opt-in: ver el comentario del job. Sin este `if`, un cuelgue que agote el
+    # `timeout-minutes` del job deja la ejecución en `cancelled`.
+    if: ${{ inputs.run_e2e }}
+    continue-on-error: true
+    # Presupuesto: 1 checkout + 1 setup-node + 3 npm ci + el paso de
+    # choco/ffmpeg, más los seis pasos E2E con 3 minutos cada uno (18 en el peor
+    # caso). Un archivo tarda ~6 s en los runs previos; 3 minutos por paso es
+    # margen x30 y no deja que un cuelgue consuma la ventana entera.
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # La misma versión fijada que el job `package`, leída del único lugar que
+      # la declara.
+      - name: Leer las versiones fijadas
+        id: versions
+        run: |
+          $config = Get-Content -Raw -LiteralPath "scripts/dist/config.ts"
+          $match = [regex]::Match($config, 'NODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $match.Success) {
+            throw "No se pudo leer NODE_VERSION de scripts/dist/config.ts"
+          }
+          $node = $match.Groups[1].Value
+          Write-Output "node=$node" >> $env:GITHUB_OUTPUT
+          Write-Host "Node fijado: $node"
+
+      # El runner de `windows-latest` es x64; se comprueba, no se supone, porque
+      # los E2E lanzan `taskkill` y procesos de árbol.
+      - name: Comprobar plataforma x64
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Estos E2E son para Windows x64 y el runner informa $env:PROCESSOR_ARCHITECTURE."
+          }
+
+      - name: Preparar Node.js fijado
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          cache: npm
+
+      - name: Verificar la versión de Node
+        run: |
+          $expected = "${{ steps.versions.outputs.node }}"
+          $actual = (node --version).TrimStart("v")
+          if ($actual -ne $expected) {
+            throw "Los E2E exigen Node $expected (la versión fijada) y hay $actual."
+          }
+          Write-Host "Node $actual listo."
+
+      - name: Instalar dependencias de desarrollo
+        run: npm ci --no-audit --no-fund
+
+      # Los E2E necesitan ffmpeg/ffprobe reales en el PATH (NO se toman del
+      # paquete: el paquete no redistribuye ejecutables). Chocolatey ya viene en
+      # el runner; si la instalación falla, el paso FALLA (no se omite) y, por el
+      # `continue-on-error` del job, no afecta al paquete.
+      - name: Herramientas de medios para las pruebas e2e
+        run: |
+          choco install ffmpeg -y --no-progress
+          ffmpeg -version | Select-Object -First 1
+          ffprobe -version | Select-Object -First 1
+
+      - name: E2E · tabla de procesos
+        timeout-minutes: 3
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/proc-table.test.ts
+
+      - name: E2E · cierre ordenado
+        timeout-minutes: 3
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/shutdown.test.ts
+
+      - name: E2E · limpieza y exclusividad al arrancar
+        timeout-minutes: 3
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/startup-cleanup.test.ts
+
+      - name: E2E · canal de control del launcher
+        timeout-minutes: 3
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/launcher-control.test.ts
+
+      - name: E2E · reconstrucción de la biblioteca
+        timeout-minutes: 3
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/reconcile-rebuild.test.ts
+
+      - name: E2E · herramientas de la biblioteca
+        timeout-minutes: 3
+        run: npx vitest run --config vitest.e2e.config.ts tests/e2e/library-tools.test.ts

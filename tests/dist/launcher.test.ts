@@ -37,7 +37,7 @@
  * servidor no necesita ffmpeg para arrancar.
  */
 
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdir, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdir, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,8 +88,14 @@ const createdPids = new Set<number>();
 
 function tempDir(label: string): string {
   const dir = mkdtempSync(join(tmpdir(), `VIU launcher ${label} con espacios-`));
-  tempDirs.push(dir);
-  return dir;
+  // El launcher normaliza con `Get-NormalizedPath` (`GetFullPath`,
+  // `scripts/dist/launcher-gui.ps1:125-128`), que devuelve la ruta LARGA. Si
+  // `%TEMP%` viene en forma 8.3 (`C:\Users\RUNNER~1\…`, como en los runners de
+  // GitHub), comparar contra la forma corta falla aunque el producto sea
+  // correcto: todos los paths de este archivo se construyen en forma larga.
+  const long = realpathSync.native(dir);
+  tempDirs.push(long);
+  return long;
 }
 
 /** Ejecuta el launcher con `-SelfTest` y devuelve el JSON del reporte. */
@@ -734,8 +740,8 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
       `if ($start${round}.ok) {`,
       `  $stopCtx${round} = [pscustomobject]@{ Process = $ctx${round}.Process; ProcessHandle = $ctx${round}.ProcessHandle; Exchange = $exchange${round}; ControlId = $control${round}; TimeoutSeconds = 45 }`,
       `  $stop${round} = Invoke-ViuServerStop -Context $stopCtx${round}`,
-      `  $report.rounds += [ordered]@{ started = $true; closed = $stop${round}.ok; exitCode = $stop${round}.exitCode }`,
-      "} else {",
+      `  $report.rounds += [ordered]@{ started = $true; closed = $stop${round}.ok; exitCode = $stop${round}.exitCode; reason = $stop${round}.reason; message = $stop${round}.message; forced = $stop${round}.forced; sawFinished = $stop${round}.sawFinished; vanished = $stop${round}.vanished; eofBreak = $stop${round}.eofBreak; log = @($stop${round}.log) }`,
+      `} else {`,
       `  $report.rounds += [ordered]@{ started = $false; closed = $false; reason = $start${round}.reason }`,
       "}",
     ];
@@ -770,16 +776,30 @@ describeLauncher("launcher: ciclo de vida real (arranque y cierre ordenado)", ()
     });
     expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);
     const report = readReport(outFile) as {
-      rounds: Array<{ started: boolean; closed: boolean; exitCode?: number | null; reason?: string }>;
+      rounds: Array<{
+        started: boolean;
+        closed: boolean;
+        exitCode?: number | null;
+        reason?: string;
+        message?: string;
+        forced?: boolean;
+        sawFinished?: boolean;
+        vanished?: boolean;
+        eofBreak?: boolean;
+        log?: string[];
+      }>;
       pids: Array<number | null>;
       liveAtEnd: number[];
       lockAfter: boolean;
     };
     for (const pid of report.pids) if (typeof pid === "number") createdPids.add(pid);
     expect(report.rounds).toHaveLength(2);
-    for (const round of report.rounds) {
-      expect(round.started, `motivo de arranque: ${round.reason ?? "(sin motivo)"}`).toBe(true);
-      expect(round.closed).toBe(true);
+    for (const [index, round] of report.rounds.entries()) {
+      // La ronda entera viaja en el mensaje: si falla, el log del CI dice si se
+      // forzo la terminacion, si el canal no respondio o si el codigo no era 0.
+      // `sawFinished`, `vanished` y `eofBreak` dicen QUE factor de `ok` fallo.
+      expect(round.started, `ronda ${index + 1}: motivo de arranque: ${round.reason ?? "(sin motivo)"}`).toBe(true);
+      expect(round.closed, `ronda ${index + 1}: ${JSON.stringify(round)}`).toBe(true);
       expect(round.exitCode).toBe(0);
     }
     // Cada ronda usó un proceso propio y ninguno quedó vivo.

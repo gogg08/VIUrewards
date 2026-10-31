@@ -515,12 +515,38 @@ Node del runner (que ya es la versión fijada), así que en CI no hay red extra.
 
 - runner `windows-latest`, permisos `contents: read`;
 - Node del runner = `NODE_VERSION` de `config.ts` (lo lee del archivo);
-- corre `typecheck`, `npm test`, `npm run test:e2e` (instala ffmpeg con
-  Chocolatey; si falla, el paso falla) y `npm run test:dist` sobre el ZIP recién
-  construido;
-- construye con `--smoke`;
+- **dos jobs independientes**, sin `needs` entre ellos:
+  - **`package`** (timeout 30 min): `typecheck`, `npm test`, build con
+    `--smoke` y `npm run test:dist` sobre el ZIP recién construido. **No**
+    ejecuta ningún E2E y es el único del que depende la entrega;
+  - **`e2e`** (timeout 25 min, `continue-on-error: true`): instala ffmpeg con
+    Chocolatey (si falla, **ese** paso falla) y corre los seis archivos E2E en
+    pasos separados de 3 min cada uno. Es **opt-in**: solo corre con el input
+    `run_e2e` en `true`;
+- **test:dist y el ZIP no dependen de `e2e`**: un fallo o un cuelgue de los E2E
+  no bloquea ni demora la subida del paquete;
 - sube el ZIP, el `.sha256` y el `manifest.json` extraído **del propio ZIP**;
 - **No** crea tags, **no** publica releases y **no** escribe en el repositorio.
+
+Inputs de `workflow_dispatch`:
+
+| Input | Tipo | Default | Qué hace |
+| --- | --- | --- | --- |
+| `smoke` | boolean | `true` | Corre el smoke sobre el paquete extraído |
+| `retention_days` | choice (1/3/7) | `3` | Retención de los artefactos |
+| `run_e2e` | boolean | **`false`** | Ejecuta además el job `e2e` (los E2E de procesos) |
+
+**Por qué `e2e` está apagado por defecto.** Con el helper de E2E de `main`, el
+job se colgó en `E2E · tabla de procesos` hasta agotar su propio
+`timeout-minutes` de 25 y la ejecución terminó `cancelled` (run `40989668862`,
+commit `3c5d85c`, `2026-10-30`). Hechos de ese run: el job quedó `in_progress` en
+ese paso desde `02:07:52Z` y terminó a las `02:35:49Z`; la anotación del check-run
+fue `The job has exceeded the maximum execution time of 25m0s`; el `timeout` de
+3 min del **paso** no se aplicó; y el log del job no se pudo recuperar
+(`log not found`). El job `package` del mismo run terminó `success` con
+`test:dist` 102/102 y el ZIP verificado, así que el cuelgue no afectó la entrega.
+La **causa no está demostrada**. Se vuelve a encender cuando el helper reescrito
+esté en `main`.
 
 Retención: `retention_days` (1, 3 o 7 días; GitHub Free permite hasta 90). El
 artefacto se sube sin recompresión (`compression-level: 0`) para no guardar una
