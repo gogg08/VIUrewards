@@ -172,9 +172,8 @@ La salida está pensada hoy para depurar, no para una persona:
 
 ### Pendientes y bloqueos
 
-- **Repo privado vs. `irm`.** Hay que decidir si el repositorio pasa a ser público o si las
-  releases viven en un repositorio aparte, porque `irm` necesita una URL accesible sin
-  autenticación.
+- **Repo público vs. `irm`.** Decisión tomada: hacer público este mismo repo (la auditoría de
+  privacidad no encontró bloqueos); el usuario lo ejecuta antes de implementar `install.ps1`.
 - **Licencia GPLv3 de FFmpeg.** Las obligaciones de la compilación estática siguen abiertas
   (`docs/distribution.md` §4).
 - **Probar en un Windows 11 limpio** (VM con snapshot) y con **Smart App Control** activo.
