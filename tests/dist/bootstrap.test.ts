@@ -255,6 +255,15 @@ interface BootstrapResult {
   output: string;
 }
 
+/** Lo que quedó en la sesión del host tras el `iex` (T2). */
+interface SessionReport {
+  newVars: string[];
+  newFuncs: string[];
+  lastExit: number | null;
+  /** El host no llegó a escribir el informe: se cerró durante el bootstrap. */
+  missing: boolean;
+}
+
 /** Corre el bootstrap como ARCHIVO (`powershell -File`). */
 async function runBootstrap(layout: Layout, extra: Record<string, string> = {}): Promise<BootstrapResult> {
   const result = await run("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", BOOTSTRAP], {
@@ -284,6 +293,71 @@ async function runBootstrapIex(layout: Layout, extra: Record<string, string> = {
   return { ...result, output: `${result.stdout}\n${result.stderr}` };
 }
 
+/**
+ * Corre por `iex` un payload que, ANTES y DESPUÉS del bootstrap, lista las
+ * variables y las funciones del host: así se comprueba que el script no deja
+ * nada en la sesión del usuario.
+ *
+ * El payload sale de un archivo temporal escrito en UTF-8, y no de
+ * `Get-Content -Raw` sin `-Encoding`: Windows PowerShell 5.1 lee los `.ps1` sin
+ * BOM en ANSI.
+ */
+async function runBootstrapIexSession(
+  layout: Layout,
+  extra: Record<string, string> = {},
+): Promise<{ result: BootstrapResult; report: SessionReport }> {
+  const aliveMarker = join(layout.root, "siguio-vivo.txt");
+  const reportPath = join(layout.root, "sesion.json");
+  const command = [
+    // Todo lo que es del arnés lleva el prefijo Viut, para poder descontarlo del
+    // informe: sin prefijo, estas mismas variables ensucian la comparación.
+    "$viutBeforeVars = @(Get-Variable | Select-Object -ExpandProperty Name)",
+    "$viutBeforeFuncs = @(Get-ChildItem Function: | Select-Object -ExpandProperty Name)",
+    `iex ([System.IO.File]::ReadAllText(${psQuote(BOOTSTRAP)}))`,
+    `Set-Content -LiteralPath ${psQuote(aliveMarker)} -Value 'vivo' -Encoding UTF8`,
+    "$viutAfterVars = @(Get-Variable | Select-Object -ExpandProperty Name)",
+    "$viutAfterFuncs = @(Get-ChildItem Function: | Select-Object -ExpandProperty Name)",
+    "$viutReport = [ordered]@{",
+    "  newVars = @(Compare-Object -ReferenceObject $viutBeforeVars -DifferenceObject $viutAfterVars |",
+    "    Where-Object { $_.SideIndicator -eq '=>' } | Select-Object -ExpandProperty InputObject |",
+    "    Where-Object { $_ -notlike 'viut*' })",
+    "  newFuncs = @(Compare-Object -ReferenceObject $viutBeforeFuncs -DifferenceObject $viutAfterFuncs |",
+    "    Where-Object { $_.SideIndicator -eq '=>' } | Select-Object -ExpandProperty InputObject |",
+    "    Where-Object { $_ -notlike 'viut*' })",
+    "  lastExit = $LASTEXITCODE",
+    "}",
+    `$viutReport | ConvertTo-Json -Compress | Set-Content -LiteralPath ${psQuote(reportPath)} -Encoding UTF8`,
+  ].join("\r\n");
+  const commandPath = join(tempDir("sesion iex"), "sesion.ps1");
+  writeFileSync(commandPath, command, "utf8");
+  const result = await run(
+    "powershell.exe",
+    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", commandPath],
+    { timeoutMs: 240_000, env: bootstrapEnv(layout, extra) },
+  );
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (!existsSync(reportPath)) {
+    return {
+      result: { ...result, output },
+      report: { newVars: [], newFuncs: [], lastExit: null, missing: true },
+    };
+  }
+  const parsed = JSON.parse(readFileSync(reportPath, "utf8").replace(/^\uFEFF/, "")) as {
+    newVars: string[] | null;
+    newFuncs: string[] | null;
+    lastExit: number | null;
+  };
+  return {
+    result: { ...result, output },
+    report: {
+      newVars: parsed.newVars ?? [],
+      newFuncs: parsed.newFuncs ?? [],
+      lastExit: parsed.lastExit,
+      missing: false,
+    },
+  };
+}
+
 /** Lee el acceso directo `.lnk` con `WScript.Shell` (sin abrir nada). */
 async function readShortcut(linkPath: string): Promise<{ target: string; arguments: string; workingDirectory: string } | null> {
   const script = [
@@ -304,6 +378,11 @@ async function readShortcut(linkPath: string): Promise<{ target: string; argumen
   if (result.code !== 0) return null;
   const line = result.stdout.trim().split(/\r?\n/).pop() ?? "";
   return JSON.parse(line) as { target: string; arguments: string; workingDirectory: string };
+}
+
+/** Literal de cadena para PowerShell (comillas dobles escapadas). */
+function psQuote(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
 
 /** Contenido de un archivo como texto sin BOM ni salto de línea final. */
@@ -481,5 +560,138 @@ describe.skipIf(!CAN_RUN_DIST)("bootstrap de instalacion (scripts/dist/install.p
     expect(result.output).toContain("codigo 1");
     expect(existsSync(join(layout.installDir, "VIUrewards.cmd"))).toBe(true);
     expect(existsSync(join(layout.startMenuDir, "VIUrewards.lnk"))).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Abortos por `iex`: el host sigue vivo Y el flujo principal se detuvo
+  // ---------------------------------------------------------------------------
+
+  /**
+   * T1: en cada camino de aborto, por `iex`, el host llega a la línea posterior
+   * y NO hay ningún efecto del paso siguiente (ni instalación, ni acceso
+   * directo, ni marcador del instalador de herramientas).
+   */
+  it("por iex cada aborto corta el flujo: el host sigue vivo y no hay efectos", async () => {
+    interface AbortCase {
+      label: string;
+      extra: Record<string, string>;
+      code: number;
+      /** Arma el caso antes de correrlo (instalación previa, payload, etc.). */
+      setup?: (layout: Layout) => void;
+      /** Texto que tiene que aparecer en la salida. */
+      expectText: string;
+    }
+
+    const cases: AbortCase[] = [
+      {
+        label: "hash",
+        extra: { VIUREWARDS_INSTALL_SHA256: "a".repeat(64) },
+        code: 1,
+        expectText: "sha-256",
+      },
+      {
+        label: "traversal",
+        extra: {},
+        code: 1,
+        expectText: "no es segura",
+        setup: () => {
+          payload = packageZip([
+            { name: `${ROOT_DIR}/../../fuera.txt`, data: Buffer.from("no", "utf8") },
+          ]);
+        },
+      },
+      {
+        label: "enuso",
+        extra: {},
+        code: 3,
+        expectText: "en ejecucion",
+        setup: (layout) => {
+          mkdirSync(layout.dataDir, { recursive: true });
+          writeFileSync(
+            join(layout.dataDir, ".viurewards.lock"),
+            JSON.stringify({ pid: process.pid, at: Date.now() }),
+            "utf8",
+          );
+        },
+      },
+      {
+        label: "marcadores",
+        extra: {
+          VIUREWARDS_INSTALL_VERSION: "",
+          VIUREWARDS_INSTALL_SHA256: "",
+        },
+        code: 2,
+        expectText: "no corresponde a un release",
+      },
+    ];
+
+    for (const abortCase of cases) {
+      const layout = makeLayout(`iex aborto ${abortCase.label}`);
+      abortCase.setup?.(layout);
+      const result = await runBootstrapIex(layout, abortCase.extra);
+      const where = `${abortCase.label}: ${result.output}`;
+
+      // El host NO se cerró.
+      expect(result.code, where).toBe(0);
+      expect(existsSync(join(layout.root, "siguio-vivo.txt")), where).toBe(true);
+      // Y se informó el motivo del aborto.
+      expect(result.output.toLowerCase(), where).toContain(abortCase.expectText);
+
+      // Nada del paso siguiente: ni app, ni acceso directo, ni herramientas.
+      expect(existsSync(layout.installDir), where).toBe(false);
+      expect(existsSync(`${layout.installDir}.old`), where).toBe(false);
+      expect(existsSync(join(layout.startMenuDir, "VIUrewards.lnk")), where).toBe(false);
+      expect(existsSync(layout.toolsMarker), where).toBe(false);
+      // Sin staging residual al lado de la app.
+      const appParent = dirname(layout.installDir);
+      const leftovers = existsSync(appParent) ? readdirSync(appParent) : [];
+      expect(leftovers, where).toEqual([]);
+    }
+  });
+
+  /**
+   * T1 (reinstalación): un aborto por `iex` sobre una instalación previa la deja
+   * con el mismo contenido, sin `.old` ni staging al lado.
+   */
+  it("por iex un aborto no toca una instalacion previa", async () => {
+    const layout = makeLayout("iex aborto previa");
+    mkdirSync(join(layout.installDir, "app"), { recursive: true });
+    writeFileSync(join(layout.installDir, "previo.txt"), "intacto", "utf8");
+
+    const result = await runBootstrapIex(layout, { VIUREWARDS_INSTALL_SHA256: "c".repeat(64) });
+
+    expect(result.code, result.output).toBe(0);
+    expect(existsSync(join(layout.root, "siguio-vivo.txt")), result.output).toBe(true);
+    expect(readText(join(layout.installDir, "previo.txt"))).toBe("intacto");
+    expect(readdirSync(layout.installDir)).toEqual(["app", "previo.txt"]);
+    expect(existsSync(`${layout.installDir}.old`)).toBe(false);
+    expect(readdirSync(dirname(layout.installDir))).toEqual(["VIUrewards"]);
+    expect(existsSync(layout.toolsMarker)).toBe(false);
+  });
+
+  /**
+   * T2: por `iex`, la sesión del host queda limpia. Única excepción permitida:
+   * `LASTEXITCODE`, que es como el script deja el código de salida cuando corre
+   * por `iex` (lo documenta su cabecera, líneas 50-57) y que PowerShell ya usa
+   * para el código del último proceso externo.
+   */
+  it("por iex no deja variables ni funciones en la sesion del host", async () => {
+    const okLayout = makeLayout("sesion iex ok");
+    const ok = await runBootstrapIexSession(okLayout);
+    expect(ok.result.code, ok.result.output).toBe(0);
+    expect(ok.report.missing, ok.result.output).toBe(false);
+    expect(ok.report.newFuncs, ok.result.output).toEqual([]);
+    expect(ok.report.newVars.filter((name) => name !== "LASTEXITCODE"), ok.result.output).toEqual([]);
+    expect(ok.report.lastExit, ok.result.output).toBe(0);
+
+    const failLayout = makeLayout("sesion iex aborto");
+    const fail = await runBootstrapIexSession(failLayout, {
+      VIUREWARDS_INSTALL_SHA256: "d".repeat(64),
+    });
+    expect(fail.result.code, fail.result.output).toBe(0);
+    expect(fail.report.missing, fail.result.output).toBe(false);
+    expect(fail.report.newFuncs, fail.result.output).toEqual([]);
+    expect(fail.report.newVars.filter((name) => name !== "LASTEXITCODE"), fail.result.output).toEqual([]);
+    expect(fail.report.lastExit, fail.result.output).toBe(1);
   });
 });
