@@ -1,0 +1,481 @@
+# Release en BORRADOR de VIUrewards.
+#
+# Que hace:
+#   - Valida que la version pedida sea X.Y.Z y que sea IGUAL a la de
+#     package.json, antes de compilar nada.
+#   - Construye y verifica el paquete con los MISMOS pasos que
+#     package-windows.yml (typecheck, pruebas unitarias, build con smoke,
+#     pruebas de distribucion).
+#   - Calcula el SHA-256 del ZIP y genera una copia PROCESADA de
+#     scripts/dist/install.ps1 en build/release/: reemplaza SOLO las dos lineas
+#     de constantes (VersionFallback y Sha256Fallback), nunca la documentacion de
+#     la cabecera, y el archivo del repositorio no se modifica.
+#   - Verifica la ESTRUCTURA del ZIP real (una sola carpeta raiz, los tres
+#     archivos que el bootstrap necesita, ninguna entrada con .. ni con dos
+#     puntos, y ningun ejecutable de terceros).
+#   - Crea un release en BORRADOR con el ZIP, su .sha256 e install.ps1.
+#
+# DOS JOBS: `build` (solo lectura) y `release` (needs: build, contents: write,
+# sin checkout y sin ejecutar codigo del repositorio). El release queda SIEMPRE
+# en borrador: publicarlo es una accion manual (ver docs/distribution.md).
+#
+# Nota: `workflow_dispatch` solo funciona cuando el workflow ya existe en la rama
+# por defecto. Por eso el PR que lo introduce no se puede probar en CI hasta
+# despues del merge: la primera corrida desde `main` crea un borrador de prueba
+# que se verifica y se borra.
+name: Release (borrador)
+
+# Solo a mano: nada de push, pull_request ni schedules.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version sin la v, por ejemplo 0.1.0"
+        type: string
+        required: true
+
+# Permisos minimos a nivel workflow: solo el job `release` escribe.
+permissions:
+  contents: read
+
+# Un release por vez y sin cancelar: cancelar a mitad podria dejar un borrador
+# a medias.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Construir y verificar el paquete del release
+    runs-on: windows-latest
+    timeout-minutes: 40
+    outputs:
+      version: ${{ steps.validate.outputs.version }}
+      hash: ${{ steps.package.outputs.hash }}
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      # El release solo se crea desde main: una corrida desde otra rama podria
+      # publicar un borrador apuntando a codigo sin revisar.
+      - name: Exigir la rama main
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "El release solo se crea desde main y esta corrida es $env:GITHUB_REF."
+          }
+          Write-Host "Rama correcta: $env:GITHUB_REF"
+
+      # Acciones OFICIALES con version fija (nunca `@main` ni `@latest`).
+      - name: Clonar el repositorio
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # La version del input y la de package.json tienen que coincidir: el ZIP se
+      # llama VIUrewards-<version>-portable-win-x64.zip y el bootstrap lo busca asi.
+      - name: Validar la version
+        id: validate
+        env:
+          # La entrada viaja por entorno: no se interpola dentro del script.
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $version = $env:INPUT_VERSION
+          if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') {
+            throw "La version tiene que ser X.Y.Z sin la v (recibido: $version)."
+          }
+          $pkg = Get-Content -Raw -LiteralPath "package.json" | ConvertFrom-Json
+          if ($pkg.version -ne $version) {
+            throw "La version pedida ($version) no coincide con package.json ($($pkg.version)). Subi package.json antes de crear el release."
+          }
+          Write-Output "version=$version" >> $env:GITHUB_OUTPUT
+          Write-Host "Version validada: $version"
+
+      # La version de Node del runner tiene que ser la MISMA que la fijada (el
+      # binario precompilado de better-sqlite3 se liga a un ABI concreto). Se lee
+      # de scripts/dist/config.ts, el unico lugar que la fija.
+      - name: Leer las versiones fijadas
+        id: versions
+        run: |
+          $config = Get-Content -Raw -LiteralPath "scripts/dist/config.ts"
+          $match = [regex]::Match($config, 'NODE_VERSION\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"')
+          if (-not $match.Success) {
+            throw "No se pudo leer NODE_VERSION de scripts/dist/config.ts"
+          }
+          $node = $match.Groups[1].Value
+          Write-Output "node=$node" >> $env:GITHUB_OUTPUT
+          Write-Host "Node fijado: $node"
+
+      - name: Comprobar plataforma x64
+        run: |
+          if ($env:PROCESSOR_ARCHITECTURE -ne "AMD64") {
+            throw "Este paquete es para Windows x64 y el runner informa $env:PROCESSOR_ARCHITECTURE."
+          }
+
+      - name: Preparar Node.js fijado
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.versions.outputs.node }}
+          cache: npm
+
+      - name: Verificar la version de Node del build
+        run: |
+          $expected = "${{ steps.versions.outputs.node }}"
+          $actual = (node --version).TrimStart("v")
+          if ($actual -ne $expected) {
+            throw "El build exige Node $expected (la version fijada) y hay $actual."
+          }
+          Write-Host "Node $actual listo."
+
+      - name: Instalar dependencias de desarrollo
+        run: npm ci --no-audit --no-fund
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Pruebas unitarias
+        run: npm test
+
+      # Mismo build que package-windows.yml: ZIP + smoke sobre el paquete extraido
+      # con el Node fijado del runner.
+      - name: Construir el paquete portable
+        run: |
+          $env:VIUREWARDS_TEST_NODE_EXE = (Get-Command node).Source
+          npm run package:portable -- --smoke
+
+      - name: Pruebas de distribucion
+        run: |
+          $env:VIUREWARDS_TEST_NODE_EXE = (Get-Command node).Source
+          npm run test:dist
+
+      # El ZIP, su checksum y la copia procesada del bootstrap quedan juntos en
+      # build/release/ para que el job `release` los suba sin tocar el repo.
+      - name: Calcular el SHA-256 y generar el install.ps1 del release
+        id: package
+        run: |
+          $out = "build/release"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $zip = Get-ChildItem -LiteralPath "build/dist" -Filter "VIUrewards-*-portable-win-x64.zip" | Select-Object -First 1
+          if ($null -eq $zip) {
+            throw "No se genero ningun ZIP en build/dist"
+          }
+          $version = "${{ steps.validate.outputs.version }}"
+          $expectedName = "VIUrewards-$version-portable-win-x64.zip"
+          if ($zip.Name -ne $expectedName) {
+            throw "El ZIP se llama $($zip.Name) y se esperaba $expectedName."
+          }
+
+          # SHA-256 con .NET (no se usa Get-FileHash: en el runner puede faltar).
+          $stream = [System.IO.File]::OpenRead($zip.FullName)
+          try {
+            $sha = [System.Security.Cryptography.SHA256]::Create()
+            try {
+              $bytes = $sha.ComputeHash($stream)
+            } finally { $sha.Dispose() }
+          } finally { $stream.Dispose() }
+          $hash = ([System.BitConverter]::ToString($bytes) -replace '-', '').ToLowerInvariant()
+
+          Copy-Item -LiteralPath $zip.FullName -Destination (Join-Path $out $expectedName)
+          # Mismo formato que package.ts: dos espacios entre el hash y el nombre.
+          Set-Content -LiteralPath (Join-Path $out "$expectedName.sha256") -Value "$hash  $expectedName" -Encoding ASCII
+
+          # Copia PROCESADA del bootstrap. Reemplazo ANCLADO: solo las dos lineas
+          # de constantes. La cabecera documenta los marcadores y se conserva tal
+          # cual, asi que NO hay reemplazo global.
+          $sourcePath = "scripts/dist/install.ps1"
+          $destPath = Join-Path $out "install.ps1"
+          $original = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $sourcePath).Path)
+          # Solo \n como separador: el CR de CRLF queda dentro de cada linea y no
+          # se toca.
+          $originalLines = $original -split "`n"
+          $changes = 0
+          $processedLines = New-Object string[] $originalLines.Count
+          for ($i = 0; $i -lt $originalLines.Count; $i++) {
+            $line = $originalLines[$i]
+            if ($line -match '^\s*\$VersionFallback = "@@VERSION@@"\r?$') {
+              $processedLines[$i] = $line.Replace('"@@VERSION@@"', ('"' + $version + '"'))
+              $changes++
+            } elseif ($line -match '^\s*\$Sha256Fallback = "@@SHA256@@"\r?$') {
+              $processedLines[$i] = $line.Replace('"@@SHA256@@"', ('"' + $hash + '"'))
+              $changes++
+            } else {
+              $processedLines[$i] = $line
+            }
+          }
+          if ($changes -ne 2) {
+            throw "Se esperaban exactamente 2 lineas con marcadores en scripts/dist/install.ps1 y se encontraron $changes."
+          }
+          $processed = $processedLines -join "`n"
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) $destPath), $processed, $utf8)
+
+          # Verificaciones del resultado.
+          $diffLines = 0
+          $processedCheck = $processed -split "`n"
+          if ($processedCheck.Count -ne $originalLines.Count) {
+            throw "El install.ps1 procesado cambio la cantidad de lineas."
+          }
+          for ($i = 0; $i -lt $originalLines.Count; $i++) {
+            if ($originalLines[$i] -ne $processedCheck[$i]) {
+              $diffLines++
+              $candidate = $processedCheck[$i]
+              if ($candidate -notmatch '^\s*\$(VersionFallback|Sha256Fallback) = ' ) {
+                throw "Cambio una linea que no es una constante de version (linea $($i + 1))."
+              }
+              if ($candidate.Contains('@@VERSION@@') -or $candidate.Contains('@@SHA256@@')) {
+                throw "Una constante quedo sin reemplazar (linea $($i + 1))."
+              }
+            }
+          }
+          if ($diffLines -ne 2) {
+            throw "Se esperaban exactamente 2 lineas distintas del original y hay $diffLines."
+          }
+          if (-not $processed.Contains(('$VersionFallback = "' + $version + '"'))) {
+            throw "La constante VersionFallback no quedo con la version pedida."
+          }
+          if (-not $processed.Contains(('$Sha256Fallback = "' + $hash + '"'))) {
+            throw "La constante Sha256Fallback no quedo con el SHA-256 calculado."
+          }
+          if ($hash -cne $hash.ToLowerInvariant()) {
+            throw "El SHA-256 no quedo en minusculas."
+          }
+          foreach ($ch in $processed.ToCharArray()) {
+            if ([int]$ch -gt 127) {
+              throw "El install.ps1 procesado no es ASCII puro."
+            }
+          }
+          $cr = ([regex]::Matches($processed, "`r")).Count
+          $lf = ([regex]::Matches($processed, "`n")).Count
+          # Los terminadores se conservan del original: NO se exige CRLF (el
+          # archivo puede estar en LF en el repositorio). Solo se comprueba que
+          # no haya CR sin su LF, que romperia el parseo.
+          $crlf = ([regex]::Matches($processed, "`r`n")).Count
+          $loneCr = $cr - $crlf
+          if ($loneCr -gt 0) {
+            throw "El install.ps1 procesado tiene $loneCr CR sueltos (sin LF)."
+          }
+          # BOM: se comprueba sobre los BYTES. No sirve
+          # StartsWith([char]0xFEFF): esa comparacion es sensible a la cultura y
+          # U+FEFF es un caracter ignorable, asi que devuelve $true para
+          # CUALQUIER cadena.
+          $destBytes = [System.IO.File]::ReadAllBytes((Join-Path (Get-Location) $destPath))
+          if ($destBytes.Length -ge 3 -and $destBytes[0] -eq 0xEF -and $destBytes[1] -eq 0xBB -and $destBytes[2] -eq 0xBF) {
+            throw "El install.ps1 procesado tiene BOM."
+          }
+          $parseErrors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path (Get-Location) $destPath), [ref]$null, [ref]$parseErrors)
+          if ($parseErrors.Count -gt 0) {
+            throw "El install.ps1 procesado no parsea: $($parseErrors[0].Message)"
+          }
+
+          Write-Output "hash=$hash" >> $env:GITHUB_OUTPUT
+          Write-Host "SHA-256 del ZIP: $hash"
+          Write-Host "install.ps1 procesado: $diffLines lineas distintas del original."
+
+      # Las notas del release se preparan ACA: el job `release` no hace checkout
+      # ni ejecuta codigo del repositorio, asi que no puede leerlo.
+      - name: Generar las notas del release
+        run: |
+          $notesPath = ".github/release-notes.md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "No existe $notesPath"
+          }
+          $notes = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $notesPath).Path)
+          $version = "${{ steps.validate.outputs.version }}"
+          $hash = "${{ steps.package.outputs.hash }}"
+          if ([string]::IsNullOrWhiteSpace($hash)) {
+            throw "No llego el SHA-256 del build."
+          }
+          # String.Replace es ordinal: no interpreta $ ni expresiones.
+          $out = $notes.Replace('{{VERSION}}', $version).Replace('{{SHA256}}', $hash)
+          if ($out.Contains('{{')) {
+            throw "Quedaron marcadores sin reemplazar en las notas del release."
+          }
+          $dest = Join-Path "build/release" "release-notes.md"
+          # UTF-8 SIN BOM para que los acentos no se rompan al publicar.
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) $dest), $out, $utf8)
+          $bytes = [System.IO.File]::ReadAllBytes((Join-Path (Get-Location) $dest))
+          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            throw "Las notas del release quedaron con BOM."
+          }
+          if ($out.Contains([string][char]0xFFFD)) {
+            throw "Las notas del release tienen caracteres de reemplazo (UTF-8 roto)."
+          }
+          Write-Host "Notas del release generadas ($($out.Length) caracteres)."
+
+      # Verificacion ESTRUCTURAL del ZIP real, con System.IO.Compression: no
+      # instala nada ni levanta servidores. Compatible con Windows PowerShell 5.1
+      # y PowerShell 7 (sin operadores de PS 7, sin ternarios).
+      - name: Verificar la estructura del ZIP
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $zipPath = "build/release/VIUrewards-" + "${{ steps.validate.outputs.version }}" + "-portable-win-x64.zip"
+          if (-not (Test-Path -LiteralPath $zipPath -PathType Leaf)) {
+            throw "No existe el ZIP del release: $zipPath"
+          }
+          $archive = [System.IO.Compression.ZipFile]::OpenRead((Resolve-Path -LiteralPath $zipPath).Path)
+          try {
+            $names = New-Object System.Collections.Generic.List[string]
+            foreach ($entry in $archive.Entries) {
+              $names.Add($entry.FullName)
+            }
+          } finally {
+            $archive.Dispose()
+          }
+          if ($names.Count -lt 1) {
+            throw "El ZIP no tiene ninguna entrada."
+          }
+
+          # Una sola carpeta raiz: el primer segmento de todas las entradas.
+          $roots = New-Object System.Collections.Generic.HashSet[string]
+          $badSegments = New-Object System.Collections.Generic.List[string]
+          $executables = New-Object System.Collections.Generic.List[string]
+          $forbidden = @('node.exe', 'yt-dlp.exe', 'ffmpeg.exe', 'ffprobe.exe')
+          foreach ($name in $names) {
+            $clean = $name.Replace([string][char]92, '/')
+            $segments = @($clean.Split('/') | Where-Object { $_ -ne '' })
+            if ($segments.Count -gt 0) {
+              [void]$roots.Add($segments[0])
+            }
+            foreach ($segment in $segments) {
+              if ($segment -eq '..') {
+                $badSegments.Add($name + " (segmento ..)")
+                break
+              }
+              if ($segment.Contains(':')) {
+                $badSegments.Add($name + " (segmento con dos puntos)")
+                break
+              }
+            }
+            $leaf = $segments[$segments.Count - 1]
+            if ($null -ne $leaf) {
+              foreach ($exe in $forbidden) {
+                if ($leaf -ieq $exe) {
+                  $executables.Add($name)
+                }
+              }
+            }
+          }
+          if ($roots.Count -ne 1) {
+            throw "El ZIP tiene $($roots.Count) carpetas raiz y debe tener exactamente 1: $($roots -join ', ')."
+          }
+          if ($badSegments.Count -gt 0) {
+            throw "El ZIP tiene entradas que escapan o con dos puntos: $($badSegments -join '; ')."
+          }
+          if ($executables.Count -gt 0) {
+            throw "El paquete no debe incluir ejecutables de terceros y trae: $($executables -join ', ')."
+          }
+
+          $root = @($roots)[0]
+          $required = @(
+            ($root + '/VIUrewards.cmd'),
+            ($root + '/app/scripts/dist/install-tools.ps1'),
+            ($root + '/app/scripts/dist/launcher-gui.ps1')
+          )
+          $normalized = @($names | ForEach-Object { $_.Replace([string][char]92, '/') })
+          foreach ($want in $required) {
+            if ($normalized -notcontains $want) {
+              throw "El ZIP no contiene $want (carpeta raiz: $root)."
+            }
+          }
+          Write-Host "ZIP verificado: $($names.Count) entradas, una carpeta raiz ($root), sin ejecutables de terceros."
+
+      - name: Subir los archivos del release
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: |
+            build/release/VIUrewards-*-portable-win-x64.zip
+            build/release/VIUrewards-*-portable-win-x64.zip.sha256
+            build/release/install.ps1
+            build/release/release-notes.md
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Reemplaza {{VERSION}} y {{SHA256}} en .github/release-notes.md y crea el
+  # release en BORRADOR. No hace checkout ni ejecuta nada del repositorio.
+  # ───────────────────────────────────────────────────────────────────────────
+  release:
+    name: Crear el release en borrador
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # gh necesita el repositorio: el job no hace checkout.
+      GH_REPO: ${{ github.repository }}
+
+    steps:
+      - name: Descargar los archivos
+        uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: release-files
+
+      - name: Crear el release en borrador
+        run: |
+          $version = "${{ needs.build.outputs.version }}"
+          $zip = Get-ChildItem -LiteralPath "release-files" -Filter "VIUrewards-*-portable-win-x64.zip" | Select-Object -First 1
+          $sha = Get-ChildItem -LiteralPath "release-files" -Filter "*.zip.sha256" | Select-Object -First 1
+          $install = Get-ChildItem -LiteralPath "release-files" -Filter "install.ps1" | Select-Object -First 1
+          if ($null -eq $zip -or $null -eq $sha -or $null -eq $install) {
+            throw "Faltan archivos del release."
+          }
+          $created = gh release create "v$version" $zip.FullName $sha.FullName $install.FullName --draft --target $env:GITHUB_SHA --title "VIUrewards $version" --notes-file "release-files/release-notes.md" 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host ($created -join "`n")
+            throw "gh release create fallo con $LASTEXITCODE."
+          }
+
+      - name: Verificar el borrador
+        run: |
+          $version = "${{ needs.build.outputs.version }}"
+          # NO se usa `gh release view v$version`: la API por tag no devuelve
+          # borradores, asi que hay que listarlos y buscarlos por tag_name.
+          $all = gh api "repos/$env:GH_REPO/releases" --paginate --jq '.[]' 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            throw "No se pudieron listar los releases."
+          }
+          $info = $null
+          foreach ($line in $all) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $candidate = $line | ConvertFrom-Json
+            if ($candidate.tag_name -eq "v$version") {
+              $info = $candidate
+              break
+            }
+          }
+          if ($null -eq $info) {
+            throw "No aparece el release v$version entre los releases del repositorio."
+          }
+          if ($info.draft -ne $true) {
+            throw "El release no quedo en borrador."
+          }
+          $expected = @(
+            "VIUrewards-$version-portable-win-x64.zip",
+            "VIUrewards-$version-portable-win-x64.zip.sha256",
+            "install.ps1"
+          )
+          $names = @($info.assets | ForEach-Object { $_.name })
+          if ($names.Count -ne 3) {
+            throw "El borrador tiene $($names.Count) assets y se esperaban 3: $($names -join ', ')."
+          }
+          foreach ($name in $expected) {
+            if ($names -notcontains $name) {
+              throw "Falta el asset $name."
+            }
+          }
+          foreach ($asset in $info.assets) {
+            if ($asset.size -le 0) {
+              throw "El asset $($asset.name) esta vacio."
+            }
+          }
+          Write-Host "Borrador v$version verificado con 3 assets."

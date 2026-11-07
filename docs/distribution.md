@@ -575,6 +575,60 @@ runtime/instalador y el acceso directo de inicio (idempotente, en una carpeta
 temporal). **No** descarga herramientas: siembra el runtime fijado y no ejecuta
 `yt-dlp -U`.
 
+### Release
+
+`.github/workflows/release-windows.yml` (**"Release (borrador)"**, solo
+`workflow_dispatch`, input `version` obligatorio en `X.Y.Z` sin la `v`).
+
+Cómo crear uno: **Actions → "Release (borrador)" → Run workflow → version**,
+**desde `main`** (el primer paso del job aborta si la corrida no es de
+`refs/heads/main`).
+
+Qué valida y hace:
+
+- que `version` sea `X.Y.Z` y **coincida con `package.json`** (si no, falla antes
+  de compilar);
+- los mismos pasos que `package-windows.yml` (`typecheck`, pruebas unitarias,
+  build con `--smoke`, `test:dist`);
+- calcula el SHA-256 del ZIP y genera una copia **procesada** de
+  `scripts/dist/install.ps1` en `build/release/` (el archivo del repositorio no se
+  modifica): reemplaza **solo las dos lineas de constantes** (`$VersionFallback` y
+  `$Sha256Fallback`), nunca la cabecera que documenta los marcadores, y comprueba
+  que difieran exactamente 2 lineas, que esas lineas ya no tengan `@@VERSION@@` ni
+  `@@SHA256@@`, que siga ASCII puro, sin CR sueltos y sin BOM, y que parsee;
+- verifica la **estructura del ZIP real** con `System.IO.Compression` (sin
+  instalar nada ni levantar servidores): una sola carpeta raíz, que existan
+  `VIUrewards.cmd`, `app/scripts/dist/install-tools.ps1` y
+  `app/scripts/dist/launcher-gui.ps1`, que ninguna entrada tenga `..` ni dos
+  puntos, y que no venga ningún `node.exe`, `yt-dlp.exe`, `ffmpeg.exe` ni
+  `ffprobe.exe`;
+- genera `.github/release-notes.md` con los marcadores `{{VERSION}}` y
+  `{{SHA256}}` reemplazados (UTF-8 **sin** BOM) y la sube con el resto del
+  artefacto, porque el job `release` no hace checkout;
+- crea el release con **`--draft`** y tres assets: el ZIP, su `.sha256` y
+  `install.ps1`.
+
+El job `release` no clona el repositorio, no usa `npm` y no ejecuta código del
+repositorio: solo descarga el artefacto y llama a `gh` con `GH_REPO`
+(`github.repository`) definido. Para comprobar el borrador **no** usa
+`gh release view`: la API por tag no devuelve borradores, así que lista
+`repos/<repo>/releases` y lo busca por `tag_name`.
+
+La comprobación del BOM se hace **sobre los bytes**: `StartsWith([char]0xFEFF)`
+es sensible a la cultura, y como U+FEFF es un carácter ignorable devuelve `$true`
+para cualquier cadena. La de finales de línea **no exige CRLF**, porque
+`install.ps1` está guardado con LF en el repositorio.
+
+El release queda **siempre en borrador**. Para publicarlo: **Releases → editar el
+borrador → Publish release**, como release **normal** (no pre-release): la URL
+`releases/latest/download` ignora los pre-releases y los borradores.
+
+Comando final para el usuario:
+
+```powershell
+irm https://github.com/gogg08/VIUrewards/releases/latest/download/install.ps1 | iex
+```
+
 ---
 
 ## 7. Tamaño real
