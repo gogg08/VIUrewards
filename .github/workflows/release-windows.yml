@@ -57,6 +57,15 @@ jobs:
         shell: pwsh
 
     steps:
+      # El release solo se crea desde main: una corrida desde otra rama podria
+      # publicar un borrador apuntando a codigo sin revisar.
+      - name: Exigir la rama main
+        run: |
+          if ($env:GITHUB_REF -ne "refs/heads/main") {
+            throw "El release solo se crea desde main y esta corrida es $env:GITHUB_REF."
+          }
+          Write-Host "Rama correcta: $env:GITHUB_REF"
+
       # Acciones OFICIALES con version fija (nunca `@main` ni `@latest`).
       - name: Clonar el repositorio
         uses: actions/checkout@v4
@@ -67,8 +76,11 @@ jobs:
       # llama VIUrewards-<version>-portable-win-x64.zip y el bootstrap lo busca asi.
       - name: Validar la version
         id: validate
+        env:
+          # La entrada viaja por entorno: no se interpola dentro del script.
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          $version = "${{ inputs.version }}"
+          $version = $env:INPUT_VERSION
           if ($version -notmatch '^[0-9]+[.][0-9]+[.][0-9]+$') {
             throw "La version tiene que ser X.Y.Z sin la v (recibido: $version)."
           }
@@ -260,6 +272,38 @@ jobs:
           Write-Host "SHA-256 del ZIP: $hash"
           Write-Host "install.ps1 procesado: $diffLines lineas distintas del original."
 
+      # Las notas del release se preparan ACA: el job `release` no hace checkout
+      # ni ejecuta codigo del repositorio, asi que no puede leerlo.
+      - name: Generar las notas del release
+        run: |
+          $notesPath = ".github/release-notes.md"
+          if (-not (Test-Path -LiteralPath $notesPath -PathType Leaf)) {
+            throw "No existe $notesPath"
+          }
+          $notes = [System.IO.File]::ReadAllText((Resolve-Path -LiteralPath $notesPath).Path)
+          $version = "${{ steps.validate.outputs.version }}"
+          $hash = "${{ steps.package.outputs.hash }}"
+          if ([string]::IsNullOrWhiteSpace($hash)) {
+            throw "No llego el SHA-256 del build."
+          }
+          # String.Replace es ordinal: no interpreta $ ni expresiones.
+          $out = $notes.Replace('{{VERSION}}', $version).Replace('{{SHA256}}', $hash)
+          if ($out.Contains('{{')) {
+            throw "Quedaron marcadores sin reemplazar en las notas del release."
+          }
+          $dest = Join-Path "build/release" "release-notes.md"
+          # UTF-8 SIN BOM para que los acentos no se rompan al publicar.
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path (Get-Location) $dest), $out, $utf8)
+          $bytes = [System.IO.File]::ReadAllBytes((Join-Path (Get-Location) $dest))
+          if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            throw "Las notas del release quedaron con BOM."
+          }
+          if ($out.Contains([string][char]0xFFFD)) {
+            throw "Las notas del release tienen caracteres de reemplazo (UTF-8 roto)."
+          }
+          Write-Host "Notas del release generadas ($($out.Length) caracteres)."
+
       # Verificacion ESTRUCTURAL del ZIP real, con System.IO.Compression: no
       # instala nada ni levanta servidores. Compatible con Windows PowerShell 5.1
       # y PowerShell 7 (sin operadores de PS 7, sin ternarios).
@@ -289,7 +333,7 @@ jobs:
           $executables = New-Object System.Collections.Generic.List[string]
           $forbidden = @('node.exe', 'yt-dlp.exe', 'ffmpeg.exe', 'ffprobe.exe')
           foreach ($name in $names) {
-            $clean = $name.Replace('\\', '/')
+            $clean = $name.Replace([string][char]92, '/')
             $segments = @($clean.Split('/') | Where-Object { $_ -ne '' })
             if ($segments.Count -gt 0) {
               [void]$roots.Add($segments[0])
@@ -329,7 +373,7 @@ jobs:
             ($root + '/app/scripts/dist/install-tools.ps1'),
             ($root + '/app/scripts/dist/launcher-gui.ps1')
           )
-          $normalized = @($names | ForEach-Object { $_.Replace('\\', '/') })
+          $normalized = @($names | ForEach-Object { $_.Replace([string][char]92, '/') })
           foreach ($want in $required) {
             if ($normalized -notcontains $want) {
               throw "El ZIP no contiene $want (carpeta raiz: $root)."
@@ -345,6 +389,7 @@ jobs:
             build/release/VIUrewards-*-portable-win-x64.zip
             build/release/VIUrewards-*-portable-win-x64.zip.sha256
             build/release/install.ps1
+            build/release/release-notes.md
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
@@ -365,6 +410,8 @@ jobs:
         shell: pwsh
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # gh necesita el repositorio: el job no hace checkout.
+      GH_REPO: ${{ github.repository }}
 
     steps:
       - name: Descargar los archivos
@@ -372,20 +419,6 @@ jobs:
         with:
           name: release-files
           path: release-files
-
-      - name: Preparar las notas
-        run: |
-          # Sin checkout, las notas se piden por API al commit que disparo el run.
-          $notes = gh api "repos/$env:GITHUB_REPOSITORY/contents/.github/release-notes.md?ref=$env:GITHUB_SHA" --jq .content |
-            ForEach-Object { [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($_)) }
-          $version = "${{ needs.build.outputs.version }}"
-          $hash = "${{ needs.build.outputs.hash }}"
-          if ([string]::IsNullOrWhiteSpace($hash)) {
-            throw "No llego el SHA-256 del build."
-          }
-          $out = $notes.Replace('{{VERSION}}', $version).Replace('{{SHA256}}', $hash)
-          $utf8 = New-Object System.Text.UTF8Encoding($false)
-          [System.IO.File]::WriteAllText((Join-Path (Get-Location) "release-notes.md"), $out, $utf8)
 
       - name: Crear el release en borrador
         run: |
@@ -396,19 +429,34 @@ jobs:
           if ($null -eq $zip -or $null -eq $sha -or $null -eq $install) {
             throw "Faltan archivos del release."
           }
-          gh release create "v$version" $zip.FullName $sha.FullName $install.FullName --draft --target $env:GITHUB_SHA --title "VIUrewards $version" --notes-file "release-notes.md"
+          $created = gh release create "v$version" $zip.FullName $sha.FullName $install.FullName --draft --target $env:GITHUB_SHA --title "VIUrewards $version" --notes-file "release-files/release-notes.md" 2>&1
           if ($LASTEXITCODE -ne 0) {
+            Write-Host ($created -join "`n")
             throw "gh release create fallo con $LASTEXITCODE."
           }
 
       - name: Verificar el borrador
         run: |
           $version = "${{ needs.build.outputs.version }}"
-          $info = gh release view "v$version" --json isDraft,assets | ConvertFrom-Json
+          # NO se usa `gh release view v$version`: la API por tag no devuelve
+          # borradores, asi que hay que listarlos y buscarlos por tag_name.
+          $all = gh api "repos/$env:GH_REPO/releases" --paginate --jq '.[]' 2>&1
           if ($LASTEXITCODE -ne 0) {
-            throw "No se pudo leer el release v$version."
+            throw "No se pudieron listar los releases."
           }
-          if ($info.isDraft -ne $true) {
+          $info = $null
+          foreach ($line in $all) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $candidate = $line | ConvertFrom-Json
+            if ($candidate.tag_name -eq "v$version") {
+              $info = $candidate
+              break
+            }
+          }
+          if ($null -eq $info) {
+            throw "No aparece el release v$version entre los releases del repositorio."
+          }
+          if ($info.draft -ne $true) {
             throw "El release no quedo en borrador."
           }
           $expected = @(

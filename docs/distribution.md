@@ -580,7 +580,9 @@ temporal). **No** descarga herramientas: siembra el runtime fijado y no ejecuta
 `.github/workflows/release-windows.yml` (**"Release (borrador)"**, solo
 `workflow_dispatch`, input `version` obligatorio en `X.Y.Z` sin la `v`).
 
-Cómo crear uno: **Actions → "Release (borrador)" → Run workflow → version**.
+Cómo crear uno: **Actions → "Release (borrador)" → Run workflow → version**,
+**desde `main`** (el primer paso del job aborta si la corrida no es de
+`refs/heads/main`).
 
 Qué valida y hace:
 
@@ -600,8 +602,17 @@ Qué valida y hace:
   `app/scripts/dist/launcher-gui.ps1`, que ninguna entrada tenga `..` ni dos
   puntos, y que no venga ningún `node.exe`, `yt-dlp.exe`, `ffmpeg.exe` ni
   `ffprobe.exe`;
+- genera `.github/release-notes.md` con los marcadores `{{VERSION}}` y
+  `{{SHA256}}` reemplazados (UTF-8 **sin** BOM) y la sube con el resto del
+  artefacto, porque el job `release` no hace checkout;
 - crea el release con **`--draft`** y tres assets: el ZIP, su `.sha256` y
   `install.ps1`.
+
+El job `release` no clona el repositorio, no usa `npm` y no ejecuta código del
+repositorio: solo descarga el artefacto y llama a `gh` con `GH_REPO`
+(`github.repository`) definido. Para comprobar el borrador **no** usa
+`gh release view`: la API por tag no devuelve borradores, así que lista
+`repos/<repo>/releases` y lo busca por `tag_name`.
 
 La comprobación del BOM se hace **sobre los bytes**: `StartsWith([char]0xFEFF)`
 es sensible a la cultura, y como U+FEFF es un carácter ignorable devuelve `$true`
