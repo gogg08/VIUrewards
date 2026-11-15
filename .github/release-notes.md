@@ -1,8 +1,8 @@
 # VIUrewards {{VERSION}}
 
 Aplicación local para streamers de Kick. Esta entrega es un **paquete portable
-para Windows x64**: no trae instalador compilado, no requiere administrador y no
-abre puertos ni necesita configuración de red.
+para Windows x64**: no trae instalador compilado, no requiere administrador ni
+configuración de red; el servidor escucha solo en tu propia PC (`127.0.0.1`).
 
 ## Instalación en un solo paso
 
@@ -38,7 +38,7 @@ viajan en el archivo `licenses/FFMPEG.md` dentro del paquete.
 
 ## Requisitos
 
-- Windows 10 u 11, **x64**
+- **Windows 11 x64 (probado)**. Windows 10 debería funcionar, pero todavía no se probó.
 - **Windows PowerShell 5.1** (el que trae Windows)
 
 ## Verificación de la descarga
