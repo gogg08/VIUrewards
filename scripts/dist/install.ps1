@@ -164,9 +164,66 @@
     if ($null -eq $running) { return $null }
     return $ownerPid
   }
+  # Lineas de comandos de los procesos de los interpretes tipicos (el launcher es
+  # un .ps1 de powershell.exe). Se intenta Get-CimInstance y, si no trae la linea
+  # de comandos, WMI (Get-WmiObject), que es el otro camino del sistema.
+  function Get-CommandLineProcesses {
+    $names = @("powershell", "pwsh", "node", "cmd")
+    $result = @()
+    $sources = @()
+    try {
+      $sources = @(Get-CimInstance -ClassName Win32_Process -ErrorAction SilentlyContinue)
+    } catch {
+      $sources = @()
+    }
+    $haveCommandLines = $false
+    foreach ($item in $sources) {
+      if ($null -ne $item -and -not [string]::IsNullOrWhiteSpace($item.CommandLine)) { $haveCommandLines = $true }
+    }
+    if (-not $haveCommandLines) {
+      try {
+        $sources = @(Get-WmiObject -ClassName Win32_Process -ErrorAction SilentlyContinue)
+      } catch {
+        $sources = @()
+      }
+    }
+    foreach ($item in $sources) {
+      if ($null -eq $item) { continue }
+      if ($null -eq $item.Name) { continue }
+      if ($names -notcontains $item.Name.Replace(".exe", "")) { continue }
+      if ([string]::IsNullOrWhiteSpace($item.CommandLine)) { continue }
+      $result += New-Object psobject -Property @{
+        Id = $item.ProcessId
+        ParentId = $item.ParentProcessId
+        Name = $item.Name
+        CommandLine = $item.CommandLine
+      }
+    }
+    return @($result)
+  }
 
-  # Hay algo de ESTA instalacion en ejecucion (launcher o servidor con su
-  # node.exe/runtime): cualquiera de sus ejecutables corre desde InstallDir.
+  # Un interprete (powershell, pwsh o cmd) cuya linea de comandos nombra la
+  # carpeta de la app. El launcher corre con powershell.exe, que NO vive en la
+  # app, asi que la unica huella es la linea de comandos. El filtro por nombre de
+  # interprete es lo que descarta un test, una consola cualquiera o un editor que
+  # solo nombran la carpeta. No se mira el padre: el proceso es el mismo sea
+  # quien sea que lo haya abierto.
+  function Get-RunningAppInterpreter {
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+    foreach ($item in (Get-CommandLineProcesses)) {
+      if ($item.Id -eq $PID) { continue }
+      if ($item.Name -ne "powershell.exe" -and $item.Name -ne "pwsh.exe" -and $item.Name -ne "cmd.exe") { continue }
+      if ($item.CommandLine.IndexOf($InstallDir, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) { continue }
+      return ([int]$item.Id)
+    }
+    return $null
+  }
+
+  # Hay algo de ESTA instalacion en ejecucion. Dos criterios:
+  #   1. un ejecutable que corre DESDE InstallDir (el node.exe del runtime);
+  #   2. un proceso cuya linea de comandos nombra la carpeta de la app. El
+  #      launcher corre con powershell.exe, que NO vive en la app: sin esto, un
+  #      launcher abierto no se detecta y se reemplazaria su instalacion debajo.
   # Los datos NO se miran aca: se cubren con el cerrojo de arriba.
   function Get-RunningAppProcess {
     param([Parameter(Mandatory = $true)][string]$InstallDir)
@@ -182,34 +239,20 @@
       if ($process.Id -eq $PID) { continue }
       if (Test-PathInside $InstallDir $processPath) { return $process.Id }
     }
-    return $null
-  }
 
-  # Corre un proceso hijo esperando su salida. La ruta va como UN solo argumento
-  # entrecomillado: el launcher aprendio que un arreglo re-entrecomilla y parte
-  # las rutas con espacios.
-  function Invoke-ChildProcess {
-    param(
-      [Parameter(Mandatory = $true)][string]$FilePath,
-      [Parameter(Mandatory = $true)][string]$Arguments,
-      [Parameter(Mandatory = $true)][string]$WorkingDirectory
-    )
-    $info = New-Object System.Diagnostics.ProcessStartInfo
-    $info.FileName = $FilePath
-    $info.Arguments = $Arguments
-    $info.WorkingDirectory = $WorkingDirectory
-    $info.UseShellExecute = $false
-    $info.CreateNoWindow = $true
-    $process = [System.Diagnostics.Process]::Start($info)
-    $code = 1
-    try {
-      # La salida del hijo va directo a la consola del usuario.
-      $process.WaitForExit()
-      $code = $process.ExitCode
-    } finally {
-      $process.Dispose()
-    }
-    return $code
+    # Segunda pasada: los interpretes tipicos. El launcher corre con
+    # powershell.exe, que NO vive en la app: un launcher abierto solo se ve en la
+    # linea de comandos del proceso. Un interprete cuya linea de comandos nombra
+    # la carpeta de la app ES la app en ejecucion: el launcher del Menu Inicio, el
+    # que abre este instalador al final o uno que quedo de una instalacion previa.
+    # Su padre no sirve como criterio (puede ser explorer.exe, un instalador ya
+    # terminado o el programa que lo abrio), asi que no se exige parentesco.
+    # El filtro de interpretes (y NO node, cmd o un shell cualquiera) es lo que
+    # evita el falso positivo: un test, una consola o un editor que solo nombran
+    # la carpeta no cuentan. Nada de matar procesos.
+    $found = Get-RunningAppInterpreter $InstallDir
+    if ($null -ne $found) { return $found }
+    return $null
   }
 
   function Remove-Temporary {
@@ -394,7 +437,13 @@
     }
     $actual = Get-Sha256 $State.DownloadFile
     if ($actual -ne $sha256) {
-      throw (New-BootstrapAbort 1 ("El SHA-256 del paquete no coincide con el esperado.\x60n  esperado: {0}\x60n  obtenido: {1}\x60nNo se instalo nada." -f $sha256, $actual))
+      # Saltos de linea REALES ([Environment]::NewLine) entre las partes: un texto de
+      # escape escrito dentro de una cadena entre comillas no se convierte en salto.
+      $lineBreak = [Environment]::NewLine
+      throw (New-BootstrapAbort 1 ("El SHA-256 del paquete no coincide con el esperado." +
+          $lineBreak + "  esperado: " + $sha256 +
+          $lineBreak + "  obtenido: " + $actual +
+          $lineBreak + "No se instalo nada."))
     }
     Write-Step "SHA-256 verificado."
 
@@ -486,7 +535,13 @@
     $hadPrevious = Test-Path -LiteralPath $installDir
     if ($hadPrevious) {
       if (Test-Path -LiteralPath $oldDir) {
-        Remove-Item -Recurse -Force -LiteralPath $oldDir -ErrorAction SilentlyContinue
+        # Si la copia anterior no se puede borrar, mover nada ahora dejaria al
+        # usuario sin instalacion: se aborta ANTES de tocar la app.
+        try {
+          Remove-Item -Recurse -Force -LiteralPath $oldDir -ErrorAction Stop
+        } catch {
+          throw (New-BootstrapAbort 1 ("No se pudo borrar la carpeta de la instalacion anterior ""{0}"" ({1}). Cerra lo que la este usando (otra ventana, un antivirus) y volve a intentarlo. No se modifico nada." -f $oldDir, $_.Exception.Message))
+        }
       }
       try {
         Move-Item -LiteralPath $installDir -Destination $oldDir
@@ -531,10 +586,12 @@
     } else {
       Write-Host ""
       Write-Host "Instalando herramientas (Node.js, yt-dlp y FFmpeg)..."
-      $toolsArguments = '-NoProfile -ExecutionPolicy Bypass -File "' + $toolsInstaller + '" -DataDir "' + $dataDir + '"'
+      # Llamada directa (operador &) y no un proceso redirigido: asi la salida del
+      # instalador de herramientas se ve en la misma consola que este script.
       $toolsCode = 1
       try {
-        $toolsCode = Invoke-ChildProcess -FilePath "powershell.exe" -Arguments $toolsArguments -WorkingDirectory $installDir
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $toolsInstaller -DataDir $dataDir
+        $toolsCode = $LASTEXITCODE
       } catch {
         $toolsCode = 1
       }
