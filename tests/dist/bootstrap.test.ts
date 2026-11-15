@@ -26,7 +26,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { crc32 } from "node:zlib";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -38,6 +38,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -58,8 +59,11 @@ const ROOT_DIR = `VIUrewards-${VERSION}-portable-win-x64`;
 const FAKE_TOOLS = [
   "param([string]$DataDir)",
   "$ErrorActionPreference = 'Stop'",
+  // Su salida tiene que LLEGAR al usuario: lo comprueba el test del PUNTO 2.
+  "Write-Host ('FAKE-TOOLS-OUTPUT-' + $env:VIU_TEST_TOOLS_GUID)",
   "$marker = $env:VIU_TEST_TOOLS_MARKER",
   "$line = 'dataDir=' + $DataDir",
+  "if (Test-Path -LiteralPath $marker) { $line = (Get-Content -Raw -LiteralPath $marker).TrimEnd() + [Environment]::NewLine + $line }",
   "Set-Content -LiteralPath $marker -Value $line -Encoding UTF8",
   "$code = 0",
   "if ($env:VIU_TEST_TOOLS_CODE) { $code = [int]$env:VIU_TEST_TOOLS_CODE }",
@@ -67,12 +71,19 @@ const FAKE_TOOLS = [
   "",
 ].join("\r\n");
 
-/** Launcher FALSO: deja constancia si se abre (solo si el caso lo permite). */
+/**
+ * Launcher FALSO: deja constancia si se abre (solo si el caso lo permite).
+ * Con `VIU_TEST_LAUNCHER_SLEEP=1` se queda vivo hasta que lo maten (PUNTO 3).
+ */
 const FAKE_LAUNCHER = [
   "$ErrorActionPreference = 'Stop'",
+  // El marcador va PRIMERO: con VIU_TEST_LAUNCHER_SLEEP el script se queda
+  // dormido enseguida, y un marcador escrito despues del Start-Sleep no llegaria
+  // a existir (medido: marca=false, proceso vivo=true).
   "if ($env:VIU_TEST_LAUNCH_MARKER) {",
   "  Set-Content -LiteralPath $env:VIU_TEST_LAUNCH_MARKER -Value 'launched' -Encoding UTF8",
   "}",
+  "if ($env:VIU_TEST_LAUNCHER_SLEEP) { Start-Sleep -Seconds 120 }",
   "exit 0",
   "",
 ].join("\r\n");
@@ -291,6 +302,109 @@ async function runBootstrapIex(layout: Layout, extra: Record<string, string> = {
     env: bootstrapEnv(layout, extra),
   });
   return { ...result, output: `${result.stdout}\n${result.stderr}` };
+}
+
+// -----------------------------------------------------------------------------
+// Procesos hijos lanzados por un caso (se terminan siempre en el `finally`)
+// -----------------------------------------------------------------------------
+
+const spawned: number[] = [];
+
+/** Lanza un proceso que se queda vivo (cuelga del test) y devuelve su PID. */
+function spawnChild(command: string, args: string[], extraEnv: Record<string, string> = {}): number {
+  const child = spawn(command, args, {
+    // Sin "detached": detached hace que powershell.exe salga 0 sin correr el script.
+    // "pipe" y no "ignore": con "ignore" tambien termina sin correr.
+    stdio: ["ignore", "pipe", "pipe"],
+    // Sin esto el script falso no ve sus variables y no deja el marcador: el
+    // proceso sale en el acto y el caso se queda sin nada que detectar.
+    env: { ...process.env, ...extraEnv },
+  });
+  if (child.pid === undefined) throw new Error(`no se pudo lanzar ${command}`);
+  spawned.push(child.pid);
+  return child.pid;
+}
+
+/** Termina los procesos lanzados por el caso (arbol de cada uno). */
+function killSpawned(): void {
+  for (const pid of spawned.splice(0)) {
+    try {
+      execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } catch {
+      // Ya no estaba: es el resultado esperado cuando el caso murio solo.
+    }
+  }
+}
+
+/** true si el PID sigue vivo (y no es un zombi que ya termino). */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Espera a que el PID desaparezca. Devuelve true si desaparecio. */
+async function waitGone(pid: number, timeoutMs = 10_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!isAlive(pid)) return true;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+  }
+  return !isAlive(pid);
+}
+
+/**
+ * Host REAL de `%LOCALAPPDATA%` (el que el bootstrap usaria sin overrides).
+ * Sirve para comprobar que un proceso de prueba corriendo AHI no se toca.
+ */
+function realLocalAppData(): string {
+  if (!process.env.LOCALAPPDATA) throw new Error("no hay %LOCALAPPDATA%");
+  return realpathSync.native(process.env.LOCALAPPDATA);
+}
+
+let waitHandleSeq = 0;
+
+/**
+ * Arranca un proceso que mantiene abierto un archivo para que el borrado falle
+ * (PUNTO 4). Avisa cuando ya lo tiene y espera a que el test lo termine.
+ *
+ * Dos condiciones del escenario, ambas medidas:
+ *
+ * - El proceso NO puede ser un interprete con la carpeta de la app en la linea
+ *   de comandos: powershell.exe, pwsh.exe o cmd.exe que la nombran son
+ *   justamente lo que el bootstrap toma como la app en ejecucion (el launcher),
+ *   y el caso terminaria en "instancia en ejecucion" (codigo 3) sin llegar
+ *   nunca al borrado. Por eso el script va por STDIN (`-Command -`) y las rutas
+ *   por variables de entorno: su linea de comandos queda en `-Command -`.
+ * - Un archivo abierto con `fs.openSync` de Node NO impide borrar la carpeta
+ *   (medido: `Remove-Item -Recurse -Force` termina bien). Hace falta abrirlo con
+ *   FileShare.None, que es lo que hace el script de abajo (medido: el borrado
+ *   falla).
+ */
+function spawnKeeper(filePath: string, workDir: string): string {
+  waitHandleSeq += 1;
+  const waitHandlePath = join(workDir, `retencion ${waitHandleSeq}.txt`);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$stream = [System.IO.File]::Open($env:VIU_KEEPER_FILE, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)",
+    "Set-Content -LiteralPath $env:VIU_KEEPER_READY -Value ([string]$PID) -Encoding UTF8",
+    "while ($true) { Start-Sleep -Milliseconds 200 }",
+    "",
+  ].join("\r\n");
+  const child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "-"], {
+    // Sin "detached" y con stdio en pipe: powershell.exe arranca igual, queda
+    // hijo del test y killSpawned() lo termina.
+    stdio: ["pipe", "pipe", "pipe"],
+    env: { ...process.env, VIU_KEEPER_FILE: filePath, VIU_KEEPER_READY: waitHandlePath },
+  });
+  if (child.pid === undefined) throw new Error("no se pudo lanzar el proceso que retiene el archivo");
+  spawned.push(child.pid);
+  child.stdin.write(script);
+  child.stdin.end();
+  return waitHandlePath;
 }
 
 /**
@@ -694,4 +808,131 @@ describe.skipIf(!CAN_RUN_DIST)("bootstrap de instalacion (scripts/dist/install.p
     expect(fail.report.newVars.filter((name) => name !== "LASTEXITCODE"), fail.result.output).toEqual([]);
     expect(fail.report.lastExit, fail.result.output).toBe(1);
   });
+
+  // ---------------------------------------------------------------------------
+  // PUNTO 1: el mensaje del SHA-256 incorrecto, con saltos de linea de verdad
+  // ---------------------------------------------------------------------------
+
+  it("el aviso de SHA-256 incorrecto no muestra secuencias de escape literales", async () => {
+    const layout = makeLayout("hash legible");
+    const result = await runBootstrap(layout, { VIUREWARDS_INSTALL_SHA256: "a".repeat(64) });
+
+    expect(result.code, result.output).toBe(1);
+    const outputLines = result.output.split(/\r?\n/);
+    expect(outputLines.filter((line) => line.trimStart().startsWith("esperado:")).length, result.output).toBe(1);
+    expect(outputLines.filter((line) => line.trimStart().startsWith("obtenido:")).length, result.output).toBe(1);
+    // Ni la secuencia de escape literal ni su caracter de escape.
+    expect(result.output).not.toContain("x60");
+    expect(result.output).not.toContain("`");
+  });
+
+  // ---------------------------------------------------------------------------
+  // PUNTO 2: la salida del instalador de herramientas llega al usuario
+  // ---------------------------------------------------------------------------
+
+  it("la salida del instalador de herramientas llega al usuario", async () => {
+    const layout = makeLayout("salida herramientas");
+    const guid = randomUUID();
+    const result = await runBootstrap(layout, { VIU_TEST_TOOLS_GUID: guid });
+
+    expect(result.code, result.output).toBe(0);
+    expect(result.output).toContain("FAKE-TOOLS-OUTPUT-" + guid);
+  });
+
+  // ---------------------------------------------------------------------------
+  // PUNTO 3: un launcher en ejecucion se detecta aunque powershell.exe no viva
+  // dentro de la carpeta de la app
+  // ---------------------------------------------------------------------------
+
+  it("aborta si hay un launcher en ejecucion desde la carpeta de la app", async () => {
+    try {
+      const layout = makeLayout("launcher en ejecucion");
+      // Instalacion previa con el launcher FALSO, que se queda dormido.
+      const launcherDir = join(layout.installDir, "app", "scripts", "dist");
+      mkdirSync(launcherDir, { recursive: true });
+      writeFileSync(join(launcherDir, "launcher-gui.ps1"), FAKE_LAUNCHER, "utf8");
+      writeFileSync(join(layout.installDir, "previo.txt"), "intacto", "utf8");
+
+      const launcherPid = spawnChild(
+        "powershell.exe",
+        [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-WindowStyle",
+          "Hidden",
+          "-File",
+          join(launcherDir, "launcher-gui.ps1"),
+        ],
+        // El launcher falso lee estas dos variables: sin pasarlas, arranca, no
+        // deja el marcador y hace exit 0 en el acto (medido: proceso vivo=false).
+        { VIU_TEST_LAUNCH_MARKER: layout.launchMarker, VIU_TEST_LAUNCHER_SLEEP: "1" },
+      );
+      expect(launcherPid).toBeGreaterThan(0);
+      // VIU_TEST_LAUNCHER_SLEEP hace que el launcher falso duerma: sin ella el
+      // script hace exit 0 en el acto y no queda nada que detectar (medido: el
+      // proceso ya no estaba a los 1.5 s). No es la variable de "no lanzar"
+      // (VIUREWARDS_INSTALL_NO_LAUNCH), es la del script falso.
+      // El marcador es la prueba de que el script ARRANCO de verdad: un
+      // powershell.exe que sale en el acto dejaria el caso sin nada que detectar.
+      const launchDeadline = Date.now() + 20_000;
+      while (!existsSync(layout.launchMarker) && Date.now() < launchDeadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      expect(existsSync(layout.launchMarker), "el launcher falso no llego a arrancar").toBe(true);
+      const sleepDeadline = Date.now() + 20_000;
+      while (isAlive(launcherPid) && Date.now() < sleepDeadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+
+      const result = await runBootstrap(layout, { VIU_TEST_LAUNCHER_SLEEP: "1" });
+
+      expect(result.code, result.output).toBe(3);
+      expect(result.output).toContain("en ejecucion");
+      expect(readText(join(layout.installDir, "previo.txt"))).toBe("intacto");
+      expect(existsSync(layout.toolsMarker)).toBe(false);
+      expect(existsSync(layout.startMenuDir)).toBe(false);
+      expect(existsSync(`${layout.installDir}.old`)).toBe(false);
+    } finally {
+      killSpawned();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // PUNTO 4: una carpeta `.old` que no se puede borrar aborta ANTES de mover nada
+  // ---------------------------------------------------------------------------
+
+  it("aborta si no se puede borrar la carpeta .old previa, antes de mover nada", async () => {
+    try {
+      const layout = makeLayout("carpeta old");
+      mkdirSync(layout.installDir, { recursive: true });
+      writeFileSync(join(layout.installDir, "previo.txt"), "intacto", "utf8");
+      const oldDir = `${layout.installDir}.old`;
+      mkdirSync(oldDir, { recursive: true });
+      const oldFile = join(oldDir, "resto.txt");
+      writeFileSync(oldFile, "resto de una instalacion anterior", "utf8");
+
+      // Un proceso se queda con el archivo abierto sin compartir: el borrado falla.
+      const waitHandlePath = spawnKeeper(oldFile, layout.root);
+      const deadline = Date.now() + 20_000;
+      while (!existsSync(waitHandlePath) && Date.now() < deadline) {
+        await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+      }
+      expect(existsSync(waitHandlePath), "el proceso que retiene el archivo no arranco").toBe(true);
+
+      const result = await runBootstrap(layout);
+
+      // Codigo 1 y un mensaje claro; NADA se movio.
+      expect(result.code, result.output).toBe(1);
+      expect(result.output).toContain(".old");
+      expect(readdirSync(layout.installDir)).toEqual(["previo.txt"]);
+      expect(existsSync(join(layout.installDir, "VIUrewards.cmd"))).toBe(false);
+      expect(existsSync(oldFile)).toBe(true);
+      expect(existsSync(layout.toolsMarker)).toBe(false);
+      expect(existsSync(layout.startMenuDir)).toBe(false);
+    } finally {
+      killSpawned();
+    }
+  });
+
 });
