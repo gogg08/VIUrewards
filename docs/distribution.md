@@ -578,11 +578,16 @@ temporal). **No** descarga herramientas: siembra el runtime fijado y no ejecuta
 ### Release
 
 `.github/workflows/release-windows.yml` (**"Release (borrador)"**, solo
-`workflow_dispatch`, input `version` obligatorio en `X.Y.Z` sin la `v`).
+`workflow_dispatch`) tiene dos entradas:
 
-Cómo crear uno: **Actions → "Release (borrador)" → Run workflow → version**,
-**desde `main`** (el primer paso del job aborta si la corrida no es de
-`refs/heads/main`).
+- `version` (obligatoria, `X.Y.Z` sin la `v`);
+- `prerelease` (booleano, **por defecto `true`**): marca el borrador como
+  **pre-release**. Para una versión de prueba conviene dejarlo como está; se
+  desmarca en el release definitivo.
+
+Cómo crear uno: **Actions → "Release (borrador)" → Run workflow → version**
+(**y `prerelease`**), **desde `main`** (el primer paso del job aborta si la
+corrida no es de `refs/heads/main`).
 
 Qué valida y hace:
 
@@ -605,23 +610,43 @@ Qué valida y hace:
 - genera `.github/release-notes.md` con los marcadores `{{VERSION}}` y
   `{{SHA256}}` reemplazados (UTF-8 **sin** BOM) y la sube con el resto del
   artefacto, porque el job `release` no hace checkout;
-- crea el release con **`--draft`** y tres assets: el ZIP, su `.sha256` y
-  `install.ps1`.
+- crea el release con **`--draft`** (y con **`--prerelease`** si se pidió) y
+  tres assets: el ZIP, su `.sha256` y `install.ps1`. El `.sha256` se escribe con
+  **LF** y sin BOM (`<hash>  <nombre>` + LF), igual que `package.ts`.
 
 El job `release` no clona el repositorio, no usa `npm` y no ejecuta código del
 repositorio: solo descarga el artefacto y llama a `gh` con `GH_REPO`
 (`github.repository`) definido. Para comprobar el borrador **no** usa
 `gh release view`: la API por tag no devuelve borradores, así que lista
-`repos/<repo>/releases` y lo busca por `tag_name`.
+`repos/<repo>/releases` y lo busca por `tag_name`; además de `draft` comprueba
+que `prerelease` coincida con la entrada.
 
 La comprobación del BOM se hace **sobre los bytes**: `StartsWith([char]0xFEFF)`
 es sensible a la cultura, y como U+FEFF es un carácter ignorable devuelve `$true`
 para cualquier cadena. La de finales de línea **no exige CRLF**, porque
 `install.ps1` está guardado con LF en el repositorio.
 
-El release queda **siempre en borrador**. Para publicarlo: **Releases → editar el
-borrador → Publish release**, como release **normal** (no pre-release): la URL
-`releases/latest/download` ignora los pre-releases y los borradores.
+El release queda **siempre en borrador**. El flujo es en dos pasos:
+
+1. **Publicarlo como PRE-RELEASE** (**Releases → editar el borrador → Publish
+   release**, dejando marcado "pre-release") y probarlo en una PC real con la URL
+   **por tag**:
+
+   ```powershell
+   irm https://github.com/gogg08/VIUrewards/releases/download/v<version>/install.ps1 | iex
+   ```
+
+   El `install.ps1` procesado apunta al ZIP de **ese mismo tag**, así que la
+   prueba es completa sin afectar a nadie más.
+
+2. **Recién después de probarlo**, editar el release y **desmarcar
+   "pre-release"** para que pase a ser el `latest`: la URL corta
+   `releases/latest/download` **ignora los pre-releases y los borradores**, así
+   que no funciona hasta este paso.
+
+Para **borrar un borrador** no sirve `gh release delete` por tag (la API por tag
+no encuentra borradores): hay que borrarlo desde la web o con
+`gh api -X DELETE repos/<repo>/releases/<id>`.
 
 Comando final para el usuario:
 
