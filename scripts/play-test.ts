@@ -39,10 +39,10 @@
  */
 
 import { join, resolve, sep } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import { createServer } from "../src/server/server.ts";
 import { acquireSharedResourcesLock, type InstanceLock } from "../src/db/instance-lock.ts";
+import { isEntryPoint } from "../src/server/entry-point.ts";
 import { processVideo } from "../src/media/index.ts";
 import { resolveRuntimePaths, type RuntimePaths } from "../src/server/paths.ts";
 
@@ -322,12 +322,10 @@ function waitForSignal(): Promise<void> {
   });
 }
 
-// Solo se ejecuta como punto de entrada (mismo criterio que `scripts/start.ts`).
-// Importarlo desde un test NUNCA debe lanzar procesos ni tomar el cerrojo.
-const isEntryPoint =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
-
-if (isEntryPoint) {
+// Solo se ejecuta como punto de entrada (mismo criterio que `scripts/start.ts`,
+// que resuelve enlaces y junctions: ver `src/server/entry-point.ts`). Importarlo
+// desde un test NUNCA debe lanzar procesos ni tomar el cerrojo.
+if (isEntryPoint(import.meta.url, process.argv[1])) {
   main({ args: process.argv.slice(2), cwd: process.cwd() })
     .then((code) => {
       process.exitCode = code;

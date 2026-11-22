@@ -38,7 +38,6 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 
 import { openDatabase, reconcileClips } from "../../src/db/index.ts";
 import { acquireInstanceLock, acquireSharedResourcesLock } from "../../src/db/instance-lock.ts";
@@ -57,6 +56,7 @@ import {
 import { createServer } from "../../src/server/server.ts";
 import { readSettings } from "../../src/server/settings.ts";
 import { installControlChannel } from "../../src/server/control-channel.ts";
+import { isEntryPoint } from "../../src/server/entry-point.ts";
 import { createShutdownController, DEFAULT_SHUTDOWN_TIMEOUT_MS } from "../../src/server/shutdown.ts";
 
 /** Variable que habilita el canal de control del arnés. */
@@ -215,10 +215,6 @@ async function main() {
   });
 }
 
-function isEntryPoint() {
-  return process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
-}
-
 async function run() {
   try {
     await main();
@@ -237,5 +233,6 @@ async function run() {
 }
 
 // Solo se arranca si este archivo es el punto de entrada. Importarlo (tests) no
-// abre la base ni levanta el servidor.
-if (isEntryPoint()) await run();
+// abre la base ni levanta el servidor. Mismo criterio que `scripts/start.ts`, con
+// enlaces y junctions resueltos (`src/server/entry-point.ts`).
+if (isEntryPoint(import.meta.url, process.argv[1])) await run();
