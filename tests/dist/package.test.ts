@@ -49,6 +49,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -458,6 +459,71 @@ describePackage("arranque real del servidor del paquete", () => {
       if (typeof harness.child.pid === "number") {
         await killTree(harness.child.pid);
         createdPids.delete(harness.child.pid);
+      }
+    }
+  }, 180_000);
+
+  // El síntoma del 0.1.1-a: con la instalación bajo un enlace (en la PC real,
+  // `%LOCALAPPDATA%\Programs` es una junction), `import.meta.url` traía la ruta
+  // real y `argv[1]` la dada, así que el guard del punto de entrada daba falso:
+  // el servidor salía con código 0 sin imprimir nada y sin abrir el canal.
+  it("arranca y cierra bien cuando la ruta pasa por una junction", async () => {
+    const dataDir = tempDataDir("junction");
+    const harnessPath = join(appDir, "scripts", "dist", SHUTDOWN_HARNESS_FILE);
+    // La junction apunta a la carpeta REAL del paquete extraído; el proceso se
+    // lanza con la ruta de la junction, como el launcher de una instalación
+    // cuyo camino contiene un enlace.
+    const linkRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "VIU junction " + "con espacios-")));
+    const junction = join(linkRoot, "VIUrewards programa");
+    try {
+      symlinkSync(packageDir, junction, "junction");
+      const linkedAppDir = join(junction, "app");
+      expect(realpathSync.native(linkedAppDir)).toBe(realpathSync.native(appDir));
+
+      const port = await freePort();
+      const token = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const harness = startHarness({
+        nodeExe,
+        harnessPath: join(linkedAppDir, "scripts", "dist", SHUTDOWN_HARNESS_FILE),
+        dataDir,
+        appDir: linkedAppDir,
+        port,
+        token,
+      });
+      if (typeof harness.child.pid === "number") createdPids.add(harness.child.pid);
+      try {
+        const ready = await harness.ready;
+        expect(ready, `el arnés no arrancó por la junction:\n${harness.output().slice(-2000)}`).not.toBeNull();
+        const response = await request(`http://127.0.0.1:${ready!.port}/login`);
+        expect(response.status).toBe(200);
+        expect(response.text).toContain("VIUrewards");
+
+        // El mismo cierre ordenado del hermano.
+        harness.child.send({ shutdown: true });
+        const exit = await Promise.race([
+          harness.exited,
+          new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveSlow) =>
+            setTimeout(() => resolveSlow({ code: -1, signal: null }), 30_000),
+          ),
+        ]);
+        expect(exit.code, `el cierre no terminó bien:\n${harness.output().slice(-2000)}`).toBe(0);
+        expect(isAlive(harness.child.pid ?? 0)).toBe(false);
+      } finally {
+        if (typeof harness.child.pid === "number") {
+          await killTree(harness.child.pid);
+          createdPids.delete(harness.child.pid);
+        }
+      }
+    } finally {
+      try {
+        rmSync(junction, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {
+        // Un temporal que no se puede borrar no falla el test.
+      }
+      try {
+        rmSync(linkRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+      } catch {
+        // Idem.
       }
     }
   }, 180_000);

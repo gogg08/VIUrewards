@@ -47,7 +47,6 @@
  */
 
 import { mkdirSync } from "node:fs";
-import { pathToFileURL } from "node:url";
 
 import { openDatabase, reconcileClips, type SqliteDatabase } from "../src/db/index.ts";
 import { acquireInstanceLock, acquireSharedResourcesLock, type InstanceLock } from "../src/db/instance-lock.ts";
@@ -68,6 +67,7 @@ import {
 import { createServer } from "../src/server/server.ts";
 import { readSettings } from "../src/server/settings.ts";
 import { installControlChannel, type ControlChannel } from "../src/server/control-channel.ts";
+import { isEntryPoint } from "../src/server/entry-point.ts";
 import { createShutdownController, DEFAULT_SHUTDOWN_TIMEOUT_MS } from "../src/server/shutdown.ts";
 
 /**
@@ -360,11 +360,10 @@ async function main(): Promise<void> {
 
 // Solo se arranca si este archivo es el punto de entrada (`npm start`).
 // Importarlo (tests, herramientas) NUNCA debe abrir la base ni levantar el
-// servidor: eso usaría `data/app.db` y `media/` reales.
-const isEntryPoint =
-  process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
-
-if (isEntryPoint) {
+// servidor: eso usaría `data/app.db` y `media/` reales. La comparación resuelve
+// enlaces simbólicos y junctions (`src/server/entry-point.ts`): una instalación
+// bajo una junction arrancaba y salía con código 0 sin imprimir nada.
+if (isEntryPoint(import.meta.url, process.argv[1])) {
   main().catch((error: unknown) => {
     if (error instanceof SharedDataInUseError) {
       console.error(`No se puede arrancar VIUrewards: ${error.reason}`);
