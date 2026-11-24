@@ -244,9 +244,22 @@ function runTool(command: string, args: string[], options: { cwd?: string; env?:
  * dinámicos: el script va fijo y las rutas se pasan por variables de entorno
  * (`VIU_*`), que PowerShell lee con `$env:`. Así los espacios y comillas de una
  * ruta nunca cambian el comando.
+ *
+ * El hijo NO hereda `PSModulePath` (ni `PSExecutionPolicyPreference`). Medido:
+ * cuando el build corre dentro de PowerShell 7 (CI), la variable apunta a
+ * `C:\Program Files\PowerShell\7\Modules` y Windows PowerShell 5.1 carga ESE
+ * módulo `Microsoft.PowerShell.Archive`, cuyas llamadas usan sobrecargas de
+ * .NET moderno que no existen en .NET Framework; `Expand-Archive` entonces sale
+ * con código 0 dejando el destino vacío. Sin la variable, 5.1 arranca con sus
+ * rutas por defecto.
  */
 function runPowerShell(script: string, env: Record<string, string>): Promise<ToolResult> {
-  return runTool("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { env });
+  const cleanEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
+  delete cleanEnv.PSModulePath;
+  delete cleanEnv.PSExecutionPolicyPreference;
+  return runTool("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    env: cleanEnv as Record<string, string>,
+  });
 }
 
 /**
@@ -1113,30 +1126,40 @@ async function smokeExtractedZip(zipPath: string, expectedPackageDir: string): P
 async function extractZip(zipPath: string, destination: string): Promise<ExtractReport> {
   const zipAbs = resolve(zipPath);
   const destAbs = resolve(destination);
-  const failures: string[] = [];
 
+  // Extracción determinista con .NET en lugar de `Expand-Archive`: el cmdlet delega
+  // en la sobrecarga de `ExtractToDirectory` que ese módulo elija, y puede salir
+  // con código 0 sin extraer nada (ver `runPowerShell`). `Add-Type` es necesario:
+  // en .NET Framework el tipo no existe hasta cargar el ensamblado.
   const compressed = await runPowerShell(
-    "Expand-Archive -LiteralPath $env:VIU_ZIP -DestinationPath $env:VIU_DEST -Force",
+    "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+      "[System.IO.Compression.ZipFile]::ExtractToDirectory($env:VIU_ZIP, $env:VIU_DEST)",
     { VIU_ZIP: zipAbs, VIU_DEST: destAbs },
   );
-  if (compressed.code === 0) return { exitCode: 0, stderr: compressed.stderr };
-  failures.push(
-    compressed.missing
-      ? "powershell: no está disponible en esta máquina"
-      : `powershell: ${(compressed.stderr || compressed.stdout).trim().slice(0, 200)}`,
-  );
 
+  if (compressed.code === 0) {
+    // Un código 0 no basta: se comprueba que el destino tenga algo.
+    const children = existsSync(destAbs) ? readdirSync(destAbs) : [];
+    if (children.length > 0) return { exitCode: 0, stderr: compressed.stderr };
+    throw new BuildError(
+      `La extracción devolvió código 0 pero el destino está vacío.\n` +
+        `ZIP: ${zipAbs}\nDestino: ${destAbs}` +
+        (compressed.stderr.trim() ? `\nSalida de powershell: ${compressed.stderr.trim().slice(0, 1000)}` : ""),
+    );
+  }
+
+  // Otros sistemas (y un Windows sin [System.IO.Compression.ZipFile]): `unzip`.
   const unzip = await runTool("unzip", ["-q", "-o", zipAbs, "-d", destAbs]);
   if (unzip.code === 0) return { exitCode: 0, stderr: unzip.stderr };
-  failures.push(
-    unzip.missing
-      ? "unzip: no está disponible en esta máquina"
-      : `unzip: ${(unzip.stderr || unzip.stdout).trim().slice(0, 200)}`,
-  );
   throw new BuildError(
-    `No se pudo extraer ${basename(zipPath)}.\n${failures.join("\n")}\n` +
-      `Códigos: powershell ${compressed.code}, unzip ${unzip.code}.` +
-      (compressed.stderr.trim() ? `\nSalida de powershell: ${compressed.stderr.trim().slice(0, 600)}` : ""),
+    `No se pudo extraer ${basename(zipPath)}.\n` +
+      (compressed.missing
+        ? "powershell: no está disponible en esta máquina"
+        : `powershell: ${(compressed.stderr || compressed.stdout).trim().slice(0, 600)}`) +
+      (unzip.missing
+        ? "\nunzip: no está disponible en esta máquina"
+        : `\nunzip: ${(unzip.stderr || unzip.stdout).trim().slice(0, 300)}`) +
+      `\nCódigos: powershell ${compressed.code}, unzip ${unzip.code}.`,
   );
 }
 
