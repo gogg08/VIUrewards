@@ -50,13 +50,16 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
   readdirSync,
+  readSync,
   rmSync,
   statSync,
   utimesSync,
@@ -241,9 +244,22 @@ function runTool(command: string, args: string[], options: { cwd?: string; env?:
  * dinámicos: el script va fijo y las rutas se pasan por variables de entorno
  * (`VIU_*`), que PowerShell lee con `$env:`. Así los espacios y comillas de una
  * ruta nunca cambian el comando.
+ *
+ * El hijo NO hereda `PSModulePath` (ni `PSExecutionPolicyPreference`). Medido:
+ * cuando el build corre dentro de PowerShell 7 (CI), la variable apunta a
+ * `C:\Program Files\PowerShell\7\Modules` y Windows PowerShell 5.1 carga ESE
+ * módulo `Microsoft.PowerShell.Archive`, cuyas llamadas usan sobrecargas de
+ * .NET moderno que no existen en .NET Framework; `Expand-Archive` entonces sale
+ * con código 0 dejando el destino vacío. Sin la variable, 5.1 arranca con sus
+ * rutas por defecto.
  */
 function runPowerShell(script: string, env: Record<string, string>): Promise<ToolResult> {
-  return runTool("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], { env });
+  const cleanEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
+  delete cleanEnv.PSModulePath;
+  delete cleanEnv.PSExecutionPolicyPreference;
+  return runTool("powershell", ["-NoProfile", "-NonInteractive", "-Command", script], {
+    env: cleanEnv as Record<string, string>,
+  });
 }
 
 /**
@@ -982,6 +998,86 @@ function assertNoForbiddenExecutables(stagingDir: string): void {
 }
 
 /**
+ * Cómo terminó la extracción de `extractZip`, para poder explicar el fallo del
+ * smoke. `exitCode` es el de la herramienta que "tuvo éxito" y dejó el árbol
+ * vacío (o el de todas si ninguna lo hizo); `stderr` es su salida.
+ */
+interface ExtractReport {
+  exitCode: number;
+  stderr: string;
+}
+
+/** Lee las primeras `limit` entradas del directorio central del ZIP, en Node puro. */
+function readZipEntryNames(zipPath: string, limit: number): { count: number; names: string[] } {
+  const size = statSync(zipPath).size;
+  const fd = openSync(zipPath, "r");
+  try {
+    const tailLen = Math.min(size, 66_000);
+    const tail = Buffer.alloc(tailLen);
+    readSync(fd, tail, 0, tailLen, size - tailLen);
+    // Fin del directorio central: firma "PK\x05\x06", buscada desde el final.
+    let eocd = -1;
+    for (let i = tail.length - 22; i >= 0; i -= 1) {
+      if (tail.readUInt32LE(i) === 0x0605_4b50) {
+        eocd = i;
+        break;
+      }
+    }
+    if (eocd < 0) return { count: -1, names: [] };
+    const count = tail.readUInt16LE(eocd + 10);
+    const cdSize = tail.readUInt32LE(eocd + 12);
+    const cdOffset = tail.readUInt32LE(eocd + 16);
+    const cd = Buffer.alloc(cdSize);
+    readSync(fd, cd, 0, cdSize, cdOffset);
+    const names: string[] = [];
+    let p = 0;
+    while (p + 46 <= cd.length && cd.readUInt32LE(p) === 0x0201_4b50 && names.length < limit) {
+      const nameLen = cd.readUInt16LE(p + 28);
+      const extraLen = cd.readUInt16LE(p + 30);
+      const commentLen = cd.readUInt16LE(p + 32);
+      names.push(cd.toString("utf8", p + 46, p + 46 + nameLen));
+      p += 46 + nameLen + extraLen + commentLen;
+    }
+    return { count, names };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/** Detalle del árbol extraído y del ZIP, para entender por qué falta la carpeta. */
+function describeExtractMismatch(
+  zipPath: string,
+  extractDir: string,
+  expectedName: string,
+  report: ExtractReport,
+  limit = 40,
+): string {
+  const lines: string[] = [];
+  lines.push(`Extracción: código ${report.exitCode}${report.stderr.trim() ? `; salida: ${report.stderr.trim().slice(0, 600)}` : ""}`);
+
+  const children = existsSync(extractDir) ? readdirSync(extractDir, { withFileTypes: true }) : [];
+  lines.push(
+    `Hijos de ${extractDir}: ${children.length === 0 ? "(ninguno)" : `${children.length} (primeros ${Math.min(children.length, limit)})`}`,
+  );
+  for (const child of children.slice(0, limit)) {
+    lines.push(`  ${child.isDirectory() ? "[dir] " : "[archivo] "}${child.name}`);
+  }
+
+  let zipInfo: { count: number; names: string[] };
+  try {
+    zipInfo = readZipEntryNames(zipPath, limit);
+  } catch (error) {
+    lines.push(`No se pudo leer el ZIP: ${(error as Error).message}`);
+    return lines.join("\n");
+  }
+  lines.push(
+    `Entradas del ZIP: ${zipInfo.count < 0 ? "(directorio central ilegible)" : `${zipInfo.count} (primeras ${zipInfo.names.length})`}`,
+  );
+  for (const name of zipInfo.names) lines.push(`  ${name}`);
+  return lines.join("\n");
+}
+
+/**
  * Smoke del paquete EXTRAÍDO (Parte G).
  *
  * Extrae el ZIP a una ruta temporal CON ESPACIOS y corre `smoke.mjs` con el
@@ -995,11 +1091,15 @@ async function smokeExtractedZip(zipPath: string, expectedPackageDir: string): P
     const extractDir = join(smokeRoot, "paquete extraido");
     mkdirSync(extractDir, { recursive: true });
     info(`Extrayendo el ZIP en ${extractDir}`);
-    await extractZip(zipPath, extractDir);
+    const report = await extractZip(zipPath, extractDir);
 
     const packageDir = join(extractDir, basename(expectedPackageDir));
     if (!existsSync(packageDir)) {
-      throw new BuildError(`El ZIP no contiene la carpeta esperada ${basename(expectedPackageDir)}.`);
+      const expectedName = basename(expectedPackageDir);
+      throw new BuildError(
+        `El ZIP no contiene la carpeta esperada ${expectedName}.\n` +
+          describeExtractMismatch(zipPath, extractDir, expectedName, report),
+      );
     }
     const nodeExe = process.env.VIUREWARDS_TEST_NODE_EXE?.trim() || process.execPath;
     const smokeScript = join(packageDir, "app", "scripts", "dist", "smoke.mjs");
@@ -1023,30 +1123,44 @@ async function smokeExtractedZip(zipPath: string, expectedPackageDir: string): P
 }
 
 /** Extrae un ZIP con la herramienta del sistema (PowerShell o unzip). */
-async function extractZip(zipPath: string, destination: string): Promise<void> {
+async function extractZip(zipPath: string, destination: string): Promise<ExtractReport> {
   const zipAbs = resolve(zipPath);
   const destAbs = resolve(destination);
-  const failures: string[] = [];
 
+  // Extracción determinista con .NET en lugar de `Expand-Archive`: el cmdlet delega
+  // en la sobrecarga de `ExtractToDirectory` que ese módulo elija, y puede salir
+  // con código 0 sin extraer nada (ver `runPowerShell`). `Add-Type` es necesario:
+  // en .NET Framework el tipo no existe hasta cargar el ensamblado.
   const compressed = await runPowerShell(
-    "Expand-Archive -LiteralPath $env:VIU_ZIP -DestinationPath $env:VIU_DEST -Force",
+    "Add-Type -AssemblyName System.IO.Compression.FileSystem; " +
+      "[System.IO.Compression.ZipFile]::ExtractToDirectory($env:VIU_ZIP, $env:VIU_DEST)",
     { VIU_ZIP: zipAbs, VIU_DEST: destAbs },
   );
-  if (compressed.code === 0) return;
-  failures.push(
-    compressed.missing
-      ? "powershell: no está disponible en esta máquina"
-      : `powershell: ${(compressed.stderr || compressed.stdout).trim().slice(0, 200)}`,
-  );
 
+  if (compressed.code === 0) {
+    // Un código 0 no basta: se comprueba que el destino tenga algo.
+    const children = existsSync(destAbs) ? readdirSync(destAbs) : [];
+    if (children.length > 0) return { exitCode: 0, stderr: compressed.stderr };
+    throw new BuildError(
+      `La extracción devolvió código 0 pero el destino está vacío.\n` +
+        `ZIP: ${zipAbs}\nDestino: ${destAbs}` +
+        (compressed.stderr.trim() ? `\nSalida de powershell: ${compressed.stderr.trim().slice(0, 1000)}` : ""),
+    );
+  }
+
+  // Otros sistemas (y un Windows sin [System.IO.Compression.ZipFile]): `unzip`.
   const unzip = await runTool("unzip", ["-q", "-o", zipAbs, "-d", destAbs]);
-  if (unzip.code === 0) return;
-  failures.push(
-    unzip.missing
-      ? "unzip: no está disponible en esta máquina"
-      : `unzip: ${(unzip.stderr || unzip.stdout).trim().slice(0, 200)}`,
+  if (unzip.code === 0) return { exitCode: 0, stderr: unzip.stderr };
+  throw new BuildError(
+    `No se pudo extraer ${basename(zipPath)}.\n` +
+      (compressed.missing
+        ? "powershell: no está disponible en esta máquina"
+        : `powershell: ${(compressed.stderr || compressed.stdout).trim().slice(0, 600)}`) +
+      (unzip.missing
+        ? "\nunzip: no está disponible en esta máquina"
+        : `\nunzip: ${(unzip.stderr || unzip.stdout).trim().slice(0, 300)}`) +
+      `\nCódigos: powershell ${compressed.code}, unzip ${unzip.code}.`,
   );
-  throw new BuildError(`No se pudo extraer ${basename(zipPath)}.\n${failures.join("\n")}`);
 }
 
 /**
