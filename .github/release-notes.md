@@ -15,6 +15,25 @@ irm https://github.com/gogg08/VIUrewards/releases/latest/download/install.ps1 | 
 El script descarga este mismo paquete, verifica su SHA-256, lo instala, prepara
 las herramientas que faltan y abre el launcher.
 
+## Si aparece un error de conexión
+
+En algunas PCs con **Windows 11**, el comando de arriba puede fallar con:
+
+```
+La conexión ha terminado de forma inesperada
+```
+
+Si te pasa, ejecutá **primero** esta línea en la misma ventana de Windows
+PowerShell 5.1 y repetí después el comando de instalación:
+
+```powershell
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+```
+
+Esto se observó en una PC con Windows 11, no en todas. No se confirmó la causa:
+el ajuste habilita TLS 1.2 para esa ventana de PowerShell y no cambia nada en el
+sistema ni en la aplicación.
+
 ## Qué deja en la PC
 
 - **Aplicación:** `%LOCALAPPDATA%\Programs\VIUrewards`
